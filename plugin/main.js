@@ -25,29 +25,21 @@ function asPixels(v) {
 }
 
 // ---------------------------------------------------------------------------
-// 导出「当前图层」为画布对齐的 base64 PNG(纯 base64,无 data: 前缀)
+// 导出「整个文档合成图」为 base64 PNG(纯 base64,无 data: 前缀)
+// 用最小参数(不带 layerID/targetSize/sourceBounds),避免图层尺寸与请求尺寸
+// 不一致导致的 UXP 原生内存越界崩溃。整文档天然与选区蒙版同坐标、同尺寸。
 // ---------------------------------------------------------------------------
-async function exportActiveLayerPNG() {
+async function exportActiveDocPNG() {
   const doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
-  const layers = doc.activeLayers;
-  if (!layers || layers.length === 0) throw new Error("请先选中一个图层");
-  const layerID = layers[0].id;
-  const width = asPixels(doc.width);
-  const height = asPixels(doc.height);
-  const bounds = { left: 0, top: 0, right: width, bottom: height };
 
   let base64;
   await executeAsModal(
     async () => {
       const pix = await imaging.getPixels({
         documentID: doc.id,
-        layerID,
-        sourceBounds: bounds, // 画布对齐:与选区蒙版同坐标系
-        targetSize: { width, height },
         componentSize: 8,
-        applyAlpha: true,
-        colorProfile: "sRGB IEC61966-2.1",
+        applyAlpha: false,
         colorSpace: "RGB",
       });
       try {
@@ -60,8 +52,9 @@ async function exportActiveLayerPNG() {
         pix.imageData.dispose();
       }
     },
-    { commandName: "导出当前图层" }
+    { commandName: "导出文档" }
   );
+  if (!base64) throw new Error("导出文档失败");
   return base64;
 }
 
@@ -71,23 +64,18 @@ async function exportActiveLayerPNG() {
 async function exportSelectionMaskPNG() {
   const doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
-  const width = asPixels(doc.width);
-  const height = asPixels(doc.height);
-  const bounds = { left: 0, top: 0, right: width, bottom: height };
 
   let base64;
   await executeAsModal(
     async () => {
       let sel;
       try {
-        sel = await imaging.getSelection({
-          documentID: doc.id,
-          sourceBounds: bounds,
-          targetSize: { width, height }, // 强制画布尺寸,保证与图层对齐
-        });
+        // 最小参数:让 UXP 按文档原生尺寸返回选区蒙版,避免尺寸descriptor不一致崩溃
+        sel = await imaging.getSelection({ documentID: doc.id });
       } catch (e) {
         throw new Error("请先做一个选区(未检测到选区)");
       }
+      if (!sel || !sel.imageData) throw new Error("请先做一个选区");
       try {
         base64 = await imaging.encodeImageData({
           imageData: sel.imageData,
@@ -178,8 +166,8 @@ async function onRunClick() {
 
     if (!app.activeDocument) throw new Error("没有打开的文档");
 
-    setStatus("导出图层与选区…");
-    const imageB64 = await exportActiveLayerPNG();
+    setStatus("导出画面与选区…");
+    const imageB64 = await exportActiveDocPNG();
     const maskB64 = await exportSelectionMaskPNG();
 
     setStatus("云端处理中…(inpaint 较慢,请稍候)");
