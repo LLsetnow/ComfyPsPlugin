@@ -1,0 +1,9 @@
+{
+  "_comment": "复制本文件为 config.json 并填写你的 inpaint 工作流信息。config.json 已被 .gitignore 忽略。",
+  "workflowId": "填 RunningHub 工作流页面 URL 末尾的数字",
+  "imageNodeId": "图片输入 LoadImage 节点号(如 41)",
+  "maskNodeId": "蒙版输入 LoadImage 节点号(如 42)",
+  "maskField": "image",
+  "workflowFile": "../workflows/inpaint_api.json",
+  "port": 8765
+}

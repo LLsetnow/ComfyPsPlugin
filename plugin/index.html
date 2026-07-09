@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      margin: 0;
+      padding: 12px;
+      font-size: 12px;
+      font-family: -apple-system, sans-serif;
+      color: #e0e0e0;
+      background: transparent;
+    }
+    .row { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
+    label { font-size: 11px; opacity: 0.8; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 5px 6px;
+      background: #262626;
+      color: #e0e0e0;
+      border: 1px solid #444;
+      border-radius: 4px;
+    }
+    #runBtn {
+      width: 100%;
+      padding: 9px;
+      margin-top: 2px;
+      background: #2680eb;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #runBtn:disabled { background: #555; cursor: default; }
+    #status {
+      margin-top: 12px;
+      padding: 8px;
+      min-height: 16px;
+      background: #1e1e1e;
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    #status.err { color: #ff6b6b; }
+    #status.ok  { color: #7ed957; }
+    .hint { font-size: 10px; opacity: 0.55; margin-top: 6px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <label for="bridgeUrl">本地桥地址</label>
+    <input id="bridgeUrl" type="text" value="http://127.0.0.1:8765" />
+  </div>
+
+  <button id="runBtn">运行(选区 inpaint)</button>
+
+  <div id="status">就绪:选好图层 + 画一个选区,点运行</div>
+
+  <div class="hint">
+    发送「当前图层 + 选区蒙版」到本地桥 → RunningHub 工作流处理 → 结果贴成新图层。
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
