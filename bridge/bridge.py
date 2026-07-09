@@ -177,6 +177,10 @@ def run_inpaint_blocking(image_path: Path, mask_path: Path, out_dir: Path, promp
     cfg = CONFIG
     mask_file_name = upload_mask(mask_path)
     set_args = [f"{cfg['maskNodeId']}:{cfg['maskField']}={mask_file_name}"]
+    # 我们的蒙版是黑白 RGB(无 alpha);若蒙版节点是 LoadImageMask 且默认读 alpha,
+    # 通过 maskChannel 改为 red 才能正确读到黑白蒙版。
+    if cfg.get("maskChannel"):
+        set_args.append(f"{cfg['maskNodeId']}:channel={cfg['maskChannel']}")
 
     if prompt and prompt.strip():
         workflow = json.loads(Path(cfg["workflowFile"]).read_text(encoding="utf-8"))

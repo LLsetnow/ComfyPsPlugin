@@ -26,7 +26,7 @@
   },
   "12": {
     "inputs": {
-      "unet_name": "qwen_image_edit_2511_bf16.safetensors",
+      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
       "weight_dtype": "fp8_e4m3fn"
     },
     "class_type": "UNETLoader",
@@ -36,7 +36,7 @@
   },
   "41": {
     "inputs": {
-      "image": "2438d8eed3c1fb8e103edf094da9d476753879c322c42aff083a94fc3616ae06.jpg"
+      "image": "clipspace/77981d5079fe34ed892b358915d0685d_3dfd50329bc72facfc534347754c25311cc65107f676a73216ea148999d23d6d.png [input]"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -70,8 +70,8 @@
   },
   "65": {
     "inputs": {
-      "seed": 732838762956979,
-      "steps": 4,
+      "seed": 746743503219950,
+      "steps": 6,
       "cfg": 1,
       "sampler_name": "euler",
       "scheduler": "simple",
@@ -89,7 +89,7 @@
         0
       ],
       "latent_image": [
-        "188",
+        "206",
         0
       ]
     },
@@ -113,7 +113,7 @@
   },
   "68": {
     "inputs": {
-      "prompt": "去除主体以外的其他人物，有着干净空旷的背景，并保留原背景的景深和天花板。保留人物的物品",
+      "prompt": "衣服随风飘动",
       "clip": [
         "61",
         0
@@ -123,8 +123,8 @@
         0
       ],
       "image1": [
-        "106",
-        0
+        "202",
+        1
       ]
     },
     "class_type": "TextEncodeQwenImageEditPlus",
@@ -144,8 +144,8 @@
         0
       ],
       "image1": [
-        "106",
-        0
+        "202",
+        1
       ]
     },
     "class_type": "TextEncodeQwenImageEditPlus",
@@ -182,8 +182,8 @@
   "74": {
     "inputs": {
       "pixels": [
-        "106",
-        0
+        "202",
+        1
       ],
       "vae": [
         "10",
@@ -197,7 +197,7 @@
   },
   "93": {
     "inputs": {
-      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-fp32.safetensors",
+      "lora_name": "Qwen Edit2511高清修复Anything2Real V1.0.safetensors",
       "strength_model": 1,
       "model": [
         "12",
@@ -209,67 +209,83 @@
       "title": "Load LoRA"
     }
   },
-  "106": {
+  "201": {
     "inputs": {
-      "width": 800,
-      "height": 1280,
-      "upscale_method": "nearest-exact",
-      "keep_proportion": "stretch",
-      "pad_color": "0, 0, 0",
-      "crop_position": "center",
-      "divisible_by": 2,
-      "device": "cpu",
+      "stitcher": [
+        "202",
+        0
+      ],
+      "inpainted_image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "InpaintStitchImproved",
+    "_meta": {
+      "title": "✂️ Inpaint Stitch (Improved)"
+    }
+  },
+  "202": {
+    "inputs": {
+      "downscale_algorithm": "bilinear",
+      "upscale_algorithm": "bicubic",
+      "preresize": false,
+      "preresize_mode": "ensure minimum resolution",
+      "preresize_min_width": 1024,
+      "preresize_min_height": 1024,
+      "preresize_max_width": 16384,
+      "preresize_max_height": 16384,
+      "mask_fill_holes": true,
+      "mask_expand_pixels": 0,
+      "mask_invert": false,
+      "mask_blend_pixels": 32,
+      "mask_hipass_filter": 0.1,
+      "extend_for_outpainting": false,
+      "extend_up_factor": 1,
+      "extend_down_factor": 1,
+      "extend_left_factor": 1,
+      "extend_right_factor": 1,
+      "context_from_mask_extend_factor": 1.2,
+      "output_resize_to_target_size": true,
+      "output_target_width": 1024,
+      "output_target_height": 1024,
+      "output_padding": "32",
       "image": [
         "41",
         0
-      ]
-    },
-    "class_type": "ImageResizeKJv2",
-    "_meta": {
-      "title": "Resize Image v2"
-    }
-  },
-  "175": {
-    "inputs": {
+      ],
       "mask": [
-        "177",
+        "210",
         0
       ]
     },
-    "class_type": "MaskPreview",
+    "class_type": "InpaintCropImproved",
     "_meta": {
-      "title": "Preview Mask"
+      "title": "✂️ Inpaint Crop (Improved)"
     }
   },
-  "177": {
+  "204": {
     "inputs": {
-      "expand": 0,
-      "incremental_expandrate": 0,
-      "tapered_corners": true,
-      "flip_input": false,
-      "blur_radius": 5,
-      "lerp_alpha": 1,
-      "decay_factor": 1,
-      "fill_holes": true,
-      "mask": [
-        "194",
+      "images": [
+        "201",
         0
-      ]
+      ],
+      "filename_prefix": "ComfyPS"
     },
-    "class_type": "GrowMaskWithBlur",
+    "class_type": "SaveImage",
     "_meta": {
-      "title": "Grow Mask With Blur"
+      "title": "Save Image"
     }
   },
-  "188": {
+  "206": {
     "inputs": {
       "samples": [
         "74",
         0
       ],
       "mask": [
-        "190",
-        0
+        "202",
+        2
       ]
     },
     "class_type": "SetLatentNoiseMask",
@@ -277,222 +293,14 @@
       "title": "Set Latent Noise Mask"
     }
   },
-  "190": {
+  "210": {
     "inputs": {
-      "masks": [
-        "177",
-        0
-      ]
+      "image": "undefined",
+      "channel": "alpha"
     },
-    "class_type": "Mask Invert",
+    "class_type": "LoadImageMask",
     "_meta": {
-      "title": "Mask Invert"
-    }
-  },
-  "191": {
-    "inputs": {
-      "bbox_threshold": 0.9000000000000001,
-      "bbox_dilation": 0,
-      "crop_factor": 3,
-      "drop_size": 10,
-      "sub_threshold": 0.5,
-      "sub_dilation": 0,
-      "sub_bbox_expansion": 0,
-      "sam_mask_hint_threshold": 0.7,
-      "post_dilation": 0,
-      "bbox_detector": [
-        "192",
-        0
-      ],
-      "image": [
-        "106",
-        0
-      ],
-      "sam_model_opt": [
-        "193",
-        0
-      ]
-    },
-    "class_type": "ImpactSimpleDetectorSEGS",
-    "_meta": {
-      "title": "Simple Detector (SEGS)"
-    }
-  },
-  "192": {
-    "inputs": {
-      "model_name": "segm/person_yolov8m-seg.pt"
-    },
-    "class_type": "UltralyticsDetectorProvider",
-    "_meta": {
-      "title": "UltralyticsDetectorProvider"
-    }
-  },
-  "193": {
-    "inputs": {
-      "model_name": "sam_vit_h_4b8939.pth",
-      "device_mode": "AUTO"
-    },
-    "class_type": "SAMLoader",
-    "_meta": {
-      "title": "SAMLoader (Impact)"
-    }
-  },
-  "194": {
-    "inputs": {
-      "segs": [
-        "191",
-        0
-      ]
-    },
-    "class_type": "SegsToCombinedMask",
-    "_meta": {
-      "title": "SEGS to MASK (combined)"
-    }
-  },
-  "195": {
-    "inputs": {
-      "rgthree_comparer": {
-        "images": [
-          {
-            "name": "A",
-            "selected": true,
-            "url": "/view?filename=rgthree.compare._temp_tqbcm_00001_qajbp_1783613285.jpg&type=temp&subfolder=&rand=0.3483342483205616&Rh-Comfy-Auth=eyJ1c2VySWQiOiI3Nzk4MWQ1MDc5ZmUzNGVkODkyYjM1ODkxNWQwNjg1ZCIsInNpZ25FeHBpcmUiOjE3ODQyMTY2MjI3MTYsInRzIjoxNzgzNjExODIyNzE2LCJzaWduIjoiZjE1MGVhZDQyOTZiMzk2ODhmNTgwYmYxOTMxOTkwNjUifQ==&Rh-Identify=77981d5079fe34ed892b358915d0685d"
-          },
-          {
-            "name": "B",
-            "selected": true,
-            "url": "/view?filename=rgthree.compare._temp_tqbcm_00002_hzlia_1783613286.jpg&type=temp&subfolder=&rand=0.11936895518095314&Rh-Comfy-Auth=eyJ1c2VySWQiOiI3Nzk4MWQ1MDc5ZmUzNGVkODkyYjM1ODkxNWQwNjg1ZCIsInNpZ25FeHBpcmUiOjE3ODQyMTY2MjI3MTYsInRzIjoxNzgzNjExODIyNzE2LCJzaWduIjoiZjE1MGVhZDQyOTZiMzk2ODhmNTgwYmYxOTMxOTkwNjUifQ==&Rh-Identify=77981d5079fe34ed892b358915d0685d"
-          }
-        ]
-      },
-      "image_a": [
-        "8",
-        0
-      ],
-      "image_b": [
-        "106",
-        0
-      ]
-    },
-    "class_type": "Image Comparer (rgthree)",
-    "_meta": {
-      "title": "Image Comparer (rgthree)"
-    }
-  },
-  "196": {
-    "inputs": {
-      "prompt": "",
-      "upscale_factor": 4,
-      "model_t": 200,
-      "coeff_t": 200,
-      "cfg_scale": 1,
-      "denoise_strength": 0.20000000000000004,
-      "scheduler_type": "DDPM",
-      "patch_size": 512,
-      "stride": 256,
-      "seed": 683470006203558,
-      "negative_prompt": "",
-      "model": [
-        "197",
-        0
-      ],
-      "image": [
-        "8",
-        0
-      ]
-    },
-    "class_type": "HYPIRUpscale",
-    "_meta": {
-      "title": "HYPIR 图像放大"
-    }
-  },
-  "197": {
-    "inputs": {
-      "lora_rank": 256,
-      "use_fp16": false,
-      "device": "cuda"
-    },
-    "class_type": "HYPIRModelLoader",
-    "_meta": {
-      "title": "HYPIR 模型加载器"
-    }
-  },
-  "203": {
-    "inputs": {
-      "width": [
-        "204",
-        0
-      ],
-      "height": [
-        "204",
-        1
-      ],
-      "upscale_method": "nearest-exact",
-      "keep_proportion": "stretch",
-      "pad_color": "0, 0, 0",
-      "crop_position": "center",
-      "divisible_by": 2,
-      "device": "cpu",
-      "image": [
-        "196",
-        0
-      ],
-      "mask": [
-        "177",
-        0
-      ]
-    },
-    "class_type": "ImageResizeKJv2",
-    "_meta": {
-      "title": "Resize Image v2"
-    }
-  },
-  "204": {
-    "inputs": {
-      "image": [
-        "41",
-        0
-      ]
-    },
-    "class_type": "DF_Get_image_size",
-    "_meta": {
-      "title": "Get image size"
-    }
-  },
-  "220": {
-    "inputs": {
-      "filename_prefix": "ComfyUI",
-      "images": [
-        "221",
-        0
-      ]
-    },
-    "class_type": "SaveImage",
-    "_meta": {
-      "title": "Save Image"
-    }
-  },
-  "221": {
-    "inputs": {
-      "x": 0,
-      "y": 0,
-      "resize_source": false,
-      "destination": [
-        "203",
-        0
-      ],
-      "source": [
-        "41",
-        0
-      ],
-      "mask": [
-        "203",
-        3
-      ]
-    },
-    "class_type": "ImageCompositeMasked",
-    "_meta": {
-      "title": "Image Composite Masked"
+      "title": "Load Image (as Mask)"
     }
   }
 }
