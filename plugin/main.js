@@ -9,7 +9,7 @@ const { localFileSystem, formats } = require("uxp").storage;
 const executeAsModal = core.executeAsModal;
 const batchPlay = action.batchPlay;
 
-const PLUGIN_VERSION = "1.0.2";
+const PLUGIN_VERSION = "1.0.3";
 
 const $ = (id) => document.getElementById(id);
 
@@ -127,21 +127,8 @@ async function exportSelectionMaskPNG() {
         throw new Error("请先做一个选区(未检测到选区)");
       }
 
-      // 2) 新建图层并尽量移到最前(移动失败忽略)
+      // 2) 新建图层(置于当前图层上方)
       await batchPlay([{ _obj: "make", _target: [{ _ref: "layer" }], _options: noDialog }], {});
-      try {
-        await batchPlay(
-          [
-            {
-              _obj: "move",
-              _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-              to: { _ref: "layer", _enum: "ordinal", _value: "front" },
-              _options: noDialog,
-            },
-          ],
-          {}
-        );
-      } catch (_) {}
 
       // 3) 全选填黑 → 载入选区填白 → 取消选区 → 存 PNG
       await batchPlay(
