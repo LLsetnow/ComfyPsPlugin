@@ -4,6 +4,9 @@
   "imageNodeId": "图片输入 LoadImage 节点号(如 41)",
   "maskNodeId": "蒙版输入 LoadImage 节点号(如 42)",
   "maskField": "image",
+  "_prompt_comment": "提示词节点默认自动检测(优先标题含 positive/正 的文本节点,再顺 sampler 的 positive 回溯);若自动检测不准,填下面两项显式指定。",
+  "promptNodeId": "",
+  "promptField": "text",
   "workflowFile": "../workflows/inpaint_api.json",
   "port": 8765
 }

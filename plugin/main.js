@@ -107,14 +107,14 @@ async function exportSelectionMaskPNG() {
 // ---------------------------------------------------------------------------
 // 调用本地桥:发 {image, mask},拿回结果 PNG 的字节
 // ---------------------------------------------------------------------------
-async function callBridge(bridgeUrl, imageB64, maskB64) {
+async function callBridge(bridgeUrl, imageB64, maskB64, prompt) {
   const url = bridgeUrl.replace(/\/+$/, "") + "/run";
   let resp;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: imageB64, mask: maskB64 }),
+      body: JSON.stringify({ image: imageB64, mask: maskB64, prompt: prompt || "" }),
     });
   } catch (e) {
     throw new Error(`连不上本地桥(${url}):${e && e.message ? e.message : e}。桥启动了吗?`);
@@ -172,7 +172,9 @@ async function onRunClick() {
   btn.disabled = true;
   try {
     const bridgeUrl = $("bridgeUrl").value.trim() || "http://127.0.0.1:8765";
+    const prompt = $("prompt").value;
     localStorage.setItem("comfyps.bridgeUrl", bridgeUrl);
+    localStorage.setItem("comfyps.prompt", prompt);
 
     if (!app.activeDocument) throw new Error("没有打开的文档");
 
@@ -181,7 +183,7 @@ async function onRunClick() {
     const maskB64 = await exportSelectionMaskPNG();
 
     setStatus("云端处理中…(inpaint 较慢,请稍候)");
-    const resultBuffer = await callBridge(bridgeUrl, imageB64, maskB64);
+    const resultBuffer = await callBridge(bridgeUrl, imageB64, maskB64, prompt);
 
     setStatus("贴回结果…");
     await placeImageBytesAsLayer(resultBuffer, "ComfyPS 结果");
@@ -199,7 +201,9 @@ async function onRunClick() {
 // 初始化
 // ---------------------------------------------------------------------------
 (function init() {
-  const saved = localStorage.getItem("comfyps.bridgeUrl");
-  if (saved) $("bridgeUrl").value = saved;
+  const savedUrl = localStorage.getItem("comfyps.bridgeUrl");
+  if (savedUrl) $("bridgeUrl").value = savedUrl;
+  const savedPrompt = localStorage.getItem("comfyps.prompt");
+  if (savedPrompt) $("prompt").value = savedPrompt;
   $("runBtn").addEventListener("click", onRunClick);
 })();
