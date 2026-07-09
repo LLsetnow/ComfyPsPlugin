@@ -4,12 +4,32 @@
  * 裁切/inpaint/放大/羽化合成全部在 RunningHub 工作流内部完成。
  */
 const { app, core, action, imaging } = require("photoshop");
-const { localFileSystem } = require("uxp").storage;
+const { localFileSystem, formats } = require("uxp").storage;
 
 const executeAsModal = core.executeAsModal;
 const batchPlay = action.batchPlay;
 
+const PLUGIN_VERSION = "1.0.1";
+
 const $ = (id) => document.getElementById(id);
+
+// 无依赖 base64 编码(不依赖 btoa,避免 UXP 环境差异)
+function bytesToBase64(arrayBuffer) {
+  const B = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const bytes = new Uint8Array(arrayBuffer);
+  const len = bytes.length;
+  let out = "";
+  for (let i = 0; i < len; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < len ? bytes[i + 1] : 0;
+    const b2 = i + 2 < len ? bytes[i + 2] : 0;
+    out += B[b0 >> 2];
+    out += B[((b0 & 3) << 4) | (b1 >> 4)];
+    out += i + 1 < len ? B[((b1 & 15) << 2) | (b2 >> 6)] : "=";
+    out += i + 2 < len ? B[b2 & 63] : "=";
+  }
+  return out;
+}
 
 function setStatus(msg, kind = "") {
   const el = $("status");
@@ -33,29 +53,33 @@ async function exportActiveDocPNG() {
   const doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
 
-  let base64;
+  // 用 batchPlay「存副本为 PNG」到插件 data 目录(最稳,不碰 imaging 原生接口)
+  const folder = await localFileSystem.getDataFolder();
+  const file = await folder.createFile("comfyps_input.png", { overwrite: true });
+  const token = await localFileSystem.createSessionToken(file);
+
   await executeAsModal(
     async () => {
-      const pix = await imaging.getPixels({
-        documentID: doc.id,
-        componentSize: 8,
-        applyAlpha: false,
-        colorSpace: "RGB",
-      });
-      try {
-        base64 = await imaging.encodeImageData({
-          imageData: pix.imageData,
-          format: "png",
-          base64: true,
-        });
-      } finally {
-        pix.imageData.dispose();
-      }
+      await batchPlay(
+        [
+          {
+            _obj: "save",
+            as: { _obj: "PNGFormat", method: { _enum: "PNGMethod", _value: "quick" } },
+            in: { _path: token, _kind: "local" },
+            copy: true,
+            lowerCase: true,
+            _options: { dialogOptions: "dontDisplay" },
+          },
+        ],
+        {}
+      );
     },
-    { commandName: "导出文档" }
+    { commandName: "导出文档PNG" }
   );
-  if (!base64) throw new Error("导出文档失败");
-  return base64;
+
+  const buf = await file.read({ format: formats.binary });
+  if (!buf || buf.byteLength === 0) throw new Error("导出的 PNG 为空");
+  return bytesToBase64(buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,16 +179,31 @@ async function placeImageBytesAsLayer(arrayBuffer, layerName) {
 // ---------------------------------------------------------------------------
 // 主编排
 // ---------------------------------------------------------------------------
+// 诊断开关:先只验证「导出画面」这一步是否稳定(不发网络、不导蒙版)。
+// 确认不崩后改为 false 即恢复完整流程。
+const DIAGNOSTIC_EXPORT_ONLY = true;
+
 async function onRunClick() {
   const btn = $("runBtn");
   btn.disabled = true;
   try {
+    if (!app.activeDocument) throw new Error("没有打开的文档");
+
+    if (DIAGNOSTIC_EXPORT_ONLY) {
+      setStatus("诊断:用文件方式导出画面…");
+      const imageB64 = await exportActiveDocPNG();
+      setStatus(
+        `✅ 导出成功 ${Math.round(imageB64.length / 1024)}KB,未崩溃。` +
+          `请告诉我这条消息,我就恢复完整流程。`,
+        "ok"
+      );
+      return;
+    }
+
     const bridgeUrl = $("bridgeUrl").value.trim() || "http://127.0.0.1:8765";
     const prompt = $("prompt").value;
     localStorage.setItem("comfyps.bridgeUrl", bridgeUrl);
     localStorage.setItem("comfyps.prompt", prompt);
-
-    if (!app.activeDocument) throw new Error("没有打开的文档");
 
     setStatus("导出画面与选区…");
     const imageB64 = await exportActiveDocPNG();
@@ -194,4 +233,5 @@ async function onRunClick() {
   const savedPrompt = localStorage.getItem("comfyps.prompt");
   if (savedPrompt) $("prompt").value = savedPrompt;
   $("runBtn").addEventListener("click", onRunClick);
+  setStatus("ComfyPS v" + PLUGIN_VERSION + "(诊断模式)就绪:打开图后点运行");
 })();
