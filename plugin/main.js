@@ -9,7 +9,7 @@ const { localFileSystem, formats } = require("uxp").storage;
 const executeAsModal = core.executeAsModal;
 const batchPlay = action.batchPlay;
 
-const PLUGIN_VERSION = "1.0.1";
+const PLUGIN_VERSION = "1.0.2";
 
 const $ = (id) => document.getElementById(id);
 
@@ -89,31 +89,98 @@ async function exportSelectionMaskPNG() {
   const doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
 
-  let base64;
+  const folder = await localFileSystem.getDataFolder();
+  const file = await folder.createFile("comfyps_mask.png", { overwrite: true });
+  const token = await localFileSystem.createSessionToken(file);
+
+  const noDialog = { dialogOptions: "dontDisplay" };
+  const fill = (v) => ({
+    _obj: "fill",
+    using: { _enum: "fillContents", _value: v },
+    opacity: { _unit: "percentUnit", _value: 100 },
+    mode: { _enum: "blendMode", _value: "normal" },
+    _options: noDialog,
+  });
+  const setSel = (to) => ({
+    _obj: "set",
+    _target: [{ _ref: "channel", _property: "selection" }],
+    to,
+    _options: noDialog,
+  });
+
   await executeAsModal(
     async () => {
-      let sel;
+      // 1) 保存当前选区到通道(无选区则抛错)
       try {
-        // 最小参数:让 UXP 按文档原生尺寸返回选区蒙版,避免尺寸descriptor不一致崩溃
-        sel = await imaging.getSelection({ documentID: doc.id });
+        await batchPlay(
+          [
+            {
+              _obj: "duplicate",
+              _target: [{ _ref: "channel", _property: "selection" }],
+              name: "comfyps_sel",
+              _options: noDialog,
+            },
+          ],
+          {}
+        );
       } catch (e) {
         throw new Error("请先做一个选区(未检测到选区)");
       }
-      if (!sel || !sel.imageData) throw new Error("请先做一个选区");
+
+      // 2) 新建图层并尽量移到最前(移动失败忽略)
+      await batchPlay([{ _obj: "make", _target: [{ _ref: "layer" }], _options: noDialog }], {});
       try {
-        base64 = await imaging.encodeImageData({
-          imageData: sel.imageData,
-          format: "png",
-          base64: true,
-        });
-      } finally {
-        sel.imageData.dispose();
-      }
+        await batchPlay(
+          [
+            {
+              _obj: "move",
+              _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+              to: { _ref: "layer", _enum: "ordinal", _value: "front" },
+              _options: noDialog,
+            },
+          ],
+          {}
+        );
+      } catch (_) {}
+
+      // 3) 全选填黑 → 载入选区填白 → 取消选区 → 存 PNG
+      await batchPlay(
+        [
+          setSel({ _enum: "ordinal", _value: "allEnum" }),
+          fill("black"),
+          setSel({ _ref: "channel", _name: "comfyps_sel" }),
+          fill("white"),
+          setSel({ _enum: "ordinal", _value: "none" }),
+          {
+            _obj: "save",
+            as: { _obj: "PNGFormat", method: { _enum: "PNGMethod", _value: "quick" } },
+            in: { _path: token, _kind: "local" },
+            copy: true,
+            lowerCase: true,
+            _options: noDialog,
+          },
+        ],
+        {}
+      );
+
+      // 4) 清理:删蒙版图层、恢复用户选区、删通道(best-effort)
+      try {
+        await batchPlay(
+          [
+            { _obj: "delete", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }], _options: noDialog },
+            setSel({ _ref: "channel", _name: "comfyps_sel" }),
+            { _obj: "delete", _target: [{ _ref: "channel", _name: "comfyps_sel" }], _options: noDialog },
+          ],
+          {}
+        );
+      } catch (_) {}
     },
     { commandName: "导出选区蒙版" }
   );
-  if (!base64) throw new Error("请先做一个选区");
-  return base64;
+
+  const buf = await file.read({ format: formats.binary });
+  if (!buf || buf.byteLength === 0) throw new Error("导出蒙版失败");
+  return bytesToBase64(buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +248,7 @@ async function placeImageBytesAsLayer(arrayBuffer, layerName) {
 // ---------------------------------------------------------------------------
 // 诊断开关:先只验证「导出画面」这一步是否稳定(不发网络、不导蒙版)。
 // 确认不崩后改为 false 即恢复完整流程。
-const DIAGNOSTIC_EXPORT_ONLY = true;
+const DIAGNOSTIC_EXPORT_ONLY = false;
 
 async function onRunClick() {
   const btn = $("runBtn");
@@ -233,5 +300,5 @@ async function onRunClick() {
   const savedPrompt = localStorage.getItem("comfyps.prompt");
   if (savedPrompt) $("prompt").value = savedPrompt;
   $("runBtn").addEventListener("click", onRunClick);
-  setStatus("ComfyPS v" + PLUGIN_VERSION + "(诊断模式)就绪:打开图后点运行");
+  setStatus("ComfyPS v" + PLUGIN_VERSION + " 就绪:画选区后点运行");
 })();
