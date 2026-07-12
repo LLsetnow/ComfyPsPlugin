@@ -2,73 +2,527 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
+  <title>ComfyPS</title>
   <style>
-    body {
-      margin: 0;
-      padding: 12px;
-      font-size: 12px;
-      font-family: -apple-system, sans-serif;
-      color: #e0e0e0;
-      background: transparent;
+    :root {
+      --bg: #1e1e1e;
+      --bg-card: #282828;
+      --bg-input: #1a1a1a;
+      --text: #e0e0e0;
+      --text-dim: #999;
+      --accent: #4a9eff;
+      --accent-hover: #5cb3ff;
+      --accent-glow: rgba(74,158,255,0.25);
+      --danger: #ff6b6b;
+      --success: #5cdb5c;
+      --warn: #f0ad4e;
+      --border: #3a3a3a;
+      --radius: 6px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
-    .row { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
-    label { font-size: 11px; opacity: 0.8; }
+    body.light {
+      --bg: #f5f5f5;
+      --bg-card: #fff;
+      --bg-input: #eee;
+      --text: #222;
+      --text-dim: #777;
+      --accent: #2563eb;
+      --accent-hover: #3b82f6;
+      --accent-glow: rgba(37,99,235,0.2);
+      --danger: #dc2626;
+      --success: #16a34a;
+      --warn: #d97706;
+      --border: #ddd;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+    body {
+      font-family: var(--font);
+      font-size: 12px;
+      color: var(--text);
+      background: var(--bg);
+      padding: 10px;
+      user-select: none;
+      -webkit-user-select: none;
+      height: 100%;
+      overflow-y: auto;
+    }
+    .page.active {
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
+    }
+
+    /* ---- Pages ---- */
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* ---- Page 1: Home ---- */
+    .home-header {
+      text-align: center;
+      padding: 24px 0 16px;
+    }
+    .home-logo {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      color: var(--text);
+    }
+    .home-sub {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+    .home-btns {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 0 4px;
+    }
+    .home-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .home-btn:hover { border-color: var(--accent); background: var(--bg-input); }
+    .home-btn .btn-icon { font-size: 24px; }
+    .home-btn .btn-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    .home-btn .btn-desc { font-size: 10.5px; color: var(--text-dim); margin-top: 2px; }
+
+    /* ---- Top bar (Page 2 & 3) ---- */
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .btn-back {
+      background: none; border: none; color: var(--text-dim);
+      font-size: 16px; cursor: pointer; padding: 2px 4px;
+    }
+    .btn-back:hover { color: var(--text); }
+    .topbar-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .topbar-spacer { flex: 1; }
+
+    /* ---- Bridge status bar (Page 2) ---- */
+    .bridge-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      margin-bottom: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 10.5px;
+    }
+    .bridge-bar-dot {
+      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+      background: #555; transition: background 0.3s;
+    }
+    .bridge-bar-dot.on  { background: var(--success); box-shadow: 0 0 5px rgba(92,219,92,0.4); }
+    .bridge-bar-dot.off { background: var(--danger); }
+    .bridge-bar-dot.chk { background: var(--warn); animation: pulse 0.8s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .bridge-bar-text { flex: 1; }
+    .bridge-bar-text.on  { color: var(--success); }
+    .bridge-bar-text.off { color: var(--danger); }
+    .btn-bar-restart {
+      padding: 3px 8px; font-size: 10px; font-family: var(--font);
+      background: var(--bg-input); color: var(--text-dim);
+      border: 1px solid var(--border); border-radius: 4px;
+      cursor: pointer; white-space: nowrap;
+    }
+    .btn-bar-restart:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .btn-bar-restart:disabled { opacity: 0.4; cursor: default; }
+
+    /* ---- Workflow grid ---- */
+    .wf-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .wf-card {
+      width: calc(50% - 3px);
+      padding: 14px 8px;
+      text-align: center;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .wf-card:hover { border-color: var(--accent); }
+    .wf-card.selected { border-color: var(--accent); background: rgba(74,158,255,0.1); }
+    .wf-card.disabled { opacity: 0.4; cursor: default; }
+    .wf-card.disabled:hover { border-color: var(--border); }
+    .wf-card .wf-icon { font-size: 22px; margin-bottom: 4px; }
+    .wf-card .wf-name { font-size: 11px; color: var(--text); }
+    .wf-card .wf-tag {
+      display: inline-block; font-size: 9px; padding: 1px 5px;
+      border-radius: 3px; margin-top: 3px;
+    }
+    .wf-tag.soon { background: #3a2a00; color: var(--warn); }
+
+    /* ---- Workflow inputs ---- */
+    #workflowInputs {
+      padding: 8px 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 8px;
+    }
+    #workflowInputs:empty { display: none; }
+
+    label {
+      display: block;
+      font-size: 10.5px;
+      color: var(--text-dim);
+      margin-bottom: 3px;
+      margin-top: 6px;
+    }
+    label:first-child { margin-top: 0; }
+
     input, textarea {
       width: 100%;
-      box-sizing: border-box;
-      padding: 5px 6px;
-      background: #262626;
-      color: #e0e0e0;
-      border: 1px solid #444;
-      border-radius: 4px;
-      font-family: inherit;
-      font-size: 12px;
+      padding: 6px 8px;
+      background: var(--bg-input);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-family: var(--font);
+      font-size: 11.5px;
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+      box-shadow: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
-    textarea { resize: vertical; min-height: 48px; }
-    #runBtn {
+    input:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-glow);
+      outline: none;
+    }
+    input:focus-visible, textarea:focus-visible {
+      outline: none;
+    }
+    textarea { resize: vertical; min-height: 52px; line-height: 1.4; }
+    input[type="password"] { -webkit-text-security: disc; }
+
+    /* ---- Run button ---- */
+    .btn-run {
       width: 100%;
       padding: 9px;
-      margin-top: 2px;
-      background: #2680eb;
+      background: linear-gradient(135deg, var(--accent), #3b82f6);
       color: #fff;
       border: none;
-      border-radius: 4px;
+      border-radius: var(--radius);
       font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.2s, opacity 0.2s;
     }
-    #runBtn:disabled { background: #555; cursor: default; }
+    .btn-run:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent-hover), #60a5fa); }
+    .btn-run:disabled {
+      background: linear-gradient(135deg, #3b6fd4, #2d5fc0);
+      cursor: default;
+      opacity: 0.9;
+    }
+    .btn-run .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---- Status ---- */
     #status {
-      margin-top: 12px;
-      padding: 8px;
+      padding: 6px 10px;
       min-height: 16px;
-      background: #1e1e1e;
-      border-radius: 4px;
       font-size: 11px;
+      margin-top: 6px;
+      border-radius: var(--radius);
+      transition: color 0.3s;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    #status.err { color: #ff6b6b; }
-    #status.ok  { color: #7ed957; }
-    .hint { font-size: 10px; opacity: 0.55; margin-top: 6px; line-height: 1.5; }
+    #status.err { color: var(--danger); }
+    #status.ok  { color: var(--success); }
+
+    /* ---- Settings ---- */
+    .setting-row { margin-bottom: 10px; }
+    .setting-label {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-bottom: 3px;
+    }
+    .input-row {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .input-row input, .input-row textarea { flex: 1; }
+
+    /* ---- Segmented control (two-state selector) ---- */
+    .segmented {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      font-size: 11px;
+    }
+    .segmented button {
+      padding: 5px 14px;
+      background: var(--bg-input);
+      color: var(--text-dim);
+      border: none;
+      font-family: var(--font);
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .segmented button:not(:last-child) {
+      border-right: 1px solid var(--border);
+    }
+    .segmented button.active {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    /* ---- Buttons ---- */
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 10.5px;
+      font-family: var(--font);
+      background: var(--bg-input);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .btn-sm:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .btn-sm:disabled { opacity: 0.4; cursor: default; }
+
+    .balance-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      font-weight: 600;
+    }
+    .balance-badge.ok { background: rgba(22,163,74,0.15); color: var(--success); }
+    .balance-badge.err { background: rgba(220,38,38,0.12); color: var(--danger); }
+
+    .link-sm {
+      font-size: 10px; color: var(--accent); text-decoration: none;
+    }
+    .link-sm:hover { text-decoration: underline; }
+
+    /* ---- Range slider ---- */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 8px;
+      background: linear-gradient(to right, var(--accent) 0%, var(--accent) var(--pct, 10%), var(--border) var(--pct, 10%));
+      border-radius: 4px;
+      outline: none;
+      border: none;
+      padding: 0;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px; height: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      cursor: pointer;
+      border: 2px solid #fff;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+    }
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 2px 0;
+    }
+    .range-row input[type="range"] { flex: 1; }
+    .range-val {
+      font-size: 12px; font-weight: 700;
+      min-width: 40px; text-align: right;
+      color: var(--accent);
+      background: var(--bg-input);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .section-title {
+      font-size: 11px; font-weight: 600; color: var(--text-dim);
+      margin: 12px 0 6px; padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+    .section-title:first-child { border-top: none; margin-top: 0; padding-top: 0; }
   </style>
 </head>
 <body>
-  <div class="row">
-    <label for="prompt">提示词(positive,留空则用工作流内置)</label>
-    <textarea id="prompt" placeholder="例如:干净空旷的背景"></textarea>
+
+  <!-- ================================================================= -->
+  <!-- Page 1: 主页                                                       -->
+  <!-- ================================================================= -->
+  <div id="page1" class="page active">
+    <div class="home-header">
+      <div class="home-logo">ComfyPS</div>
+      <div class="home-sub">Photoshop AI 工作流面板</div>
+    </div>
+    <div class="home-btns">
+      <div class="home-btn" id="btnGoWorkflows">
+        <span class="btn-icon">⚡</span>
+        <div>
+          <div class="btn-title">工作流</div>
+          <div class="btn-desc">选择并运行 AI 图像处理工作流</div>
+        </div>
+      </div>
+      <div class="home-btn" id="btnGoSettings">
+        <span class="btn-icon">⚙</span>
+        <div>
+          <div class="btn-title">设置</div>
+          <div class="btn-desc">配置本地桥、后端连接与 API Key</div>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <div class="row">
-    <label for="bridgeUrl">本地桥地址</label>
-    <input id="bridgeUrl" type="text" value="http://127.0.0.1:8765" />
+  <!-- ================================================================= -->
+  <!-- Page 2: 工作流                                                     -->
+  <!-- ================================================================= -->
+  <div id="page2" class="page">
+    <div class="topbar">
+      <button class="btn-back" id="btnBackHome1" title="返回主页">←</button>
+      <span class="topbar-title">工作流</span>
+      <span class="topbar-spacer"></span>
+      <span id="bridgeDot" class="bridge-bar-dot chk" title="桥连接状态"></span>
+    </div>
+
+    <!-- 桥状态条 -->
+    <div class="bridge-bar">
+      <span id="bridgeBarDot" class="bridge-bar-dot chk"></span>
+      <span id="bridgeBarText" class="bridge-bar-text">检测中…</span>
+      <button id="restartBtn" class="btn-bar-restart" disabled>⟳ 重启桥</button>
+    </div>
+
+    <!-- 工作流卡片网格 -->
+    <div id="workflowGrid" class="wf-grid"></div>
+
+    <!-- 使用说明 -->
+    <div id="workflowDesc" style="display:none;font-size:11px;color:var(--text-dim);margin-bottom:8px;line-height:1.5;"></div>
+
+    <!-- 工作流输入区 (动态生成) -->
+    <div id="workflowInputs"></div>
+
+    <!-- 运行按钮 -->
+    <button id="runBtn" class="btn-run" style="display:none;">
+      <span id="btnLabel">运行</span>
+      <span id="btnSpinner" class="spinner" hidden></span>
+    </button>
+
+    <!-- 进度条 -->
+    <div id="progressBar" style="display:none;margin-top:6px;">
+      <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+        <div id="progressFill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.5s;"></div>
+      </div>
+      <div id="progressMsg" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
+    </div>
+
+    <!-- 状态 -->
+    <div id="status"></div>
   </div>
 
-  <button id="runBtn">运行(选区 inpaint)</button>
+  <!-- ================================================================= -->
+  <!-- Page 3: 设置                                                       -->
+  <!-- ================================================================= -->
+  <div id="page3" class="page">
+    <div class="topbar">
+      <button class="btn-back" id="btnBackHome2" title="返回主页">←</button>
+      <span class="topbar-title">设置</span>
+    </div>
 
-  <div id="status">就绪:画一个选区,点运行</div>
+    <!-- 本地桥地址 -->
+    <div class="section-title">本地桥地址</div>
+    <div class="setting-row">
+      <input id="settingBridgeUrl" type="text" value="http://127.0.0.1:8765" />
+    </div>
 
-  <div class="hint">
-    发送「当前画面 + 选区蒙版」到本地桥 → RunningHub 工作流处理 → 结果贴成新图层。
+    <!-- 主题 -->
+    <div class="section-title">外观</div>
+    <div class="setting-row">
+      <div class="segmented" id="segTheme">
+        <button data-value="dark" class="active">深色</button>
+        <button data-value="light">浅色</button>
+      </div>
+    </div>
+
+    <!-- 后端选择 -->
+    <div class="section-title">后端</div>
+    <div class="setting-row">
+      <div class="segmented" id="segBackend">
+        <button data-value="runninghub" class="active">RunningHub</button>
+        <button data-value="comfyui">本地 ComfyUI</button>
+      </div>
+    </div>
+
+    <!-- RunningHub 专属设置 -->
+    <div id="rhSettings">
+      <div class="setting-row">
+        <div class="setting-label">RunningHub 站点</div>
+        <div class="segmented" id="segSite">
+          <button data-value="ai" class="active">ai</button>
+          <button data-value="cn">cn</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-label">API Key</div>
+        <div class="input-row">
+          <input id="settingApiKey" type="password" placeholder="rh-..." />
+          <button id="btnTestKey" class="btn-sm">测试</button>
+        </div>
+        <span id="balanceDisplay" style="display:none;margin-top:4px;"></span>
+      </div>
+
+      <div class="setting-row">
+        <a id="linkGetKey" class="link-sm" href="https://www.runninghub.ai/enterprise-api/consumerApi" target="_blank">
+          如何获取 API Key? →
+        </a>
+      </div>
+    </div>
+
+    <!-- 本地 ComfyUI 专属设置 -->
+    <div id="comfyuiSettings" style="display:none;">
+      <div class="setting-row">
+        <div class="setting-label">ComfyUI 地址</div>
+        <input id="settingComfyuiUrl" type="text" value="http://127.0.0.1:8188" />
+      </div>
+    </div>
   </div>
 
   <script src="main.js"></script>
