@@ -12,5 +12,9 @@ venv/
 /tmp/
 comfyps_*/
 
+# 截图 & Playwright
+*.png
+.playwright-mcp/
+
 # 系统
 .DS_Store
