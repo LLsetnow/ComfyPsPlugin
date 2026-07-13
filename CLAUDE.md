@@ -61,6 +61,13 @@ dev/            开发服务器
 workflows/      ComfyUI 工作流 JSON (API 格式)
 ```
 
+## CI
+
+PR 到 `main` 时自动运行 `ci.yml`：
+- **Python 语法检查** — `py_compile` bridge.py + dev_server.py
+- **Workflow JSON 校验** — 确保工作流文件是合法 JSON
+- **UXP ES5 检测** — 扫描 main.js 禁止 `const`/`let`/`=>`/`.find()`/`Object.assign`/`classList.toggle(bool)`
+
 ## 开发规则
 
 ### UXP 兼容性 (CRITICAL)

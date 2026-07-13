@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  python-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 语法检查 bridge.py
+        run: python -m py_compile bridge/bridge.py
+      - name: 语法检查 dev_server.py
+        run: python -m py_compile dev/dev_server.py
+
+  workflow-json-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 验证 workflow JSON
+        run: |
+          for f in workflows/*.json; do
+            python3 -m json.tool "$f" > /dev/null && echo "✓ $f" || { echo "✗ $f"; exit 1; }
+          done
+
+  uxp-es5-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 禁止 ES6 语法 (UXP 不兼容)
+        run: |
+          FILE=plugin/main.js
+          echo ":: Checking $FILE for ES6 features..."
+          ISSUES=0
+
+          check() {
+            if grep -n "$1" "$FILE"; then
+              echo "::error file=$FILE,title=ES6检测::$2"
+              ISSUES=1
+            fi
+          }
+
+          check '=>'                         '箭头函数 (=>) 不兼容 UXP，请用 function() {}'
+          check '\bconst\b'                  'const 不兼容 UXP，请用 var'
+          check '\blet\b'                    'let 不兼容 UXP，请用 var'
+          check '\.find\('                   'Array.find() 不兼容 UXP，请用 for 循环'
+          check 'Object\.assign\('           'Object.assign() 不兼容 UXP，请手动拷贝'
+          check 'classList\.toggle\([^,]+,[^)]+\)' 'classList.toggle(bool) 不兼容 UXP，请用 add/remove'
+
+          if [ "$ISSUES" -eq 1 ]; then
+            echo ""
+            echo "请将以上 ES6 语法改为 ES5 兼容写法。"
+            exit 1
+          fi
+          echo "✓ 通过"
