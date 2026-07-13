@@ -41,7 +41,7 @@ workflows/   打包的工作流(inpaint_api.json,API 格式)
 ### 2. 装 RH_CLI + 桥依赖
 ```bash
 python -m venv .venv && source .venv/bin/activate     # 或复用现有环境
-pip install ~/Documents/github/RH_CLI                  # 提供 rh 与 rh_cli 库
+pip install git+https://github.com/LLsetnow/RH_CLI.git   # 提供 rh 与 rh_cli 库
 pip install -r bridge/requirements.txt                 # aiohttp
 ```
 

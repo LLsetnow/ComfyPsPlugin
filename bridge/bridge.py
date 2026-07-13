@@ -26,14 +26,13 @@ from aiohttp import web
 
 BRIDGE_DIR = Path(__file__).resolve().parent
 
-# 允许在未 pip install 的情况下直接从源码 import rh_cli(开发便利)
-_RH_SRC = Path.home() / "Documents" / "github" / "RH_CLI" / "src"
 try:
     import rh_cli  # noqa: F401
 except ImportError:
-    if _RH_SRC.exists():
-        sys.path.insert(0, str(_RH_SRC))
-    import rh_cli  # noqa: F401
+    raise SystemExit(
+        "❌ 未安装 rh_cli。请运行:\n"
+        "   pip install git+https://github.com/LLsetnow/RH_CLI.git"
+    )
 
 from rh_cli.config import require_api_key
 from rh_cli.errors import RhCliError
