@@ -1085,7 +1085,10 @@ function selectWorkflow(wfId) {
   }
 
   runBtn.style.display = "flex";
-  runBtn.querySelector("#btnLabel").textContent = "运行 — " + wf.name;
+  var runLabel = runBtn.querySelector("#btnLabel");
+  if (runLabel) {
+    runLabel.textContent = runBtn.disabled ? "生成中" : "运行 — " + wf.name;
+  }
 }
 
 function getWorkflowInputs() {
