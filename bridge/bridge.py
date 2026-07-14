@@ -198,7 +198,9 @@ class CodexAppServerClient:
         elif method == "error":
             self._turn_error = params.get("message") or "Codex 处理失败"
 
-    async def generate(self, prompt: str, image_paths: list[Path]) -> bytes:
+    async def generate(
+        self, prompt: str, image_paths: list[Path], mask_path: Path | None = None
+    ) -> bytes:
         await self.start()
         self._progress(15, "已连接本地 Codex")
 
@@ -226,6 +228,8 @@ class CodexAppServerClient:
         inputs = [{"type": "text", "text": prompt}]
         for image_path in image_paths:
             inputs.append({"type": "localImage", "path": str(image_path)})
+        if mask_path:
+            inputs.append({"type": "localImage", "path": str(mask_path)})
 
         self._progress(30, "正在提交给 Codex…")
         await self.request(
@@ -341,16 +345,23 @@ def write_codex_input_image(b64: str, path: Path):
 
 
 def build_codex_image_prompt(
-    mode: str, prompt: str, aspect_ratio: str, resolution: str, image_count: int = 0
+    mode: str,
+    prompt: str,
+    aspect_ratio: str,
+    resolution: str,
+    image_count: int = 0,
+    has_mask: bool = False,
 ) -> str:
     """把 UI 选项转为稳定、只生成一张图的 Codex 提示词。"""
     mode_text = {
         "generate": "文生图：不要参考任何现有图像。",
         "reference": "参考图生成：后续附带的图片是参考图，综合保留其主体、风格或构图中与提示词一致的元素。",
         "edit": (
-            "图像编辑：第 1 张附图是当前选区的编辑目标。按提示词修改它，并尽量保留未要求改变的内容。"
-            + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但输出必须基于第 1 张的选区构图和比例。"
+            "图像编辑：第 1 张附图是当前完整文档，按提示词修改选区中的内容，并尽量保留未要求改变的内容。"
+            + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但不要改变第 1 张图的画布构图。"
                if image_count > 1 else "")
+            + ("最后一张附图是选区蒙版：透明区域是允许编辑的区域，白色不透明区域必须保持不变。蒙版只用于定位，不要把它当作视觉素材。"
+               if has_mask else "")
         ),
     }[mode]
     size_text = ""
@@ -372,11 +383,14 @@ def build_openai_image_prompt(mode: str, prompt: str, image_count: int) -> str:
     """为 GPT Image API 明确多图编辑时每张图的职责。"""
     if mode != "edit":
         return prompt.strip()
-    input_roles = "第 1 张输入图是当前选区的编辑目标。"
+    input_roles = (
+        "第 1 张输入图是当前完整文档。请求中的 mask 指定实际编辑区域；"
+        "请输出完整画布，并保持 mask 之外的内容不变。"
+    )
     if image_count > 1:
         input_roles += (
             "第 2 张输入图仅作参考图；参考其风格、主体或细节，"
-            "但输出必须基于第 1 张的选区构图和比例。"
+            "但输出必须基于第 1 张的完整画布构图和比例。"
         )
     return input_roles + "\n用户编辑要求：\n" + prompt.strip()
 
@@ -411,6 +425,7 @@ def parse_gpt_image_request(body: dict):
     aspect_ratio = validate_gpt_aspect_ratio(body.get("aspectRatio") or "1:1")
     resolution = (body.get("resolution") or "").strip()
     images = body.get("images") or []
+    mask = body.get("mask") or ""
 
     if mode not in ("generate", "reference", "edit"):
         raise GptImageRequestError(
@@ -427,10 +442,16 @@ def parse_gpt_image_request(body: dict):
         raise GptImageRequestError("INVALID_IMAGES", "参考图模式需要选择 1 或 2 个图层")
     if mode == "edit" and not 1 <= len(images) <= 2:
         raise GptImageRequestError(
-            "INVALID_IMAGES", "图像编辑模式需要一个选区裁剪图，可额外添加一张参考图")
+            "INVALID_IMAGES", "图像编辑模式需要完整文档图，可额外添加一张参考图")
+    if mode != "edit" and mask:
+        raise GptImageRequestError("INVALID_MASK", "只有图像编辑模式可以使用选区蒙版")
+    if mode == "edit" and not isinstance(mask, str):
+        raise GptImageRequestError("INVALID_MASK", "图像编辑模式需要有效的选区蒙版")
+    if mode == "edit" and not mask.strip():
+        raise GptImageRequestError("MISSING_MASK", "图像编辑模式需要选区蒙版")
     if any(not isinstance(image, str) for image in images):
         raise GptImageRequestError("INVALID_IMAGES", "参考图格式不正确")
-    return mode, prompt, aspect_ratio, resolution, images
+    return mode, prompt, aspect_ratio, resolution, images, mask
 
 
 def resolve_openai_image_size(aspect_ratio: str, resolution: str) -> str:
@@ -466,6 +487,7 @@ async def run_openai_gpt_image(
     aspect_ratio: str,
     resolution: str,
     image_paths: list[Path],
+    mask_path: Path | None = None,
 ) -> bytes:
     """调用 OpenAI gpt-image-2，返回 PNG 二进制结果。"""
     if not api_key or not api_key.strip():
@@ -502,6 +524,15 @@ async def run_openai_gpt_image(
                         "image",
                         image_file,
                         filename=image_path.name,
+                        content_type="image/png",
+                    )
+                if mask_path:
+                    mask_file = mask_path.open("rb")
+                    opened_files.append(mask_file)
+                    form.add_field(
+                        "mask",
+                        mask_file,
+                        filename=mask_path.name,
                         content_type="image/png",
                     )
                 async with session.post(
@@ -986,7 +1017,7 @@ async def handle_codex_status(request):
 async def handle_codex_image_body(body):
     """通过已登录的本地 Codex 生成、参考生成或编辑一张图片。"""
     try:
-        mode, prompt, aspect_ratio, resolution, images = parse_gpt_image_request(body)
+        mode, prompt, aspect_ratio, resolution, images, mask = parse_gpt_image_request(body)
     except GptImageRequestError as e:
         return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
 
@@ -1006,10 +1037,15 @@ async def handle_codex_image_body(body):
             write_codex_input_image(image, image_path)
             image_paths.append(image_path)
 
+        mask_path = None
+        if mask:
+            mask_path = tmp / "selection_mask.png"
+            write_codex_input_image(mask, mask_path)
+
         codex_prompt = build_codex_image_prompt(
-            mode, prompt, aspect_ratio, resolution, len(image_paths))
+            mode, prompt, aspect_ratio, resolution, len(image_paths), bool(mask_path))
         result_bytes = await asyncio.wait_for(
-            client.generate(codex_prompt, image_paths),
+            client.generate(codex_prompt, image_paths, mask_path),
             timeout=CODEX_IMAGE_TIMEOUT_SECONDS + 15,
         )
         _task_progress[task_id] = {"percent": 100, "message": "完成"}
@@ -1063,7 +1099,7 @@ async def handle_gpt_image(request):
             {"error": "INVALID_PROVIDER", "message": "provider 必须是 codex 或 api-key"}, status=400))
 
     try:
-        mode, prompt, aspect_ratio, resolution, images = parse_gpt_image_request(body)
+        mode, prompt, aspect_ratio, resolution, images, mask = parse_gpt_image_request(body)
     except GptImageRequestError as e:
         return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
 
@@ -1086,9 +1122,17 @@ async def handle_gpt_image(request):
                 raise GptImageRequestError("INVALID_IMAGES", str(e)) from e
             image_paths.append(image_path)
 
+        mask_path = None
+        if mask:
+            mask_path = tmp / "selection_mask.png"
+            try:
+                write_codex_input_image(mask, mask_path)
+            except CodexImageError as e:
+                raise GptImageRequestError("INVALID_MASK", str(e)) from e
+
         _task_progress[task_id] = {"percent": 35, "message": "正在调用 OpenAI GPT Image…"}
         result_bytes = await run_openai_gpt_image(
-            api_key, mode, prompt, aspect_ratio, resolution, image_paths
+            api_key, mode, prompt, aspect_ratio, resolution, image_paths, mask_path
         )
         _task_progress[task_id] = {"percent": 100, "message": "完成"}
         response = web.Response(body=result_bytes, content_type="image/png")
