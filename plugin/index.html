@@ -240,6 +240,11 @@
     }
 
     /* ---- Run button ---- */
+    .workflow-run-actions {
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+    }
     .btn-run {
       width: 100%;
       padding: 9px;
@@ -256,11 +261,34 @@
       gap: 6px;
       transition: background 0.2s, opacity 0.2s;
     }
+    .workflow-run-actions .btn-run {
+      flex: 1;
+      width: auto;
+    }
     .btn-run:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent-hover), #60a5fa); }
     .btn-run:disabled {
       background: linear-gradient(135deg, #3b6fd4, #2d5fc0);
       cursor: default;
       opacity: 0.9;
+    }
+    .btn-stop {
+      min-width: 78px;
+      padding: 9px 10px;
+      background: var(--bg-card);
+      color: #f87171;
+      border: 1px solid #ef4444;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    .btn-stop:hover:not(:disabled) { background: rgba(239,68,68,0.14); }
+    .btn-stop:disabled {
+      color: var(--text-dim);
+      border-color: var(--border);
+      cursor: default;
+      opacity: 0.6;
     }
     .btn-run .spinner {
       width: 14px; height: 14px;
@@ -459,10 +487,13 @@
     <div id="workflowInputs"></div>
 
     <!-- 运行按钮 -->
-    <button id="runBtn" class="btn-run" style="display:none;">
-      <span id="btnLabel">运行</span>
-      <span id="btnSpinner" class="spinner" hidden></span>
-    </button>
+    <div id="runActions" class="workflow-run-actions" style="display:none;">
+      <button id="runBtn" class="btn-run">
+        <span id="btnLabel">运行</span>
+        <span id="btnSpinner" class="spinner" hidden></span>
+      </button>
+      <button id="stopGptBtn" class="btn-stop" style="display:none;" disabled>停止生成</button>
+    </div>
 
     <!-- 进度条 -->
     <div id="progressBar" style="display:none;margin-top:6px;">

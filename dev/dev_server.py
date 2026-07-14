@@ -34,6 +34,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 WATCH_DIRS = [PLUGIN_DIR, STATIC_DIR]
 WATCH_EXTENSIONS = {".html", ".js", ".css", ".json", ".png"}
 POLL_INTERVAL = 0.5  # 秒
+_mock_gpt_image_tasks: dict[str, asyncio.Task] = {}
+_mock_pending_gpt_image_cancellations: set[str] = set()
 
 
 # =============================================================================
@@ -411,13 +413,54 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
             {"error": "MISSING_MASK", "message": "图像编辑模式需要选区蒙版"}, status=400
         )
 
+    task_id = str(body.get("taskId") or "").strip()
+    if not task_id:
+        task_id = "mock_gpt_" + str(int(time.time() * 1000)) + "_" + str(random.randint(1000, 9999))
+    task = asyncio.current_task()
+    if task:
+        _mock_gpt_image_tasks[task_id] = task
+        if task_id in _mock_pending_gpt_image_cancellations:
+            _mock_pending_gpt_image_cancellations.discard(task_id)
+            task.cancel()
+
     print(
         f"  [mock /gpt-image] provider={provider}  mode={mode}  refs={len(images)}  "
         f"mask={'✓' if body.get('mask') else '—'}  "
         f"prompt={'✓' if prompt else '—'}"
     )
-    await asyncio.sleep(1.2)
-    return web.Response(body=DEMO_PNG, content_type="image/png")
+    try:
+        await asyncio.sleep(1.2)
+        response = web.Response(body=DEMO_PNG, content_type="image/png")
+        response.headers["X-Task-Id"] = task_id
+        return response
+    except asyncio.CancelledError:
+        return web.json_response(
+            {"error": "TASK_CANCELLED", "message": "GPT Image 任务已停止"}, status=499
+        )
+    finally:
+        if _mock_gpt_image_tasks.get(task_id) is task:
+            _mock_gpt_image_tasks.pop(task_id, None)
+        _mock_pending_gpt_image_cancellations.discard(task_id)
+
+
+async def handle_gpt_image_cancel(request: web.Request) -> web.Response:
+    """Mock GPT Image 取消接口，与真实桥的协议保持一致。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+
+    task_id = str(body.get("taskId") or "").strip()
+    if not task_id:
+        return web.json_response({"ok": False, "message": "taskId 无效"}, status=400)
+
+    task = _mock_gpt_image_tasks.get(task_id)
+    if task and not task.done():
+        task.cancel()
+        return web.json_response({"ok": True, "taskId": task_id, "message": "正在停止 GPT Image 任务"})
+
+    _mock_pending_gpt_image_cancellations.add(task_id)
+    return web.json_response({"ok": True, "taskId": task_id, "message": "已停止待启动的 GPT Image 任务"})
 
 
 async def handle_gpt_image_status(request: web.Request) -> web.Response:
@@ -525,6 +568,7 @@ def main():
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)
+    app.router.add_post("/gpt-image/cancel", handle_gpt_image_cancel)
     app.router.add_post("/gpt-image/status", handle_gpt_image_status)
 
     # Demo 图

@@ -514,7 +514,7 @@ async function exportActiveLayerSelectionPNG() {
 // =========================================================================
 // 导出当前选区为蒙版 PNG (base64, 默认白=选中；GPT Image 为透明=编辑区)
 // =========================================================================
-async function exportSelectionMaskPNG(forGptImage) {
+async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
   var doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
 
@@ -668,7 +668,9 @@ async function exportSelectionMaskPNG(forGptImage) {
         }
 
         // After closing the duplicate, the original document is active again.
-        await removeSourceChannel();
+        // Keep the original alpha-channel snapshot until placement when the
+        // caller needs to make a result-layer mask from this exact selection.
+        if (!keepSelectionSnapshot) await removeSourceChannel();
       }
     },
     { commandName: "导出选区蒙版" }
@@ -676,7 +678,11 @@ async function exportSelectionMaskPNG(forGptImage) {
 
   var buf = await file.read({ format: formats.binary });
   if (!buf || buf.byteLength === 0) throw new Error("导出蒙版失败");
-  return bytesToBase64(buf);
+  var mask = bytesToBase64(buf);
+  if (keepSelectionSnapshot) {
+    return { mask: mask, selectionChannelName: channelName };
+  }
+  return mask;
 }
 
 // =========================================================================
@@ -702,6 +708,7 @@ function canStartWorkflow(workflow, settings) {
 
 function refreshRunButton() {
   var runBtn = $("runBtn");
+  var stopBtn = $("stopGptBtn");
   var label = $("btnLabel");
   var spinner = $("btnSpinner");
   var progressBar = $("progressBar");
@@ -718,6 +725,11 @@ function refreshRunButton() {
   }
   if (spinner) spinner.hidden = !activeRun;
   if (progressBar) progressBar.style.display = activeRun ? "block" : "none";
+  if (stopBtn) {
+    stopBtn.style.display = workflow.gptImage ? "block" : "none";
+    stopBtn.disabled = !activeRun || !!activeRun.cancelRequested;
+    stopBtn.textContent = activeRun && activeRun.cancelRequested ? "正在停止…" : "停止生成";
+  }
 }
 
 // =========================================================================
@@ -801,13 +813,53 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 // =========================================================================
 // 调用本地 GPT Image 桥
 // =========================================================================
-async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images, maskB64) {
+function makeGptTaskId() {
+  return "gpt_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+}
+
+function makeGptTaskCancelledError() {
+  var error = new Error("GPT Image 任务已停止");
+  error.comfypsGptTaskCancelled = true;
+  return error;
+}
+
+function isGptTaskCancelled(error) {
+  return !!(error && error.comfypsGptTaskCancelled);
+}
+
+function throwIfGptTaskCancelled(runState) {
+  if (runState && runState.cancelRequested) throw makeGptTaskCancelledError();
+}
+
+function startGptProgressPolling(bridgeUrl, taskId, progressBar, progressFill, progressMsg) {
+  if (!taskId || !progressBar || !progressFill || !progressMsg) return 0;
+  var timer = setInterval(async function () {
+    try {
+      var pr = await fetch(bridgeUrl.replace(/\/+$/, "") + "/progress?taskId=" + encodeURIComponent(taskId));
+      if (pr.ok) {
+        var data = await pr.json();
+        progressFill.style.width = (data.percent || 0) + "%";
+        progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
+        if (data.percent >= 100 || data.message === "已停止") {
+          clearInterval(timer);
+        }
+      }
+    } catch (_) {}
+  }, 1000);
+  return timer;
+}
+
+async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images, maskB64, runState) {
   var progressFill = $("progressFill");
   var progressMsg = $("progressMsg");
   var progressBar = $("progressBar");
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/gpt-image";
+  throwIfGptTaskCancelled(runState);
+  var taskId = runState && runState.taskId ? runState.taskId : makeGptTaskId();
+  if (runState) runState.taskId = taskId;
   var body = {
+    taskId: taskId,
     provider: provider || "codex",
     mode: mode,
     prompt: prompt || "",
@@ -820,46 +872,81 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
 
   var resp;
   try {
-    resp = await fetch(url, {
+    var fetchOptions = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    };
+    if (runState && runState.abortController) fetchOptions.signal = runState.abortController.signal;
+    if (runState) runState.bridgeRequestStarted = true;
+    var request = fetch(url, fetchOptions);
+    pollTimer = startGptProgressPolling(bridgeUrl, taskId, progressBar, progressFill, progressMsg);
+    resp = await request;
   } catch (e) {
+    if ((runState && runState.cancelRequested) || (e && e.name === "AbortError")) {
+      throw makeGptTaskCancelledError();
+    }
     throw new Error("连不上本地 GPT Image 桥(" + url + "):" + (e && e.message ? e.message : e));
   }
-  if (!resp.ok) {
-    var detail = "";
-    try {
-      var j = JSON.parse(await resp.text());
-      detail = j.message || j.error || JSON.stringify(j);
-    } catch (_) {
-      detail = "HTTP " + resp.status;
-    }
-    throw new Error("GPT Image 生成失败:" + detail);
-  }
-
-  var taskId = resp.headers.get("X-Task-Id");
-  if (taskId && progressBar && progressFill && progressMsg) {
-    pollTimer = setInterval(async function () {
-      try {
-        var pr = await fetch(bridgeUrl.replace(/\/+$/, "") + "/progress?taskId=" + taskId);
-        if (pr.ok) {
-          var data = await pr.json();
-          progressFill.style.width = (data.percent || 0) + "%";
-          progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
-          if (data.percent >= 100) {
-            clearInterval(pollTimer);
-          }
-        }
-      } catch (_) {}
-    }, 2000);
-  }
-
   try {
+    if (!resp.ok) {
+      if (runState && runState.cancelRequested) throw makeGptTaskCancelledError();
+      var detail = "";
+      try {
+        var j = JSON.parse(await resp.text());
+        detail = j.message || j.error || JSON.stringify(j);
+      } catch (_) {
+        detail = "HTTP " + resp.status;
+      }
+      throw new Error("GPT Image 生成失败:" + detail);
+    }
+    throwIfGptTaskCancelled(runState);
     return await resp.arrayBuffer();
+  } catch (e) {
+    if ((runState && runState.cancelRequested) || (e && e.name === "AbortError")) {
+      throw makeGptTaskCancelledError();
+    }
+    throw e;
   } finally {
     if (pollTimer) clearInterval(pollTimer);
+  }
+}
+
+async function onStopGptClick() {
+  var runState = _activeRuns.gptImage;
+  if (!runState || runState.cancelRequested) return;
+
+  runState.cancelRequested = true;
+  refreshRunButton();
+  setStatus("正在停止 GPT Image 任务…", "");
+
+  var cancelRequest = null;
+  if (runState.bridgeRequestStarted && runState.taskId) {
+    var url = loadSettings().bridgeUrl.replace(/\/+$/, "") + "/gpt-image/cancel";
+    try {
+      cancelRequest = fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: runState.taskId })
+      });
+    } catch (e) {
+      console.warn("无法发送 GPT Image 停止请求", e);
+    }
+  }
+
+  if (runState.abortController) {
+    try { runState.abortController.abort(); } catch (_) {}
+  }
+
+  if (cancelRequest) {
+    try {
+      var response = await cancelRequest;
+      if (!response.ok && response.status !== 404) {
+        console.warn("GPT Image 停止请求未成功", response.status);
+      }
+    } catch (e) {
+      console.warn("GPT Image 停止请求失败", e);
+    }
   }
 }
 
@@ -869,15 +956,31 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
 var _resultFileSequence = 0;
 var _placeImageQueue = Promise.resolve();
 
-function placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection) {
+async function removeSelectionSnapshotChannel(channelName) {
+  if (!channelName) return;
+  try {
+    await executeAsModal(
+      async function () {
+        await batchPlay([{
+          _obj: "delete",
+          _target: [{ _ref: "channel", _name: channelName }],
+          _options: { dialogOptions: "silent" },
+        }], {});
+      },
+      { commandName: "清理 GPT Image 选区快照" }
+    );
+  } catch (_) {}
+}
+
+function placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName) {
   var queuedPlacement = _placeImageQueue.then(function () {
-    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection);
+    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName);
   });
   _placeImageQueue = queuedPlacement.catch(function () {});
   return queuedPlacement;
 }
 
-async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection) {
+async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName) {
   var folder = await localFileSystem.getDataFolder();
   _resultFileSequence++;
   var file = await folder.createFile(
@@ -941,13 +1044,33 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
             }], {});
           }
         }
-        await batchPlay([{
-          _obj: "make",
-          new: { _class: "channel" },
-          at: { _ref: "channel", _enum: "channel", _value: "mask" },
-          using: { _enum: "userMaskEnabled", _value: "revealSelection" },
-          _options: { dialogOptions: "dontDisplay" },
-        }], {});
+        try {
+          // Restore the selection captured at submission time. The user may
+          // have changed the active selection while a long GPT task ran.
+          if (selectionChannelName) {
+            await batchPlay([{
+              _obj: "set",
+              _target: [{ _ref: "channel", _property: "selection" }],
+              to: { _ref: "channel", _name: selectionChannelName },
+              _options: { dialogOptions: "silent" },
+            }], {});
+          }
+          await batchPlay([{
+            _obj: "make",
+            new: { _class: "channel" },
+            at: { _ref: "channel", _enum: "channel", _value: "mask" },
+            using: { _enum: "userMaskEnabled", _value: "revealSelection" },
+            _options: { dialogOptions: "silent" },
+          }], {});
+        } finally {
+          if (selectionChannelName) {
+            await batchPlay([{
+              _obj: "delete",
+              _target: [{ _ref: "channel", _name: selectionChannelName }],
+              _options: { dialogOptions: "silent" },
+            }], {}).catch(function () {});
+          }
+        }
       }
     },
     { commandName: "贴回结果图层" }
@@ -1257,7 +1380,8 @@ function selectWorkflow(wfId) {
   // 渲染输入控件
   var container = $("workflowInputs");
   var runBtn = $("runBtn");
-  if (!container || !runBtn) return;
+  var runActions = $("runActions");
+  if (!container || !runBtn || !runActions) return;
 
   container.innerHTML = "";
 
@@ -1334,6 +1458,7 @@ function selectWorkflow(wfId) {
     renderGptImageLayerInputs();
   }
 
+  runActions.style.display = "flex";
   runBtn.style.display = "flex";
   refreshRunButton();
 }
@@ -1388,7 +1513,17 @@ async function onRunClick() {
   if (wf.gptImage && gptMode !== "edit") {
     inputs.gptAspectRatio = normalizeGptAspectRatio(inputs.gptAspectRatio);
   }
-  _activeRuns[runSlot] = { workflowId: wf.id };
+  var runState = {
+    workflowId: wf.id,
+    cancelRequested: false,
+    taskId: wf.gptImage ? makeGptTaskId() : "",
+    bridgeRequestStarted: false,
+    abortController: null
+  };
+  if (wf.gptImage && typeof AbortController !== "undefined") {
+    try { runState.abortController = new AbortController(); } catch (_) {}
+  }
+  _activeRuns[runSlot] = runState;
   refreshRunButton();
   setStatus("");
 
@@ -1401,6 +1536,7 @@ async function onRunClick() {
     var resultBuffer;
     var placement = null;
     var gptMaskB64 = "";
+    var gptSelectionSnapshotChannel = "";
     var revealSelection = false;
     if (wf.gptImage) {
       var mode = gptMode;
@@ -1418,20 +1554,33 @@ async function onRunClick() {
         }
         for (var ri = 0; ri < referenceIds.length; ri++) {
           images.push(await exportLayerPNG(referenceIds[ri]));
+          throwIfGptTaskCancelled(runState);
         }
       } else if (mode === "edit") {
         // Send the active layer on the full document canvas (including its
         // transparent pixels) plus a same-size selection mask. The generated
         // result is revealed only inside the selection when placed back.
         images.push(await exportActiveLayerPNG());
-        gptMaskB64 = await exportSelectionMaskPNG(true);
+        throwIfGptTaskCancelled(runState);
+        // OpenAI /edits requires an alpha mask (transparent = editable),
+        // while local Codex receives the mask as an ordinary reference image
+        // and therefore needs an explicit black/white selection map.
+        var maskExport = await exportSelectionMaskPNG(
+          settings.gptImageAuth !== "codex", true
+        );
+        gptMaskB64 = maskExport.mask;
+        gptSelectionSnapshotChannel = maskExport.selectionChannelName;
+        throwIfGptTaskCancelled(runState);
         inputs.gptAspectRatio = getDocumentAspectRatio();
         revealSelection = true;
         if (inputs.gptEditUseReference) {
           if (!inputs.gptEditReferenceLayer) throw new Error("请选择编辑参考图层");
           images.push(await exportLayerPNG(inputs.gptEditReferenceLayer));
+          throwIfGptTaskCancelled(runState);
         }
       }
+
+      throwIfGptTaskCancelled(runState);
 
       resultBuffer = await callGptImage(
         settings.bridgeUrl,
@@ -1442,7 +1591,8 @@ async function onRunClick() {
         inputs.gptAspectRatio,
         inputs.gptResolution,
         images,
-        gptMaskB64
+        gptMaskB64,
+        runState
       );
     } else {
       var imageB64 = await exportActiveDocPNG();
@@ -1464,14 +1614,25 @@ async function onRunClick() {
       };
       layerName = "ComfyPSGPT - " + (gptModeNames[mode] || mode);
     }
-    await placeImageBytesAsLayer(resultBuffer, layerName, placement, revealSelection);
+    throwIfGptTaskCancelled(runState);
+    await placeImageBytesAsLayer(
+      resultBuffer, layerName, placement, revealSelection, gptSelectionSnapshotChannel
+    );
+    gptSelectionSnapshotChannel = "";
 
     setStatus("完成 ✓", "ok");
   } catch (e) {
-    setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
-    console.error(e);
+    if (isGptTaskCancelled(e)) {
+      setStatus("已停止 GPT Image 任务", "");
+    } else {
+      setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
+      console.error(e);
+    }
   } finally {
-    _activeRuns[runSlot] = null;
+    if (typeof gptSelectionSnapshotChannel !== "undefined" && gptSelectionSnapshotChannel) {
+      await removeSelectionSnapshotChannel(gptSelectionSnapshotChannel);
+    }
+    if (_activeRuns[runSlot] === runState) _activeRuns[runSlot] = null;
     refreshRunButton();
   }
 }
@@ -1704,6 +1865,8 @@ function saveAllSettings() {
   // ---- 运行按钮 ----
   var runBtn = $("runBtn");
   if (runBtn) runBtn.addEventListener("click", onRunClick);
+  var stopGptBtn = $("stopGptBtn");
+  if (stopGptBtn) stopGptBtn.addEventListener("click", onStopGptClick);
 
   // ---- 重启桥按钮 ----
   var restartBtn = $("restartBtn");

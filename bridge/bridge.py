@@ -24,6 +24,7 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
@@ -55,6 +56,11 @@ DEFAULT_RH_SITE = "ai"
 
 # 任务进度 (task_id → {percent, status})
 _task_progress: dict[str, dict] = {}
+# 正在执行的 GPT Image HTTP 任务。取消时会终止对应的协程，进而关闭
+# OpenAI 请求或停止本地 Codex app-server 进程。
+_gpt_image_tasks: dict[str, asyncio.Task] = {}
+_pending_gpt_image_cancellations: set[str] = set()
+_GPT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
 CODEX_IMAGE_MAX_INPUT_BYTES = 45 * 1024 * 1024
@@ -80,6 +86,33 @@ class GptImageRequestError(ValueError):
 
 class OpenAIImageError(RuntimeError):
     """OpenAI Image API 返回的可展示错误。"""
+
+
+def get_gpt_image_task_id(body: dict) -> str:
+    """复用面板生成的任务 ID；旧客户端未提供时仍兼容生成一个。"""
+    requested = str(body.get("taskId") or "").strip()
+    if _GPT_TASK_ID_RE.fullmatch(requested):
+        return requested
+    return "gpt_" + uuid.uuid4().hex[:20]
+
+
+def register_gpt_image_task(task_id: str):
+    """登记当前 aiohttp 请求，处理请求到达顺序造成的取消竞争。"""
+    task = asyncio.current_task()
+    if not task:
+        return
+    _gpt_image_tasks[task_id] = task
+    if task_id in _pending_gpt_image_cancellations:
+        _pending_gpt_image_cancellations.discard(task_id)
+        task.cancel()
+
+
+def unregister_gpt_image_task(task_id: str):
+    """只移除当前任务自己的登记，避免错误清理同名的新请求。"""
+    task = asyncio.current_task()
+    if _gpt_image_tasks.get(task_id) is task:
+        _gpt_image_tasks.pop(task_id, None)
+    _pending_gpt_image_cancellations.discard(task_id)
 
 
 class CodexAppServerClient:
@@ -357,11 +390,13 @@ def build_codex_image_prompt(
         "generate": "文生图：不要参考任何现有图像。",
         "reference": "参考图生成：后续附带的图片是参考图，综合保留其主体、风格或构图中与提示词一致的元素。",
         "edit": (
-            "图像编辑：第 1 张附图是当前活动图层的完整画布内容（透明区域表示图层没有内容），"
-            "按提示词修改选区中的内容，并尽量保留未要求改变的内容。"
+            "图像编辑：必须以第 1 张附图作为输出的基础，保留相同画布构图；不要生成与它无关的新图。"
+            "第 1 张附图是当前活动图层的完整画布内容（透明区域表示图层没有内容）。"
+            "只能按提示词修改允许编辑的选区，并保持选区外内容不变。"
             + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但不要改变第 1 张图的画布构图。"
                if image_count > 1 else "")
-            + ("最后一张附图是选区蒙版：透明区域是允许编辑的区域，白色不透明区域必须保持不变。蒙版只用于定位，不要把它当作视觉素材。"
+            + ("最后一张附图是黑白选区蒙版：纯白区域是唯一允许编辑的区域；纯黑区域必须保持第 1 张附图原样不变。"
+               "蒙版只用于定位，不要把它当作视觉素材。"
                if has_mask else "")
         ),
     }[mode]
@@ -1022,8 +1057,8 @@ async def handle_codex_image_body(body):
     except GptImageRequestError as e:
         return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
 
-    import uuid
-    task_id = str(uuid.uuid4())[:8]
+    task_id = get_gpt_image_task_id(body)
+    register_gpt_image_task(task_id)
     _task_progress[task_id] = {"percent": 5, "message": "准备 Codex 图像任务…"}
 
     def on_progress(percent: int, message: str):
@@ -1062,6 +1097,9 @@ async def handle_codex_image_body(body):
         _task_progress[task_id] = {"percent": 0, "message": "Codex 图像生成超时"}
         return cors(web.json_response(
             {"error": "CODEX_TIMEOUT", "message": "Codex 图像生成超时"}, status=504))
+    except asyncio.CancelledError:
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        raise
     except Exception as e:
         _task_progress[task_id] = {"percent": 0, "message": "Codex 图像任务失败"}
         return cors(web.json_response(
@@ -1072,6 +1110,7 @@ async def handle_codex_image_body(body):
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass
+        unregister_gpt_image_task(task_id)
 
 
 async def handle_codex_image(request):
@@ -1109,8 +1148,8 @@ async def handle_gpt_image(request):
         return cors(web.json_response(
             {"error": "MISSING_API_KEY", "message": "请输入 OpenAI API Key"}, status=400))
 
-    import uuid
-    task_id = str(uuid.uuid4())[:8]
+    task_id = get_gpt_image_task_id(body)
+    register_gpt_image_task(task_id)
     _task_progress[task_id] = {"percent": 10, "message": "准备 OpenAI GPT Image 请求…"}
     tmp = Path(tempfile.mkdtemp(prefix="comfyps_openai_image_"))
     try:
@@ -1150,12 +1189,50 @@ async def handle_gpt_image(request):
         _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 生成超时"}
         return cors(web.json_response(
             {"error": "OPENAI_TIMEOUT", "message": "OpenAI GPT Image 生成超时"}, status=504))
+    except asyncio.CancelledError:
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        raise
     except Exception as e:
         _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 任务失败"}
         return cors(web.json_response(
             {"error": "OPENAI_BRIDGE_ERROR", "message": f"OpenAI GPT Image 任务失败: {e}"}, status=500))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        unregister_gpt_image_task(task_id)
+
+
+async def handle_gpt_image_cancel(request):
+    """停止指定的 GPT Image 任务（Codex 订阅或 OpenAI API Key）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "message": "请求体不是 JSON"}, status=400))
+
+    task_id = str(body.get("taskId") or "").strip()
+    if not _GPT_TASK_ID_RE.fullmatch(task_id):
+        return cors(web.json_response(
+            {"ok": False, "message": "taskId 无效"}, status=400))
+
+    task = _gpt_image_tasks.get(task_id)
+    if task and not task.done():
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        task.cancel()
+        return cors(web.json_response({
+            "ok": True, "taskId": task_id, "message": "正在停止 GPT Image 任务"
+        }))
+
+    # 当取消请求先于生成请求到达时，记录它并在任务登记时立即取消，
+    # 避免前端中断原始 HTTP 请求后留下孤儿生成任务。
+    if task_id not in _task_progress:
+        _pending_gpt_image_cancellations.add(task_id)
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        return cors(web.json_response({
+            "ok": True, "taskId": task_id, "message": "已停止待启动的 GPT Image 任务"
+        }))
+
+    return cors(web.json_response(
+        {"ok": False, "taskId": task_id, "message": "GPT Image 任务已结束"}, status=404))
 
 
 async def handle_gpt_image_status(request):
@@ -1277,6 +1354,7 @@ def main():
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)
+    app.router.add_post("/gpt-image/cancel", handle_gpt_image_cancel)
     app.router.add_post("/gpt-image/status", handle_gpt_image_status)
     app.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
 
