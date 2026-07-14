@@ -73,7 +73,7 @@
         return { _obj: "save" };
       }
 
-      // ---- duplicate channel (保存选区到通道) ----
+      // ---- duplicate channel / layer / document ----
       case "duplicate": {
         const ref = desc._target?.[0];
         if (ref?._ref === "channel" && ref?._property === "selection") {
@@ -84,6 +84,15 @@
         }
         if (ref?._ref === "document") {
           MOCK_DOC._hasDuplicate = true;
+        }
+        if (ref?._ref === "layer") {
+          const layer = {
+            id: _nextLayerId++,
+            name: "Layer " + _virtualLayers.length + " copy",
+            visible: true,
+          };
+          _virtualLayers.push(layer);
+          MOCK_DOC.activeLayers = [layer];
         }
         return { _obj: "duplicate" };
       }
@@ -115,13 +124,19 @@
         MOCK_DOC._hasDuplicate = false;
         return { _obj: "close" };
 
-      // ---- make (新图层) ----
+      // ---- make (新图层 / 图层蒙版) ----
       case "make": {
+        if (desc.new?._class === "channel" && desc.at?._value === "mask") {
+          const activeLayer = MOCK_DOC.activeLayers[0];
+          if (activeLayer) activeLayer._hasUserMask = true;
+          return { _obj: "make" };
+        }
         const layer = {
           id: _nextLayerId++,
           name: "Layer " + _virtualLayers.length,
         };
         _virtualLayers.push(layer);
+        MOCK_DOC.activeLayers = [layer];
         return {
           _obj: "make",
           _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
@@ -167,10 +182,28 @@
 
       // ---- placeEvent ----
       case "placeEvent": {
-        const token = desc.target?._path;
-        const layer = { id: _nextLayerId++, name: "Placed", token, offset: desc.offset };
+        const token = (desc.target || desc.null)?._path;
+        const layer = {
+          id: _nextLayerId++,
+          name: "Placed",
+          token,
+          offset: desc.offset,
+          bounds: { left: 0, top: 0, width: MOCK_DOC.width, height: MOCK_DOC.height },
+        };
         _virtualLayers.push(layer);
+        MOCK_DOC.activeLayers = [layer];
         return { _obj: "placeEvent" };
+      }
+
+      // ---- move (Action Manager fallback for layer.translate) ----
+      case "move": {
+        const layer = MOCK_DOC.activeLayers[0];
+        const offset = desc.to;
+        if (layer && layer.bounds && offset) {
+          layer.bounds.left += offset.horizontal?._value || 0;
+          layer.bounds.top += offset.vertical?._value || 0;
+        }
+        return { _obj: "move" };
       }
 
       default:

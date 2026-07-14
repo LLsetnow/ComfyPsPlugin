@@ -21,9 +21,12 @@ import math
 import os
 import re
 import shutil
+import struct
 import sys
 import tempfile
 import time
+import uuid
+import zlib
 from pathlib import Path
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
@@ -55,9 +58,17 @@ DEFAULT_RH_SITE = "ai"
 
 # 任务进度 (task_id → {percent, status})
 _task_progress: dict[str, dict] = {}
+# 正在执行的 GPT Image HTTP 任务。取消时会终止对应的协程，进而关闭
+# OpenAI 请求或停止本地 Codex app-server 进程。
+_gpt_image_tasks: dict[str, asyncio.Task] = {}
+_pending_gpt_image_cancellations: set[str] = set()
+_GPT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
 CODEX_IMAGE_MAX_INPUT_BYTES = 45 * 1024 * 1024
+# Codex app-server 使用 JSONL；图像事件可能携带远大于 asyncio 默认 64KB 的内容。
+# 仍限制为 64MB，避免异常进程无限制占用桥的内存。
+CODEX_APP_SERVER_LINE_LIMIT = 64 * 1024 * 1024
 OPENAI_GPT_IMAGE_MODEL = "gpt-image-2"
 OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images"
 
@@ -77,6 +88,87 @@ class GptImageRequestError(ValueError):
 
 class OpenAIImageError(RuntimeError):
     """OpenAI Image API 返回的可展示错误。"""
+
+
+def decode_gpt_image_png(b64: str, field_name: str) -> bytes:
+    """解码并校验本地验证模式的 PNG 输入，不写入磁盘。"""
+    try:
+        data = base64.b64decode(strip_data_uri(b64).strip(), validate=True)
+    except (ValueError, TypeError) as e:
+        raise GptImageRequestError("INVALID_" + field_name.upper(),
+                                   field_name + " 不是有效的 base64 PNG") from e
+    if not data or len(data) > CODEX_IMAGE_MAX_INPUT_BYTES:
+        raise GptImageRequestError("INVALID_" + field_name.upper(),
+                                   field_name + " 为空或超过 45MB")
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise GptImageRequestError("INVALID_" + field_name.upper(),
+                                   field_name + " 必须是 PNG")
+    return data
+
+
+def get_png_info(data: bytes, field_name: str) -> dict:
+    """读取 PNG IHDR，供本地验证模式核对图层与蒙版尺寸。"""
+    if len(data) < 33 or data[12:16] != b"IHDR":
+        raise GptImageRequestError("INVALID_" + field_name.upper(),
+                                   field_name + " 不是有效的 PNG 文件")
+    width, height = struct.unpack(">II", data[16:24])
+    color_type = data[25]
+    if width < 1 or height < 1:
+        raise GptImageRequestError("INVALID_" + field_name.upper(),
+                                   field_name + " 的尺寸无效")
+    return {
+        "width": width,
+        "height": height,
+        "has_alpha": color_type in (4, 6),
+    }
+
+
+def make_local_validation_png() -> bytes:
+    """为没有输入图的本地验证生成一张不依赖 Pillow 的调试 PNG。"""
+    width = 32
+    height = 32
+    rows = []
+    for y in range(height):
+        row = bytearray()
+        for x in range(width):
+            is_light = ((x // 8) + (y // 8)) % 2 == 0
+            row.extend((31, 132, 255, 255) if is_light else (18, 44, 86, 255))
+        rows.append(b"\x00" + bytes(row))
+
+    def chunk(kind: bytes, value: bytes) -> bytes:
+        payload = kind + value
+        return struct.pack(">I", len(value)) + payload + struct.pack(">I", zlib.crc32(payload) & 0xffffffff)
+
+    return b"\x89PNG\r\n\x1a\n" + chunk(
+        b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    ) + chunk(b"IDAT", zlib.compress(b"".join(rows))) + chunk(b"IEND", b"")
+
+
+def get_gpt_image_task_id(body: dict) -> str:
+    """复用面板生成的任务 ID；旧客户端未提供时仍兼容生成一个。"""
+    requested = str(body.get("taskId") or "").strip()
+    if _GPT_TASK_ID_RE.fullmatch(requested):
+        return requested
+    return "gpt_" + uuid.uuid4().hex[:20]
+
+
+def register_gpt_image_task(task_id: str):
+    """登记当前 aiohttp 请求，处理请求到达顺序造成的取消竞争。"""
+    task = asyncio.current_task()
+    if not task:
+        return
+    _gpt_image_tasks[task_id] = task
+    if task_id in _pending_gpt_image_cancellations:
+        _pending_gpt_image_cancellations.discard(task_id)
+        task.cancel()
+
+
+def unregister_gpt_image_task(task_id: str):
+    """只移除当前任务自己的登记，避免错误清理同名的新请求。"""
+    task = asyncio.current_task()
+    if _gpt_image_tasks.get(task_id) is task:
+        _gpt_image_tasks.pop(task_id, None)
+    _pending_gpt_image_cancellations.discard(task_id)
 
 
 class CodexAppServerClient:
@@ -109,6 +201,7 @@ class CodexAppServerClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                limit=CODEX_APP_SERVER_LINE_LIMIT,
             )
         except OSError as e:
             raise CodexImageError(f"无法启动 Codex: {e}") from e
@@ -168,6 +261,8 @@ class CodexAppServerClient:
             return json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise CodexImageError("Codex app-server 返回了无效响应") from e
+        except ValueError as e:
+            raise CodexImageError("Codex app-server 响应超过 64MB 限制") from e
 
     def _handle_notification(self, message: dict):
         method = message.get("method") or ""
@@ -192,7 +287,9 @@ class CodexAppServerClient:
         elif method == "error":
             self._turn_error = params.get("message") or "Codex 处理失败"
 
-    async def generate(self, prompt: str, image_paths: list[Path]) -> bytes:
+    async def generate(
+        self, prompt: str, image_paths: list[Path], mask_path: Path | None = None
+    ) -> bytes:
         await self.start()
         self._progress(15, "已连接本地 Codex")
 
@@ -219,7 +316,13 @@ class CodexAppServerClient:
 
         inputs = [{"type": "text", "text": prompt}]
         for image_path in image_paths:
-            inputs.append({"type": "localImage", "path": str(image_path)})
+            inputs.append({
+                "type": "localImage", "path": str(image_path), "detail": "original"
+            })
+        if mask_path:
+            inputs.append({
+                "type": "localImage", "path": str(mask_path), "detail": "original"
+            })
 
         self._progress(30, "正在提交给 Codex…")
         await self.request(
@@ -334,12 +437,29 @@ def write_codex_input_image(b64: str, path: Path):
     path.write_bytes(data)
 
 
-def build_codex_image_prompt(mode: str, prompt: str, aspect_ratio: str, resolution: str) -> str:
+def build_codex_image_prompt(
+    mode: str,
+    prompt: str,
+    aspect_ratio: str,
+    resolution: str,
+    image_count: int = 0,
+    has_mask: bool = False,
+) -> str:
     """把 UI 选项转为稳定、只生成一张图的 Codex 提示词。"""
     mode_text = {
         "generate": "文生图：不要参考任何现有图像。",
         "reference": "参考图生成：后续附带的图片是参考图，综合保留其主体、风格或构图中与提示词一致的元素。",
-        "edit": "图像编辑：后续附带的图片是编辑目标。按提示词修改它，并尽量保留未要求改变的内容。",
+        "edit": (
+            "图像编辑（强制约束）：先读取第 1 张本地附图 input_1.png，再生成它的编辑版本。"
+            "输出必须继承 input_1.png 的主体、构图、画布比例与未编辑像素；绝不能生成与 input_1.png 无关的新图。"
+            "第 1 张附图是当前活动图层的完整画布内容（透明区域表示图层没有内容）。"
+            "只能按提示词修改允许编辑的选区，并保持选区外内容逐像素不变。"
+            + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但不要改变第 1 张图的画布构图。"
+               if image_count > 1 else "")
+            + ("最后一张本地附图 selection_mask.png 是黑白选区蒙版：纯白区域是唯一允许编辑的区域；纯黑区域必须保持第 1 张附图原样不变。"
+               "蒙版只用于定位，不要把它当作视觉素材。"
+               if has_mask else "")
+        ),
     }[mode]
     size_text = ""
     if aspect_ratio:
@@ -356,13 +476,53 @@ def build_codex_image_prompt(mode: str, prompt: str, aspect_ratio: str, resoluti
     )
 
 
+def build_openai_image_prompt(mode: str, prompt: str, image_count: int) -> str:
+    """为 GPT Image API 明确多图编辑时每张图的职责。"""
+    if mode != "edit":
+        return prompt.strip()
+    input_roles = (
+        "第 1 张输入图是当前活动图层的完整画布内容，透明区域表示该图层没有内容。"
+        "请求中的 mask 指定实际编辑区域；请输出完整画布，并保持 mask 之外的内容不变。"
+    )
+    if image_count > 1:
+        input_roles += (
+            "第 2 张输入图仅作参考图；参考其风格、主体或细节，"
+            "但输出必须基于第 1 张的完整画布构图和比例。"
+        )
+    return input_roles + "\n用户编辑要求：\n" + prompt.strip()
+
+
+def validate_gpt_aspect_ratio(aspect_ratio: str) -> str:
+    """验证用户输入的宽:高比例，符合 gpt-image-2 的比例范围。"""
+    normalized = re.sub(r"\s+", "", aspect_ratio or "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)", normalized)
+    if not match:
+        raise GptImageRequestError(
+            "INVALID_ASPECT_RATIO", "画面比例格式应为 宽:高，例如 7:5")
+    width = float(match.group(1))
+    height = float(match.group(2))
+    ratio = width / height if height else 0
+    if (
+        not math.isfinite(width)
+        or not math.isfinite(height)
+        or width <= 0
+        or height <= 0
+        or ratio < 1 / 3
+        or ratio > 3
+    ):
+        raise GptImageRequestError(
+            "INVALID_ASPECT_RATIO", "画面比例需在 1:3 到 3:1 之间")
+    return normalized
+
+
 def parse_gpt_image_request(body: dict):
     """校验 GPT Image 端点共享的请求字段。"""
     mode = (body.get("mode") or "generate").strip().lower()
     prompt = (body.get("prompt") or "").strip()
-    aspect_ratio = (body.get("aspectRatio") or "").strip()
+    aspect_ratio = validate_gpt_aspect_ratio(body.get("aspectRatio") or "1:1")
     resolution = (body.get("resolution") or "").strip()
     images = body.get("images") or []
+    mask = body.get("mask") or ""
 
     if mode not in ("generate", "reference", "edit"):
         raise GptImageRequestError(
@@ -377,11 +537,18 @@ def parse_gpt_image_request(body: dict):
         raise GptImageRequestError("INVALID_IMAGES", "文生图模式不接受参考图")
     if mode == "reference" and not 1 <= len(images) <= 2:
         raise GptImageRequestError("INVALID_IMAGES", "参考图模式需要选择 1 或 2 个图层")
-    if mode == "edit" and len(images) != 1:
-        raise GptImageRequestError("INVALID_IMAGES", "图像编辑模式需要一个选区裁剪图")
+    if mode == "edit" and not 1 <= len(images) <= 2:
+        raise GptImageRequestError(
+            "INVALID_IMAGES", "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图")
+    if mode != "edit" and mask:
+        raise GptImageRequestError("INVALID_MASK", "只有图像编辑模式可以使用选区蒙版")
+    if mode == "edit" and not isinstance(mask, str):
+        raise GptImageRequestError("INVALID_MASK", "图像编辑模式需要有效的选区蒙版")
+    if mode == "edit" and not mask.strip():
+        raise GptImageRequestError("MISSING_MASK", "图像编辑模式需要选区蒙版")
     if any(not isinstance(image, str) for image in images):
         raise GptImageRequestError("INVALID_IMAGES", "参考图格式不正确")
-    return mode, prompt, aspect_ratio, resolution, images
+    return mode, prompt, aspect_ratio, resolution, images, mask
 
 
 def resolve_openai_image_size(aspect_ratio: str, resolution: str) -> str:
@@ -417,6 +584,7 @@ async def run_openai_gpt_image(
     aspect_ratio: str,
     resolution: str,
     image_paths: list[Path],
+    mask_path: Path | None = None,
 ) -> bytes:
     """调用 OpenAI gpt-image-2，返回 PNG 二进制结果。"""
     if not api_key or not api_key.strip():
@@ -424,6 +592,7 @@ async def run_openai_gpt_image(
 
     headers = {"Authorization": "Bearer " + api_key.strip()}
     size = resolve_openai_image_size(aspect_ratio, resolution)
+    effective_prompt = build_openai_image_prompt(mode, prompt, len(image_paths))
     timeout = ClientTimeout(total=CODEX_IMAGE_TIMEOUT_SECONDS)
     opened_files = []
     try:
@@ -431,7 +600,7 @@ async def run_openai_gpt_image(
             if mode == "generate":
                 payload = {
                     "model": OPENAI_GPT_IMAGE_MODEL,
-                    "prompt": prompt,
+                    "prompt": effective_prompt,
                     "size": size,
                     "quality": "auto",
                 }
@@ -442,7 +611,7 @@ async def run_openai_gpt_image(
             else:
                 form = FormData()
                 form.add_field("model", OPENAI_GPT_IMAGE_MODEL)
-                form.add_field("prompt", prompt)
+                form.add_field("prompt", effective_prompt)
                 form.add_field("size", size)
                 form.add_field("quality", "auto")
                 for image_path in image_paths:
@@ -452,6 +621,15 @@ async def run_openai_gpt_image(
                         "image",
                         image_file,
                         filename=image_path.name,
+                        content_type="image/png",
+                    )
+                if mask_path:
+                    mask_file = mask_path.open("rb")
+                    opened_files.append(mask_file)
+                    form.add_field(
+                        "mask",
+                        mask_file,
+                        filename=mask_path.name,
                         content_type="image/png",
                     )
                 async with session.post(
@@ -770,6 +948,7 @@ def _inject_image_input(workflow: dict, node_id: str, image_b64: str):
 def cors(resp: web.StreamResponse) -> web.StreamResponse:
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Expose-Headers"] = "X-Task-Id, X-ComfyPS-Local-Validation"
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp
 
@@ -936,12 +1115,12 @@ async def handle_codex_status(request):
 async def handle_codex_image_body(body):
     """通过已登录的本地 Codex 生成、参考生成或编辑一张图片。"""
     try:
-        mode, prompt, aspect_ratio, resolution, images = parse_gpt_image_request(body)
+        mode, prompt, aspect_ratio, resolution, images, mask = parse_gpt_image_request(body)
     except GptImageRequestError as e:
         return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
 
-    import uuid
-    task_id = str(uuid.uuid4())[:8]
+    task_id = get_gpt_image_task_id(body)
+    register_gpt_image_task(task_id)
     _task_progress[task_id] = {"percent": 5, "message": "准备 Codex 图像任务…"}
 
     def on_progress(percent: int, message: str):
@@ -956,9 +1135,15 @@ async def handle_codex_image_body(body):
             write_codex_input_image(image, image_path)
             image_paths.append(image_path)
 
-        codex_prompt = build_codex_image_prompt(mode, prompt, aspect_ratio, resolution)
+        mask_path = None
+        if mask:
+            mask_path = tmp / "selection_mask.png"
+            write_codex_input_image(mask, mask_path)
+
+        codex_prompt = build_codex_image_prompt(
+            mode, prompt, aspect_ratio, resolution, len(image_paths), bool(mask_path))
         result_bytes = await asyncio.wait_for(
-            client.generate(codex_prompt, image_paths),
+            client.generate(codex_prompt, image_paths, mask_path),
             timeout=CODEX_IMAGE_TIMEOUT_SECONDS + 15,
         )
         _task_progress[task_id] = {"percent": 100, "message": "完成"}
@@ -974,6 +1159,9 @@ async def handle_codex_image_body(body):
         _task_progress[task_id] = {"percent": 0, "message": "Codex 图像生成超时"}
         return cors(web.json_response(
             {"error": "CODEX_TIMEOUT", "message": "Codex 图像生成超时"}, status=504))
+    except asyncio.CancelledError:
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        raise
     except Exception as e:
         _task_progress[task_id] = {"percent": 0, "message": "Codex 图像任务失败"}
         return cors(web.json_response(
@@ -984,6 +1172,7 @@ async def handle_codex_image_body(body):
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass
+        unregister_gpt_image_task(task_id)
 
 
 async def handle_codex_image(request):
@@ -996,6 +1185,53 @@ async def handle_codex_image(request):
     return await handle_codex_image_body(body)
 
 
+async def handle_gpt_image_local_validation(body):
+    """不调用任何模型，验证 GPT Image 输入并回传确定性测试图。"""
+    try:
+        mode, _, _, _, images, mask = parse_gpt_image_request(body)
+        image_data = [decode_gpt_image_png(image, "image") for image in images]
+        image_info = [get_png_info(data, "image") for data in image_data]
+
+        mask_info = None
+        if mode == "edit":
+            mask_data = decode_gpt_image_png(mask, "mask")
+            mask_info = get_png_info(mask_data, "mask")
+            source_info = image_info[0]
+            if (source_info["width"], source_info["height"]) != (
+                mask_info["width"], mask_info["height"]
+            ):
+                raise GptImageRequestError(
+                    "MASK_SIZE_MISMATCH",
+                    "活动图层与选区蒙版尺寸不一致: "
+                    f"{source_info['width']}x{source_info['height']} 与 "
+                    f"{mask_info['width']}x{mask_info['height']}",
+                )
+            provider = (body.get("provider") or "codex").strip().lower()
+            if provider != "codex" and not mask_info["has_alpha"]:
+                raise GptImageRequestError(
+                    "MASK_ALPHA_MISSING", "OpenAI API 图像编辑蒙版必须包含 alpha 通道"
+                )
+
+        # 编辑/参考模式返回第一个实际输入图，使 Photoshop 的回贴、缩放、
+        # 以及结果图层蒙版流程可以在完全不调用模型的情况下被验证。
+        result_bytes = image_data[0] if image_data else make_local_validation_png()
+        first_info = image_info[0] if image_info else get_png_info(result_bytes, "result")
+        summary = "image={0}x{1};mask={2};alpha={3}".format(
+            first_info["width"], first_info["height"],
+            (str(mask_info["width"]) + "x" + str(mask_info["height"])) if mask_info else "none",
+            "yes" if mask_info and mask_info["has_alpha"] else "no",
+        )
+    except GptImageRequestError as e:
+        return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
+
+    task_id = get_gpt_image_task_id(body)
+    _task_progress[task_id] = {"percent": 100, "message": "本地验证完成"}
+    response = web.Response(body=result_bytes, content_type="image/png")
+    response.headers["X-Task-Id"] = task_id
+    response.headers["X-ComfyPS-Local-Validation"] = summary
+    return cors(response)
+
+
 async def handle_gpt_image(request):
     """按认证方式路由 GPT Image 请求：Codex 订阅或 OpenAI API Key。"""
     try:
@@ -1003,6 +1239,9 @@ async def handle_gpt_image(request):
     except Exception:
         return cors(web.json_response(
             {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
+
+    if body.get("localValidation"):
+        return await handle_gpt_image_local_validation(body)
 
     provider = (body.get("provider") or "codex").strip().lower()
     if provider == "codex":
@@ -1012,7 +1251,7 @@ async def handle_gpt_image(request):
             {"error": "INVALID_PROVIDER", "message": "provider 必须是 codex 或 api-key"}, status=400))
 
     try:
-        mode, prompt, aspect_ratio, resolution, images = parse_gpt_image_request(body)
+        mode, prompt, aspect_ratio, resolution, images, mask = parse_gpt_image_request(body)
     except GptImageRequestError as e:
         return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
 
@@ -1021,8 +1260,8 @@ async def handle_gpt_image(request):
         return cors(web.json_response(
             {"error": "MISSING_API_KEY", "message": "请输入 OpenAI API Key"}, status=400))
 
-    import uuid
-    task_id = str(uuid.uuid4())[:8]
+    task_id = get_gpt_image_task_id(body)
+    register_gpt_image_task(task_id)
     _task_progress[task_id] = {"percent": 10, "message": "准备 OpenAI GPT Image 请求…"}
     tmp = Path(tempfile.mkdtemp(prefix="comfyps_openai_image_"))
     try:
@@ -1035,9 +1274,17 @@ async def handle_gpt_image(request):
                 raise GptImageRequestError("INVALID_IMAGES", str(e)) from e
             image_paths.append(image_path)
 
+        mask_path = None
+        if mask:
+            mask_path = tmp / "selection_mask.png"
+            try:
+                write_codex_input_image(mask, mask_path)
+            except CodexImageError as e:
+                raise GptImageRequestError("INVALID_MASK", str(e)) from e
+
         _task_progress[task_id] = {"percent": 35, "message": "正在调用 OpenAI GPT Image…"}
         result_bytes = await run_openai_gpt_image(
-            api_key, mode, prompt, aspect_ratio, resolution, image_paths
+            api_key, mode, prompt, aspect_ratio, resolution, image_paths, mask_path
         )
         _task_progress[task_id] = {"percent": 100, "message": "完成"}
         response = web.Response(body=result_bytes, content_type="image/png")
@@ -1054,12 +1301,50 @@ async def handle_gpt_image(request):
         _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 生成超时"}
         return cors(web.json_response(
             {"error": "OPENAI_TIMEOUT", "message": "OpenAI GPT Image 生成超时"}, status=504))
+    except asyncio.CancelledError:
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        raise
     except Exception as e:
         _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 任务失败"}
         return cors(web.json_response(
             {"error": "OPENAI_BRIDGE_ERROR", "message": f"OpenAI GPT Image 任务失败: {e}"}, status=500))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        unregister_gpt_image_task(task_id)
+
+
+async def handle_gpt_image_cancel(request):
+    """停止指定的 GPT Image 任务（Codex 订阅或 OpenAI API Key）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "message": "请求体不是 JSON"}, status=400))
+
+    task_id = str(body.get("taskId") or "").strip()
+    if not _GPT_TASK_ID_RE.fullmatch(task_id):
+        return cors(web.json_response(
+            {"ok": False, "message": "taskId 无效"}, status=400))
+
+    task = _gpt_image_tasks.get(task_id)
+    if task and not task.done():
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        task.cancel()
+        return cors(web.json_response({
+            "ok": True, "taskId": task_id, "message": "正在停止 GPT Image 任务"
+        }))
+
+    # 当取消请求先于生成请求到达时，记录它并在任务登记时立即取消，
+    # 避免前端中断原始 HTTP 请求后留下孤儿生成任务。
+    if task_id not in _task_progress:
+        _pending_gpt_image_cancellations.add(task_id)
+        _task_progress[task_id] = {"percent": 0, "message": "已停止"}
+        return cors(web.json_response({
+            "ok": True, "taskId": task_id, "message": "已停止待启动的 GPT Image 任务"
+        }))
+
+    return cors(web.json_response(
+        {"ok": False, "taskId": task_id, "message": "GPT Image 任务已结束"}, status=404))
 
 
 async def handle_gpt_image_status(request):
@@ -1181,6 +1466,7 @@ def main():
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)
+    app.router.add_post("/gpt-image/cancel", handle_gpt_image_cancel)
     app.router.add_post("/gpt-image/status", handle_gpt_image_status)
     app.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
 

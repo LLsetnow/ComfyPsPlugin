@@ -34,6 +34,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 WATCH_DIRS = [PLUGIN_DIR, STATIC_DIR]
 WATCH_EXTENSIONS = {".html", ".js", ".css", ".json", ".png"}
 POLL_INTERVAL = 0.5  # 秒
+_mock_gpt_image_tasks: dict[str, asyncio.Task] = {}
+_mock_pending_gpt_image_cancellations: set[str] = set()
 
 
 # =============================================================================
@@ -219,6 +221,7 @@ async def cors_middleware(request: web.Request, handler):
             )
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Expose-Headers"] = "X-Task-Id, X-ComfyPS-Local-Validation"
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp
 
@@ -351,9 +354,13 @@ async def handle_codex_image(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "INVALID_IMAGES", "message": "参考图模式需要 1 或 2 张图片"}, status=400
         )
-    if mode == "edit" and len(images) != 1:
+    if mode == "edit" and not 1 <= len(images) <= 2:
         return web.json_response(
-            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要一张图片"}, status=400
+            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图"}, status=400
+        )
+    if mode == "edit" and not body.get("mask"):
+        return web.json_response(
+            {"error": "MISSING_MASK", "message": "图像编辑模式需要选区蒙版"}, status=400
         )
 
     print(
@@ -372,6 +379,9 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400
         )
+
+    if body.get("localValidation"):
+        return await handle_gpt_image_local_validation(body)
 
     provider = (body.get("provider") or "codex").strip().lower()
     if provider not in ("codex", "api-key", "apikey", "openai"):
@@ -398,17 +408,79 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "INVALID_IMAGES", "message": "参考图模式需要 1 或 2 张图片"}, status=400
         )
-    if mode == "edit" and len(images) != 1:
+    if mode == "edit" and not 1 <= len(images) <= 2:
         return web.json_response(
-            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要一张图片"}, status=400
+            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图"}, status=400
         )
+    if mode == "edit" and not body.get("mask"):
+        return web.json_response(
+            {"error": "MISSING_MASK", "message": "图像编辑模式需要选区蒙版"}, status=400
+        )
+
+    task_id = str(body.get("taskId") or "").strip()
+    if not task_id:
+        task_id = "mock_gpt_" + str(int(time.time() * 1000)) + "_" + str(random.randint(1000, 9999))
+    task = asyncio.current_task()
+    if task:
+        _mock_gpt_image_tasks[task_id] = task
+        if task_id in _mock_pending_gpt_image_cancellations:
+            _mock_pending_gpt_image_cancellations.discard(task_id)
+            task.cancel()
 
     print(
         f"  [mock /gpt-image] provider={provider}  mode={mode}  refs={len(images)}  "
+        f"mask={'✓' if body.get('mask') else '—'}  "
         f"prompt={'✓' if prompt else '—'}"
     )
-    await asyncio.sleep(1.2)
-    return web.Response(body=DEMO_PNG, content_type="image/png")
+    try:
+        await asyncio.sleep(1.2)
+        response = web.Response(body=DEMO_PNG, content_type="image/png")
+        response.headers["X-Task-Id"] = task_id
+        return response
+    except asyncio.CancelledError:
+        return web.json_response(
+            {"error": "TASK_CANCELLED", "message": "GPT Image 任务已停止"}, status=499
+        )
+    finally:
+        if _mock_gpt_image_tasks.get(task_id) is task:
+            _mock_gpt_image_tasks.pop(task_id, None)
+        _mock_pending_gpt_image_cancellations.discard(task_id)
+
+
+async def handle_gpt_image_local_validation(body: dict) -> web.Response:
+    """开发服务器的无模型 GPT Image 输入验证。"""
+    mode = (body.get("mode") or "generate").strip().lower()
+    images = body.get("images") or []
+    mask = body.get("mask") or ""
+    if mode not in ("generate", "reference", "edit"):
+        return web.json_response({"error": "INVALID_MODE", "message": "无效的 GPT Image 模式"}, status=400)
+    if mode == "edit" and (not images or not mask):
+        return web.json_response({"error": "INVALID_EDIT_INPUT", "message": "图像编辑需要活动图层和选区蒙版"}, status=400)
+    task_id = str(body.get("taskId") or "mock_local_validation")
+    response = web.Response(body=DEMO_PNG, content_type="image/png")
+    response.headers["X-Task-Id"] = task_id
+    response.headers["X-ComfyPS-Local-Validation"] = "image=mock;mask=mock;alpha=mock"
+    return response
+
+
+async def handle_gpt_image_cancel(request: web.Request) -> web.Response:
+    """Mock GPT Image 取消接口，与真实桥的协议保持一致。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+
+    task_id = str(body.get("taskId") or "").strip()
+    if not task_id:
+        return web.json_response({"ok": False, "message": "taskId 无效"}, status=400)
+
+    task = _mock_gpt_image_tasks.get(task_id)
+    if task and not task.done():
+        task.cancel()
+        return web.json_response({"ok": True, "taskId": task_id, "message": "正在停止 GPT Image 任务"})
+
+    _mock_pending_gpt_image_cancellations.add(task_id)
+    return web.json_response({"ok": True, "taskId": task_id, "message": "已停止待启动的 GPT Image 任务"})
 
 
 async def handle_gpt_image_status(request: web.Request) -> web.Response:
@@ -516,6 +588,7 @@ def main():
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)
+    app.router.add_post("/gpt-image/cancel", handle_gpt_image_cancel)
     app.router.add_post("/gpt-image/status", handle_gpt_image_status)
 
     # Demo 图

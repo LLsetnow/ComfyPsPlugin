@@ -223,8 +223,32 @@
     select { min-height: 30px; }
     input[type="password"] { -webkit-text-security: disc; }
     .input-note { font-size: 10.5px; color: var(--warn); line-height: 1.4; margin-top: 6px; }
+    .gpt-edit-reference-toggle,
+    .setting-checkbox { display: flex; align-items: center; gap: 5px; }
+    .gpt-edit-reference-toggle input,
+    .gpt-edit-reference-toggle input:focus,
+    .gpt-edit-reference-toggle input:focus-visible,
+    .setting-checkbox input,
+    .setting-checkbox input:focus,
+    .setting-checkbox input:focus-visible {
+      width: auto;
+      padding: 0;
+      margin: 0;
+      border: none;
+      background: transparent;
+      border-radius: 0;
+      box-shadow: none;
+      outline: none;
+      -webkit-appearance: checkbox;
+      appearance: auto;
+    }
 
     /* ---- Run button ---- */
+    .workflow-run-actions {
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+    }
     .btn-run {
       width: 100%;
       padding: 9px;
@@ -241,11 +265,34 @@
       gap: 6px;
       transition: background 0.2s, opacity 0.2s;
     }
+    .workflow-run-actions .btn-run {
+      flex: 1;
+      width: auto;
+    }
     .btn-run:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent-hover), #60a5fa); }
     .btn-run:disabled {
       background: linear-gradient(135deg, #3b6fd4, #2d5fc0);
       cursor: default;
       opacity: 0.9;
+    }
+    .btn-stop {
+      min-width: 78px;
+      padding: 9px 10px;
+      background: var(--bg-card);
+      color: #f87171;
+      border: 1px solid #ef4444;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    .btn-stop:hover:not(:disabled) { background: rgba(239,68,68,0.14); }
+    .btn-stop:disabled {
+      color: var(--text-dim);
+      border-color: var(--border);
+      cursor: default;
+      opacity: 0.6;
     }
     .btn-run .spinner {
       width: 14px; height: 14px;
@@ -444,10 +491,13 @@
     <div id="workflowInputs"></div>
 
     <!-- 运行按钮 -->
-    <button id="runBtn" class="btn-run" style="display:none;">
-      <span id="btnLabel">运行</span>
-      <span id="btnSpinner" class="spinner" hidden></span>
-    </button>
+    <div id="runActions" class="workflow-run-actions" style="display:none;">
+      <button id="runBtn" class="btn-run">
+        <span id="btnLabel">运行</span>
+        <span id="btnSpinner" class="spinner" hidden></span>
+      </button>
+      <button id="stopGptBtn" class="btn-stop" style="display:none;" disabled>停止生成</button>
+    </div>
 
     <!-- 进度条 -->
     <div id="progressBar" style="display:none;margin-top:6px;">
@@ -485,12 +535,10 @@
       </div>
     </div>
     <div id="gptImageCodexSettings" class="setting-row">
-      <div class="setting-label">使用本机已登录的 Codex</div>
       <div class="input-row">
-        <span class="setting-hint">不需要 API Key</span>
-        <button id="btnTestCodex" class="btn-sm">检测</button>
+        <div class="setting-hint">使用本机已登录的 Codex<br>不需要 API Key<br>需要终端中的 Codex 已登录且启用图像生成。</div>
+        <button id="btnTestCodex" class="btn-sm">测试</button>
       </div>
-      <div class="setting-hint">需要终端中的 Codex 已登录且启用图像生成。</div>
     </div>
     <div id="gptImageApiSettings" class="setting-row" style="display:none;">
       <div class="setting-label">OpenAI API Key</div>
@@ -501,6 +549,16 @@
       <div class="setting-hint">密钥仅从插件传给本机桥，不写入 bridge/config.json；API 用量单独计费。</div>
     </div>
     <span id="gptImageAuthStatus" style="display:none;margin:0 0 8px;"></span>
+
+    <!-- GPT Image 本地验证 -->
+    <div class="section-title">GPT Image 调试</div>
+    <div class="setting-row">
+      <label class="setting-checkbox">
+        <input id="settingGptImageLocalValidation" type="checkbox" />
+        <span>启用本地验证模式</span>
+      </label>
+      <div class="setting-hint">不调用桥、Codex 或 OpenAI。仅在“图像编辑”中可用：直接复制活动图层并以当前选区创建图层蒙版，用于快速检查图层、选区和蒙版回贴。</div>
+    </div>
 
     <!-- 主题 -->
     <div class="section-title">外观</div>
