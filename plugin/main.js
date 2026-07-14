@@ -522,7 +522,10 @@ async function exportSelectionMaskPNG(forGptImage) {
   var file = await folder.createFile("comfyps_mask.png", { overwrite: true });
   var token = await localFileSystem.createSessionToken(file);
 
-  var noDialog = { dialogOptions: "dontDisplay" };
+  // `dontDisplay` may still open Photoshop's Fill dialog when the host
+  // needs additional information. Mask export has all required parameters,
+  // so use `silent` and surface any failure in the plugin instead.
+  var noDialog = { dialogOptions: "silent" };
   var fillCmd = function (v) {
     return {
       _obj: "fill",
