@@ -196,7 +196,7 @@
     }
     label:first-child { margin-top: 0; }
 
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       padding: 6px 8px;
       background: var(--bg-input);
@@ -211,16 +211,18 @@
       box-shadow: none;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
-    input:focus, textarea:focus {
+    input:focus, textarea:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 2px var(--accent-glow);
       outline: none;
     }
-    input:focus-visible, textarea:focus-visible {
+    input:focus-visible, textarea:focus-visible, select:focus-visible {
       outline: none;
     }
     textarea { resize: vertical; min-height: 52px; line-height: 1.4; }
+    select { min-height: 30px; }
     input[type="password"] { -webkit-text-security: disc; }
+    .input-note { font-size: 10.5px; color: var(--warn); line-height: 1.4; margin-top: 6px; }
 
     /* ---- Run button ---- */
     .btn-run {
@@ -279,6 +281,8 @@
       display: flex; align-items: center; gap: 6px;
     }
     .input-row input, .input-row textarea { flex: 1; }
+    .setting-hint { font-size: 10px; color: var(--text-dim); line-height: 1.45; margin-top: 4px; }
+    .input-row .setting-hint { flex: 1; margin-top: 0; }
 
     /* ---- Segmented control (two-state selector) ---- */
     .segmented {
@@ -471,6 +475,32 @@
     <div class="setting-row">
       <input id="settingBridgeUrl" type="text" value="http://127.0.0.1:8765" />
     </div>
+
+    <!-- GPT Image 认证 -->
+    <div class="section-title">GPT Image 认证</div>
+    <div class="setting-row">
+      <div class="segmented" id="segGptImageAuth">
+        <button data-value="codex" class="active">Codex 订阅</button>
+        <button data-value="api-key">OpenAI API Key</button>
+      </div>
+    </div>
+    <div id="gptImageCodexSettings" class="setting-row">
+      <div class="setting-label">使用本机已登录的 Codex</div>
+      <div class="input-row">
+        <span class="setting-hint">不需要 API Key</span>
+        <button id="btnTestCodex" class="btn-sm">检测</button>
+      </div>
+      <div class="setting-hint">需要终端中的 Codex 已登录且启用图像生成。</div>
+    </div>
+    <div id="gptImageApiSettings" class="setting-row" style="display:none;">
+      <div class="setting-label">OpenAI API Key</div>
+      <div class="input-row">
+        <input id="settingGptImageApiKey" type="password" placeholder="sk-..." />
+        <button id="btnTestGptImageKey" class="btn-sm">测试</button>
+      </div>
+      <div class="setting-hint">密钥仅从插件传给本机桥，不写入 bridge/config.json；API 用量单独计费。</div>
+    </div>
+    <span id="gptImageAuthStatus" style="display:none;margin:0 0 8px;"></span>
 
     <!-- 主题 -->
     <div class="section-title">外观</div>
