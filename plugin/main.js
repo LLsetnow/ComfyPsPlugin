@@ -102,13 +102,8 @@ var WORKFLOWS = [
       },
       { id: "wfPrompt", type: "textarea", label: "关键词 / 编辑说明", placeholder: "例如：午后阳光下的极简室内产品摄影", default: "" },
       {
-        id: "gptAspectRatio", type: "select", label: "画面比例", default: "1:1", options: [
-          { value: "1:1", label: "1:1 方形" },
-          { value: "2:3", label: "2:3 竖图" },
-          { value: "3:2", label: "3:2 横图" },
-          { value: "9:16", label: "9:16 竖屏" },
-          { value: "16:9", label: "16:9 宽屏" },
-        ],
+        id: "gptAspectRatio", type: "text", label: "画面比例（宽:高，1:3 至 3:1）",
+        placeholder: "例如 2:3、7:5 或 1.91:1", default: "1:1",
       },
       {
         id: "gptResolution", type: "select", label: "分辨率", default: "1k", options: [
@@ -163,6 +158,20 @@ function applyTheme(theme) {
 
 function saveSetting(key, value) {
   localStorage.setItem(SETTINGS_KEYS[key], value);
+}
+
+function normalizeGptAspectRatio(value) {
+  var ratioText = String(value || "").replace(/\s/g, "");
+  var match = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(ratioText);
+  if (!match) throw new Error("画面比例格式应为 宽:高，例如 7:5");
+  var width = parseFloat(match[1]);
+  var height = parseFloat(match[2]);
+  var ratio = width / height;
+  if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0
+      || ratio < 1 / 3 || ratio > 3) {
+    throw new Error("画面比例需在 1:3 到 3:1 之间");
+  }
+  return ratioText;
 }
 
 // =========================================================================
@@ -1181,6 +1190,7 @@ async function onRunClick() {
   var runSlot = getRunSlot(wf, settings);
   var inputs = getWorkflowInputs();
   var prompt = inputs.wfPrompt || "";
+  if (wf.gptImage) inputs.gptAspectRatio = normalizeGptAspectRatio(inputs.gptAspectRatio);
   _activeRuns[runSlot] = { workflowId: wf.id };
   refreshRunButton();
   setStatus("");

@@ -362,11 +362,34 @@ def build_codex_image_prompt(mode: str, prompt: str, aspect_ratio: str, resoluti
     )
 
 
+def validate_gpt_aspect_ratio(aspect_ratio: str) -> str:
+    """验证用户输入的宽:高比例，符合 gpt-image-2 的比例范围。"""
+    normalized = re.sub(r"\s+", "", aspect_ratio or "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)", normalized)
+    if not match:
+        raise GptImageRequestError(
+            "INVALID_ASPECT_RATIO", "画面比例格式应为 宽:高，例如 7:5")
+    width = float(match.group(1))
+    height = float(match.group(2))
+    ratio = width / height if height else 0
+    if (
+        not math.isfinite(width)
+        or not math.isfinite(height)
+        or width <= 0
+        or height <= 0
+        or ratio < 1 / 3
+        or ratio > 3
+    ):
+        raise GptImageRequestError(
+            "INVALID_ASPECT_RATIO", "画面比例需在 1:3 到 3:1 之间")
+    return normalized
+
+
 def parse_gpt_image_request(body: dict):
     """校验 GPT Image 端点共享的请求字段。"""
     mode = (body.get("mode") or "generate").strip().lower()
     prompt = (body.get("prompt") or "").strip()
-    aspect_ratio = (body.get("aspectRatio") or "").strip()
+    aspect_ratio = validate_gpt_aspect_ratio(body.get("aspectRatio") or "1:1")
     resolution = (body.get("resolution") or "").strip()
     images = body.get("images") or []
 
