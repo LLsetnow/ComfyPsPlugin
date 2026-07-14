@@ -1176,6 +1176,14 @@ async function onRunClick() {
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = 0; }
 
     var layerName = "ComfyPS - " + wf.name;
+    if (wf.gptImage) {
+      var gptModeNames = {
+        generate: "文生图",
+        reference: "添加参考图",
+        edit: "图像编辑"
+      };
+      layerName = "ComfyPSGPT - " + (gptModeNames[mode] || mode);
+    }
     await placeImageBytesAsLayer(resultBuffer, layerName, placement);
 
     setStatus("完成 ✓", "ok");
