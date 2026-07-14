@@ -1177,6 +1177,7 @@ function renderWorkQueue() {
   var importBtn = $("queueImportBtn");
   var previewBtn = $("queuePreviewBtn");
   var stopBtn = $("queueStopBtn");
+  var deleteBtn = $("queueDeleteBtn");
   var section = $("workQueueSection");
   if (!container) return;
 
@@ -1240,6 +1241,7 @@ function renderWorkQueue() {
   if (importBtn) importBtn.disabled = !isCompleted;
   if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
   if (stopBtn) stopBtn.disabled = !isRunning;
+  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
   if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
   renderQueueProgress();
 }
@@ -1316,6 +1318,20 @@ function onQueueStopClick() {
     } catch (_) {}
   }
   setStatus("正在停止任务…", "");
+  renderWorkQueue();
+}
+
+function onQueueDeleteClick() {
+  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
+  var task = _workQueue[_selectedQueueIdx];
+  if (!task || task.status === "running") return;
+  if (task.thumbUrl) { try { URL.revokeObjectURL(task.thumbUrl); } catch (_) {} }
+  _workQueue.splice(_selectedQueueIdx, 1);
+  if (_workQueue.length === 0) {
+    _selectedQueueIdx = -1;
+  } else {
+    _selectedQueueIdx = Math.min(_selectedQueueIdx, _workQueue.length - 1);
+  }
   renderWorkQueue();
 }
 
@@ -2385,6 +2401,8 @@ function saveAllSettings() {
   if (queuePreviewBtn) queuePreviewBtn.addEventListener("click", onQueuePreviewClick);
   var queueStopBtn = $("queueStopBtn");
   if (queueStopBtn) queueStopBtn.addEventListener("click", onQueueStopClick);
+  var queueDeleteBtn = $("queueDeleteBtn");
+  if (queueDeleteBtn) queueDeleteBtn.addEventListener("click", onQueueDeleteClick);
   var queuePreviewClose = $("queuePreviewClose");
   if (queuePreviewClose) queuePreviewClose.addEventListener("click", onQueuePreviewClose);
   var queuePreviewModal = $("queuePreviewModal");
