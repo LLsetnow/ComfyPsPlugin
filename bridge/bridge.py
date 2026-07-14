@@ -58,6 +58,9 @@ _task_progress: dict[str, dict] = {}
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
 CODEX_IMAGE_MAX_INPUT_BYTES = 45 * 1024 * 1024
+# Codex app-server 使用 JSONL；图像事件可能携带远大于 asyncio 默认 64KB 的内容。
+# 仍限制为 64MB，避免异常进程无限制占用桥的内存。
+CODEX_APP_SERVER_LINE_LIMIT = 64 * 1024 * 1024
 OPENAI_GPT_IMAGE_MODEL = "gpt-image-2"
 OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images"
 
@@ -109,6 +112,7 @@ class CodexAppServerClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                limit=CODEX_APP_SERVER_LINE_LIMIT,
             )
         except OSError as e:
             raise CodexImageError(f"无法启动 Codex: {e}") from e
@@ -168,6 +172,8 @@ class CodexAppServerClient:
             return json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             raise CodexImageError("Codex app-server 返回了无效响应") from e
+        except ValueError as e:
+            raise CodexImageError("Codex app-server 响应超过 64MB 限制") from e
 
     def _handle_notification(self, message: dict):
         method = message.get("method") or ""
