@@ -182,10 +182,28 @@
 
       // ---- placeEvent ----
       case "placeEvent": {
-        const token = desc.target?._path;
-        const layer = { id: _nextLayerId++, name: "Placed", token, offset: desc.offset };
+        const token = (desc.target || desc.null)?._path;
+        const layer = {
+          id: _nextLayerId++,
+          name: "Placed",
+          token,
+          offset: desc.offset,
+          bounds: { left: 0, top: 0, width: MOCK_DOC.width, height: MOCK_DOC.height },
+        };
         _virtualLayers.push(layer);
+        MOCK_DOC.activeLayers = [layer];
         return { _obj: "placeEvent" };
+      }
+
+      // ---- move (Action Manager fallback for layer.translate) ----
+      case "move": {
+        const layer = MOCK_DOC.activeLayers[0];
+        const offset = desc.to;
+        if (layer && layer.bounds && offset) {
+          layer.bounds.left += offset.horizontal?._value || 0;
+          layer.bounds.top += offset.vertical?._value || 0;
+        }
+        return { _obj: "move" };
       }
 
       default:

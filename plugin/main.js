@@ -1020,6 +1020,37 @@ async function removeSelectionSnapshotChannel(channelName) {
   } catch (_) {}
 }
 
+async function _alignPlacedLayerToCanvas(layer, docWidth, docHeight) {
+  if (!layer || !layer.bounds || docWidth <= 0 || docHeight <= 0) return;
+  // GPT Image 的输入和蒙版都是整张文档画布。placeEvent 的默认中心放置
+  // 在缩放后可能留下非零的左/上偏移，因此必须用实际边界重新对齐到
+  // Photoshop 文档坐标 (0, 0)，否则选区蒙版也会跟着错位。
+  var bounds = layer.boundsNoEffects || layer.bounds;
+  var left = _asPixels(bounds && bounds.left);
+  var top = _asPixels(bounds && bounds.top);
+  var dx = -left;
+  var dy = -top;
+  if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
+
+  if (typeof layer.translate === "function") {
+    await layer.translate(dx, dy);
+    return;
+  }
+
+  // Photoshop 23+ 提供 Layer.translate；保留 Action Manager 回退，便于
+  // 旧版宿主或开发模拟器继续运行。
+  await batchPlay([{
+    _obj: "move",
+    _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+    to: {
+      _obj: "offset",
+      horizontal: { _unit: "pixelsUnit", _value: dx },
+      vertical: { _unit: "pixelsUnit", _value: dy },
+    },
+    _options: { dialogOptions: "silent" },
+  }], {});
+}
+
 function placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName) {
   var queuedPlacement = _placeImageQueue.then(function () {
     return _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName);
@@ -1053,7 +1084,10 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
       var commands = [
         {
           _obj: "placeEvent",
-          target: { _path: token, _kind: "local" },
+          // `null` is the Action Manager file target for placeEvent. Include
+          // the center state explicitly so offset semantics are deterministic.
+          "null": { _path: token, _kind: "local" },
+          freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
           offset: {
             _obj: "offset",
             horizontal: { _unit: "pixelsUnit", _value: offsetX },
@@ -1092,6 +1126,11 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
             }], {});
           }
         }
+        // Re-read the bounds after the optional scale. The selection snapshot
+        // is in document coordinates, so the output layer must share the same
+        // canvas origin before Photoshop creates its layer mask.
+        targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
+        await _alignPlacedLayerToCanvas(targetLayer, targetWidth, targetHeight);
         try {
           // Restore the selection captured at submission time. The user may
           // have changed the active selection while a long GPT task ran.
