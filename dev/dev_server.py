@@ -36,6 +36,9 @@ WATCH_EXTENSIONS = {".html", ".js", ".css", ".json", ".png"}
 POLL_INTERVAL = 0.5  # 秒
 _mock_gpt_image_tasks: dict[str, asyncio.Task] = {}
 _mock_pending_gpt_image_cancellations: set[str] = set()
+# GPT Image 的编辑+参考图请求包含三张 base64 PNG，单张输入上限展开后
+# 可能超过普通 64MB JSON 请求，因此开发服务器与真实桥保持 256MB 上限。
+GPT_IMAGE_REQUEST_MAX_BYTES = 256 * 1024 * 1024
 
 
 # =============================================================================
@@ -375,6 +378,11 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
     """Mock /gpt-image，覆盖 Codex 订阅与 OpenAI API Key 两种认证。"""
     try:
         body = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        return web.json_response(
+            {"error": "REQUEST_TOO_LARGE", "message": "GPT Image 请求体过大，请降低输入图像尺寸"},
+            status=413,
+        )
     except Exception:
         return web.json_response(
             {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400
@@ -565,7 +573,7 @@ def main():
     watcher = FileWatcher()
 
     app = web.Application(
-        client_max_size=64 * 1024 * 1024,  # 64MB, 与真实桥一致
+        client_max_size=GPT_IMAGE_REQUEST_MAX_BYTES,
         middlewares=[cors_middleware],
     )
 
