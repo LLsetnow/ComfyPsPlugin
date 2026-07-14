@@ -581,18 +581,51 @@ async function exportSelectionMaskPNG() {
 // =========================================================================
 // 进度轮询
 // =========================================================================
-var _pollTimer = 0;
-var _progressFill = null;
-var _progressMsg = null;
-var _progressBar = null;
+var _activeRuns = {
+  gptImage: null,
+  runningHub: null,
+  other: null
+};
+
+function getRunSlot(workflow, settings) {
+  if (workflow && workflow.gptImage) return "gptImage";
+  return settings && settings.backend === "runninghub" ? "runningHub" : "other";
+}
+
+function canStartWorkflow(workflow, settings) {
+  var slot = getRunSlot(workflow, settings);
+  if (_activeRuns[slot]) return false;
+  if (slot === "gptImage" || slot === "runningHub") return !_activeRuns.other;
+  return !_activeRuns.gptImage && !_activeRuns.runningHub && !_activeRuns.other;
+}
+
+function refreshRunButton() {
+  var runBtn = $("runBtn");
+  var label = $("btnLabel");
+  var spinner = $("btnSpinner");
+  var progressBar = $("progressBar");
+  var workflow = findWorkflow(_selectedWorkflowId);
+  if (!runBtn || !workflow) return;
+
+  var slot = getRunSlot(workflow, loadSettings());
+  var activeRun = _activeRuns[slot];
+  var canStart = canStartWorkflow(workflow, loadSettings());
+  runBtn.disabled = !canStart;
+  if (label) {
+    label.hidden = false;
+    label.textContent = activeRun ? "生成中" : (canStart ? "运行 — " + workflow.name : "其他任务进行中");
+  }
+  if (spinner) spinner.hidden = !activeRun;
+  if (progressBar) progressBar.style.display = activeRun ? "block" : "none";
+}
 
 // =========================================================================
 // 调用本地桥 /run
 // =========================================================================
-async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow) {
-  var progressFill = _progressFill;
-  var progressMsg = _progressMsg;
-  var progressBar = _progressBar;
+async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs) {
+  var progressFill = $("progressFill");
+  var progressMsg = $("progressMsg");
+  var progressBar = $("progressBar");
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/run";
   var body = {
@@ -609,7 +642,6 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
   }
   // 工作流自定义参数注入 (如 denoise 等)
   if (typeof workflow.setArgs === "function") {
-    var inputs = getWorkflowInputs();
     body.extraSetArgs = workflow.setArgs(inputs);
   }
   if (settings.backend === "comfyui") {
@@ -652,24 +684,26 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
           progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
           if (data.percent >= 100) {
             clearInterval(pollTimer);
-            _pollTimer = 0;
           }
         }
       } catch (_) {}
     }, 2000);
-    _pollTimer = pollTimer;
   }
 
-  return await resp.arrayBuffer();
+  try {
+    return await resp.arrayBuffer();
+  } finally {
+    if (pollTimer) clearInterval(pollTimer);
+  }
 }
 
 // =========================================================================
 // 调用本地 GPT Image 桥
 // =========================================================================
 async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images) {
-  var progressFill = _progressFill;
-  var progressMsg = _progressMsg;
-  var progressBar = _progressBar;
+  var progressFill = $("progressFill");
+  var progressMsg = $("progressMsg");
+  var progressBar = $("progressBar");
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/gpt-image";
   var body = {
@@ -714,23 +748,40 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
           progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
           if (data.percent >= 100) {
             clearInterval(pollTimer);
-            _pollTimer = 0;
           }
         }
       } catch (_) {}
     }, 2000);
-    _pollTimer = pollTimer;
   }
 
-  return await resp.arrayBuffer();
+  try {
+    return await resp.arrayBuffer();
+  } finally {
+    if (pollTimer) clearInterval(pollTimer);
+  }
 }
 
 // =========================================================================
 // 把结果贴成新图层
 // =========================================================================
-async function placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
+var _resultFileSequence = 0;
+var _placeImageQueue = Promise.resolve();
+
+function placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
+  var queuedPlacement = _placeImageQueue.then(function () {
+    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement);
+  });
+  _placeImageQueue = queuedPlacement.catch(function () {});
+  return queuedPlacement;
+}
+
+async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
   var folder = await localFileSystem.getDataFolder();
-  var file = await folder.createFile("comfyps_result.png", { overwrite: true });
+  _resultFileSequence++;
+  var file = await folder.createFile(
+    "comfyps_result_" + Date.now() + "_" + _resultFileSequence + ".png",
+    { overwrite: true }
+  );
   await file.write(arrayBuffer);
   var token = await localFileSystem.createSessionToken(file);
   var offsetX = 0;
@@ -1085,10 +1136,7 @@ function selectWorkflow(wfId) {
   }
 
   runBtn.style.display = "flex";
-  var runLabel = runBtn.querySelector("#btnLabel");
-  if (runLabel) {
-    runLabel.textContent = runBtn.disabled ? "生成中" : "运行 — " + wf.name;
-  }
+  refreshRunButton();
 }
 
 function getWorkflowInputs() {
@@ -1114,33 +1162,35 @@ function getWorkflowInputs() {
 async function onRunClick() {
   var btn = $("runBtn");
   if (!btn) return;
-  // 非企业版禁止并发
-  if (!isEnterprise() && btn.disabled) return;
-  btn.disabled = true;
-  var labelEl = $("btnLabel");
-  var spinnerEl = $("btnSpinner");
-  if (labelEl) {
-    labelEl.hidden = false;
-    labelEl.textContent = "生成中";
+  var settings = loadSettings();
+  var wf = findWorkflow(_selectedWorkflowId);
+  if (!wf) {
+    setStatus("请先选择一个工作流", "err");
+    return;
   }
-  if (spinnerEl) spinnerEl.hidden = false;
+  if (!app.activeDocument) {
+    setStatus("没有打开的文档", "err");
+    return;
+  }
+  if (!canStartWorkflow(wf, settings)) {
+    setStatus(wf.gptImage ? "GPT Image 正在生成中" : "已有 RunningHub 工作流正在运行", "err");
+    refreshRunButton();
+    return;
+  }
+
+  var runSlot = getRunSlot(wf, settings);
+  var inputs = getWorkflowInputs();
+  var prompt = inputs.wfPrompt || "";
+  _activeRuns[runSlot] = { workflowId: wf.id };
+  refreshRunButton();
   setStatus("");
 
+  var progressFill = $("progressFill");
+  var progressMsg = $("progressMsg");
+  if (progressFill) progressFill.style.width = "0";
+  if (progressMsg) progressMsg.textContent = "正在提交任务…";
+
   try {
-    if (!app.activeDocument) throw new Error("没有打开的文档");
-
-    var settings = loadSettings();
-    var inputs = getWorkflowInputs();
-    var wf = findWorkflow(_selectedWorkflowId);
-    if (!wf) throw new Error("请先选择一个工作流");
-    var prompt = inputs.wfPrompt || "";
-
-    // 启动进度条
-    _progressBar = $("progressBar");
-    _progressFill = $("progressFill");
-    _progressMsg = $("progressMsg");
-    if (_progressBar) _progressBar.style.display = "block";
-
     var resultBuffer;
     var placement = null;
     if (wf.gptImage) {
@@ -1157,18 +1207,15 @@ async function onRunClick() {
         if (referenceIds.length === 2 && referenceIds[0] === referenceIds[1]) {
           throw new Error("两张参考图请选择不同的图层");
         }
-        if (labelEl) labelEl.textContent = "正在导出参考图层…";
         for (var ri = 0; ri < referenceIds.length; ri++) {
           images.push(await exportLayerPNG(referenceIds[ri]));
         }
       } else if (mode === "edit") {
-        if (labelEl) labelEl.textContent = "正在裁剪当前图层选区…";
         var editInput = await exportActiveLayerSelectionPNG();
         images.push(editInput.image);
         placement = editInput.bounds;
       }
 
-      if (labelEl) labelEl.textContent = "GPT Image 正在生成图像…";
       resultBuffer = await callGptImage(
         settings.bridgeUrl,
         settings.gptImageAuth,
@@ -1185,12 +1232,10 @@ async function onRunClick() {
       if (wf.needsMask) {
         maskB64 = await exportSelectionMaskPNG();
       }
-      if (labelEl) labelEl.textContent = "云端处理中…";
-      resultBuffer = await callBridge(settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf);
+      resultBuffer = await callBridge(
+        settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs
+      );
     }
-
-    if (_progressBar) _progressBar.style.display = "none";
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = 0; }
 
     var layerName = "ComfyPS - " + wf.name;
     if (wf.gptImage) {
@@ -1208,16 +1253,8 @@ async function onRunClick() {
     setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
     console.error(e);
   } finally {
-    if (_progressBar) _progressBar.style.display = "none";
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = 0; }
-    btn.disabled = false;
-    var labelEl2 = $("btnLabel");
-    var spinnerEl2 = $("btnSpinner");
-    if (labelEl2) {
-      labelEl2.hidden = false;
-      labelEl2.textContent = "运行 — " + (findWorkflow(_selectedWorkflowId) ? findWorkflow(_selectedWorkflowId).name : "");
-    }
-    if (spinnerEl2) spinnerEl2.hidden = true;
+    _activeRuns[runSlot] = null;
+    refreshRunButton();
   }
 }
 
@@ -1274,7 +1311,7 @@ function _showApiTypeBadge(apiType) {
   var isEnt = apiType.toLowerCase().indexOf("enterprise") !== -1;
   balanceDisplay.style.display = "inline-block";
   balanceDisplay.innerHTML = '<span class="balance-badge ' + (isEnt ? 'ok' : 'err') + '">'
-    + (isEnt ? '企业级 · 支持并发' : '消费级 · 单任务')
+    + (isEnt ? '企业级 · 支持并发' : '消费级 · RunningHub 单任务，可与 GPT Image 并行')
     + '</span>';
 }
 
