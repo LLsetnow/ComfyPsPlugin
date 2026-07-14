@@ -91,7 +91,7 @@ var WORKFLOWS = [
     icon: "✦",
     active: true,
     gptImage: true,
-    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。",
+    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。",
     inputs: [
       {
         id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
@@ -432,6 +432,51 @@ function _parseSelectionBounds(result) {
   return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
 }
 
+// Photoshop 的选区边界可能带有小数像素，且极少数情况下会延伸到画布外。
+// 上传裁切图时必须把图层和蒙版裁到同一个整数矩形，否则返图缩放后会出现
+// 一像素偏移或蒙版尺寸不一致。向外取整可以保证整个选区都被保留。
+function _normalizeSelectionCropBounds(bounds) {
+  var doc = app.activeDocument;
+  var docWidth = _asPixels(doc && doc.width);
+  var docHeight = _asPixels(doc && doc.height);
+  var left = Math.floor(_asPixels(bounds && bounds.left));
+  var top = Math.floor(_asPixels(bounds && bounds.top));
+  var right = Math.ceil(_asPixels(bounds && bounds.right));
+  var bottom = Math.ceil(_asPixels(bounds && bounds.bottom));
+
+  if (docWidth > 0) {
+    left = Math.max(0, Math.min(left, Math.floor(docWidth)));
+    right = Math.max(0, Math.min(right, Math.ceil(docWidth)));
+  }
+  if (docHeight > 0) {
+    top = Math.max(0, Math.min(top, Math.floor(docHeight)));
+    bottom = Math.max(0, Math.min(bottom, Math.ceil(docHeight)));
+  }
+  if (right <= left || bottom <= top) throw new Error("选区外接矩形无效");
+  return {
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
+function _cropDescriptor(bounds, options) {
+  return {
+    _obj: "crop",
+    to: {
+      _obj: "rectangle",
+      top: { _unit: "pixelsUnit", _value: bounds.top },
+      left: { _unit: "pixelsUnit", _value: bounds.left },
+      bottom: { _unit: "pixelsUnit", _value: bounds.bottom },
+      right: { _unit: "pixelsUnit", _value: bounds.right },
+    },
+    _options: options || { dialogOptions: "silent" },
+  };
+}
+
 async function _readSelectionBounds() {
   var doc = app.activeDocument;
   if (doc && doc.selection && doc.selection.bounds) {
@@ -517,7 +562,7 @@ async function exportActiveLayerSelectionPNG() {
   await executeAsModal(
     async function () {
       try {
-        bounds = await _readSelectionBounds();
+        bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
         _isolateLayer(records, layerId);
         if (typeof app.activeDocument.duplicate === "function") {
           duplicateDoc = await app.activeDocument.duplicate("ComfyPS GPT Image Input");
@@ -533,17 +578,7 @@ async function exportActiveLayerSelectionPNG() {
           }], {});
           duplicated = true;
           await batchPlay([
-            {
-              _obj: "crop",
-              to: {
-                _obj: "rectangle",
-                top: { _unit: "pixelsUnit", _value: bounds.top },
-                left: { _unit: "pixelsUnit", _value: bounds.left },
-                bottom: { _unit: "pixelsUnit", _value: bounds.bottom },
-                right: { _unit: "pixelsUnit", _value: bounds.right },
-              },
-              _options: noDialog,
-            },
+            _cropDescriptor(bounds, noDialog),
             _pngSaveDescriptor(token),
           ], {});
         }
@@ -575,9 +610,12 @@ async function exportActiveLayerSelectionPNG() {
 // =========================================================================
 // 导出当前选区为蒙版 PNG (base64, 默认白=选中；GPT Image 为透明=编辑区)
 // =========================================================================
-async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
+async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBounds) {
   var doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
+
+  var normalizedCropBounds = cropBounds
+    ? _normalizeSelectionCropBounds(cropBounds) : null;
 
   var folder = await localFileSystem.getDataFolder();
   var file = await folder.createFile("comfyps_mask.png", { overwrite: true });
@@ -611,6 +649,7 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
   var tempLayer = null;
   var tempLayerCreated = false;
   var batchPlayLayerCreated = false;
+  var batchPlayDuplicate = false;
   var channelCreated = false;
 
   var removeSourceChannel = async function () {
@@ -662,9 +701,33 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
           if (sourceChannel && typeof sourceChannel.duplicate === "function") {
             try { await sourceChannel.duplicate(duplicateDoc); } catch (_) {}
           }
+          if (normalizedCropBounds) {
+            if (typeof duplicateDoc.crop === "function") {
+              await duplicateDoc.crop(normalizedCropBounds);
+            } else {
+              await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
+            }
+          }
+        } else {
+          // The Action Manager fallback duplicates the document and makes it
+          // active. Crop that temporary document before building the mask so
+          // the saved PNG has exactly the same dimensions as the input image.
+          await batchPlay([{
+            _obj: "duplicate",
+            _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
+            name: "ComfyPS Mask Input",
+            _options: noDialog,
+          }], {});
+          batchPlayDuplicate = true;
+          if (normalizedCropBounds) {
+            await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
+          }
         }
 
-        var workDoc = duplicateDoc || doc;
+        // When the Action Manager fallback duplicated the document, the DOM
+        // object still points at the original document. Leave workDoc null so
+        // the following batchPlay layer creation targets the active duplicate.
+        var workDoc = duplicateDoc || (batchPlayDuplicate ? null : doc);
         if (workDoc && typeof workDoc.createLayer === "function") {
           tempLayer = await workDoc.createLayer({ name: "ComfyPS Mask" });
           tempLayerCreated = true;
@@ -714,9 +777,9 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
           } catch (_) {}
         }
 
-        if (duplicateDoc) {
+        if (duplicateDoc || batchPlayDuplicate) {
           try {
-            if (typeof duplicateDoc.closeWithoutSaving === "function") {
+            if (duplicateDoc && typeof duplicateDoc.closeWithoutSaving === "function") {
               await duplicateDoc.closeWithoutSaving();
             } else {
               await batchPlay([{
@@ -1259,17 +1322,16 @@ async function browseCachePath() {
   }
 }
 
-async function _alignPlacedLayerToCanvas(layer, docWidth, docHeight) {
-  if (!layer || !layer.bounds || docWidth <= 0 || docHeight <= 0) return;
-  // GPT Image / RunningHub 局部编辑的输入和蒙版都是整张文档画布。
+async function _alignPlacedLayerToPosition(layer, targetLeft, targetTop) {
+  if (!layer || !layer.bounds || !isFinite(targetLeft) || !isFinite(targetTop)) return;
   // placeEvent 的默认中心放置在缩放后可能留下非零的左/上偏移，因此
-  // 必须用实际边界重新对齐到 Photoshop 文档坐标 (0, 0)，否则选区蒙版
-  // 也会跟着错位。
+  // 必须用实际边界重新对齐到目标文档坐标。GPT 编辑的目标坐标是选区
+  // 外接矩形左上角；整画布工作流的目标坐标则是 (0, 0)。
   var bounds = layer.boundsNoEffects || layer.bounds;
   var left = _asPixels(bounds && bounds.left);
   var top = _asPixels(bounds && bounds.top);
-  var dx = -left;
-  var dy = -top;
+  var dx = targetLeft - left;
+  var dy = targetTop - top;
   if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
 
   if (typeof layer.translate === "function") {
@@ -1345,12 +1407,21 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
       await batchPlay(commands, {});
       if (revealSelection) {
         // GPT Image and RunningHub inpaint may return a different resolution,
-        // so scale the full-canvas result to the Photoshop document before
-        // applying the selection mask.
+        // so scale the result to its intended Photoshop canvas before applying
+        // the selection mask. GPT edit uses the cropped selection rectangle;
+        // RunningHub still uses the full document canvas.
         var targetDoc = app.activeDocument;
         var targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
         var targetWidth = _asPixels(targetDoc && targetDoc.width);
         var targetHeight = _asPixels(targetDoc && targetDoc.height);
+        var targetLeft = 0;
+        var targetTop = 0;
+        if (placement) {
+          targetWidth = _asPixels(placement.width);
+          targetHeight = _asPixels(placement.height);
+          targetLeft = _asPixels(placement.left);
+          targetTop = _asPixels(placement.top);
+        }
         var layerWidth = _asPixels(targetLayer && targetLayer.bounds && targetLayer.bounds.width);
         var layerHeight = _asPixels(targetLayer && targetLayer.bounds && targetLayer.bounds.height);
         if (targetWidth > 0 && targetHeight > 0 && layerWidth > 0 && layerHeight > 0) {
@@ -1369,9 +1440,9 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
         }
         // Re-read the bounds after the optional scale. The selection snapshot
         // is in document coordinates, so the output layer must share the same
-        // canvas origin before Photoshop creates its layer mask.
+        // document position before Photoshop creates its layer mask.
         targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
-        await _alignPlacedLayerToCanvas(targetLayer, targetWidth, targetHeight);
+        await _alignPlacedLayerToPosition(targetLayer, targetLeft, targetTop);
         try {
           // Restore the selection captured at submission time. The user may
           // have changed the active selection while a long GPT task ran.
@@ -1526,7 +1597,7 @@ function getWorkflowDescription(wf) {
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
     var debugText = gptSettings.gptImageLocalValidation
       ? " 当前已启用本地验证：不会调用模型。" : "";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。" + debugText;
+    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
   }
   return wf.description || "";
 }
@@ -1594,14 +1665,6 @@ function getSelectionAspectRatio(bounds) {
   return normalizeGptAspectRatio(bounds.width + ":" + bounds.height);
 }
 
-function getDocumentAspectRatio() {
-  var doc = app.activeDocument;
-  var width = _asPixels(doc && doc.width);
-  var height = _asPixels(doc && doc.height);
-  if (width <= 0 || height <= 0) throw new Error("文档尺寸无效");
-  return normalizeGptAspectRatio(width + ":" + height);
-}
-
 function renderGptEditReferenceInput(container) {
   var records;
   try {
@@ -1645,7 +1708,7 @@ function renderGptImageLayerInputs() {
   if (modeSelect.value === "edit") {
     var editHint = document.createElement("div");
     editHint.className = "input-note";
-    editHint.textContent = "画面比例将自动跟随当前文档，活动图层的选区蒙版决定实际编辑区域。";
+    editHint.textContent = "仅上传活动图层的选区外接矩形，画面比例自动跟随该矩形；返图会放回原选区位置。";
     container.appendChild(editHint);
     renderGptEditReferenceInput(container);
     return;
@@ -1942,21 +2005,24 @@ async function onRunClick() {
           throwIfGptTaskCancelled(runState);
         }
       } else if (mode === "edit") {
-        // Send the active layer on the full document canvas (including its
-        // transparent pixels) plus a same-size selection mask. The generated
-        // result is revealed only inside the selection when placed back.
-        images.push(await exportActiveLayerPNG());
+        // Send only the active layer's selection bounding rectangle. The mask
+        // is cropped to the exact same rectangle below, which keeps the model
+        // input small while preserving the original document coordinates for
+        // placement when the result is imported.
+        var editInput = await exportActiveLayerSelectionPNG();
+        images.push(editInput.image);
         throwIfGptTaskCancelled(runState);
         // OpenAI /edits requires an alpha mask (transparent = editable),
         // while local Codex receives the mask as an ordinary reference image
         // and therefore needs an explicit black/white selection map.
         var maskExport = await exportSelectionMaskPNG(
-          settings.gptImageAuth !== "codex", true
+          settings.gptImageAuth !== "codex", true, editInput.bounds
         );
         gptMaskB64 = maskExport.mask;
         selectionSnapshotChannel = maskExport.selectionChannelName;
         throwIfGptTaskCancelled(runState);
-        inputs.gptAspectRatio = getDocumentAspectRatio();
+        placement = editInput.bounds;
+        inputs.gptAspectRatio = getSelectionAspectRatio(editInput.bounds);
         revealSelection = true;
         if (inputs.gptEditUseReference) {
           if (!inputs.gptEditReferenceLayer) throw new Error("请选择编辑参考图层");

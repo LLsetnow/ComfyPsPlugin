@@ -456,7 +456,7 @@ def build_codex_image_prompt(
         "edit": (
             "图像编辑（强制约束）：先读取第 1 张本地附图 input_1.png，再生成它的编辑版本。"
             "输出必须继承 input_1.png 的主体、构图、画布比例与未编辑像素；绝不能生成与 input_1.png 无关的新图。"
-            "第 1 张附图是当前活动图层的完整画布内容（透明区域表示图层没有内容）。"
+            "第 1 张附图是当前活动图层按选区外接矩形裁切后的输入图，输出也必须保持这个裁切区域的画布范围和构图。"
             "只能按提示词修改允许编辑的选区，并保持选区外内容逐像素不变。"
             + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但不要改变第 1 张图的画布构图。"
                if image_count > 1 else "")
@@ -485,13 +485,13 @@ def build_openai_image_prompt(mode: str, prompt: str, image_count: int) -> str:
     if mode != "edit":
         return prompt.strip()
     input_roles = (
-        "第 1 张输入图是当前活动图层的完整画布内容，透明区域表示该图层没有内容。"
-        "请求中的 mask 指定实际编辑区域；请输出完整画布，并保持 mask 之外的内容不变。"
+        "第 1 张输入图是当前活动图层按选区外接矩形裁切后的图像，透明区域表示该图层没有内容。"
+        "请求中的 mask 与第 1 张输入图尺寸完全相同，并指定实际编辑区域；请输出同一裁切范围的图像，保持 mask 之外的内容不变。"
     )
     if image_count > 1:
         input_roles += (
             "第 2 张输入图仅作参考图；参考其风格、主体或细节，"
-            "但输出必须基于第 1 张的完整画布构图和比例。"
+            "但输出必须基于第 1 张裁切图的构图和比例。"
         )
     return input_roles + "\n用户编辑要求：\n" + prompt.strip()
 
@@ -543,7 +543,7 @@ def parse_gpt_image_request(body: dict):
         raise GptImageRequestError("INVALID_IMAGES", "参考图模式需要选择 1 或 2 个图层")
     if mode == "edit" and not 1 <= len(images) <= 2:
         raise GptImageRequestError(
-            "INVALID_IMAGES", "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图")
+            "INVALID_IMAGES", "图像编辑模式需要活动图层选区外接矩形图，可额外添加一张参考图")
     if mode != "edit" and mask:
         raise GptImageRequestError("INVALID_MASK", "只有图像编辑模式可以使用选区蒙版")
     if mode == "edit" and not isinstance(mask, str):
