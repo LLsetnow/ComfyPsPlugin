@@ -91,13 +91,13 @@ var WORKFLOWS = [
     icon: "✦",
     active: true,
     gptImage: true,
-    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于活动图层的选区进行编辑。",
+    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于当前文档的选区蒙版进行编辑。",
     inputs: [
       {
         id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
           { value: "generate", label: "文生图" },
           { value: "reference", label: "添加参考图" },
-          { value: "edit", label: "图像编辑（当前图层选区）" },
+          { value: "edit", label: "图像编辑（当前文档选区）" },
         ],
       },
       { id: "wfPrompt", type: "textarea", label: "关键词 / 编辑说明", placeholder: "例如：午后阳光下的极简室内产品摄影", default: "" },
@@ -508,9 +508,9 @@ async function exportActiveLayerSelectionPNG() {
 }
 
 // =========================================================================
-// 导出当前选区为蒙版 PNG (base64, 白=选中)
+// 导出当前选区为蒙版 PNG (base64, 默认白=选中；GPT Image 为透明=编辑区)
 // =========================================================================
-async function exportSelectionMaskPNG() {
+async function exportSelectionMaskPNG(forGptImage) {
   var doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
 
@@ -553,9 +553,11 @@ async function exportSelectionMaskPNG() {
       await batchPlay(
         [
           setSel({ _enum: "ordinal", _value: "allEnum" }),
-          fillCmd("black"),
+          fillCmd(forGptImage ? "white" : "black"),
           setSel({ _ref: "channel", _name: "comfyps_sel" }),
-          fillCmd("white"),
+          // GPT Image uses the transparent part of the mask as the edit area;
+          // RunningHub keeps its existing white=edit mask convention.
+          fillCmd(forGptImage ? "clear" : "white"),
           setSel({ _enum: "ordinal", _value: "none" }),
           {
             _obj: "save",
@@ -709,7 +711,7 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 // =========================================================================
 // 调用本地 GPT Image 桥
 // =========================================================================
-async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images) {
+async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images, maskB64) {
   var progressFill = $("progressFill");
   var progressMsg = $("progressMsg");
   var progressBar = $("progressBar");
@@ -723,6 +725,7 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
     resolution: resolution || "",
     images: images || [],
   };
+  if (maskB64) body.mask = maskB64;
   if (provider === "api-key" && apiKey) body.apiKey = apiKey;
 
   var resp;
@@ -776,15 +779,15 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
 var _resultFileSequence = 0;
 var _placeImageQueue = Promise.resolve();
 
-function placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
+function placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection) {
   var queuedPlacement = _placeImageQueue.then(function () {
-    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement);
+    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection);
   });
   _placeImageQueue = queuedPlacement.catch(function () {});
   return queuedPlacement;
 }
 
-async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
+async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection) {
   var folder = await localFileSystem.getDataFolder();
   _resultFileSequence++;
   var file = await folder.createFile(
@@ -806,27 +809,56 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
 
   await executeAsModal(
     async function () {
-      await batchPlay(
-        [
-          {
-            _obj: "placeEvent",
-            target: { _path: token, _kind: "local" },
-            offset: {
-              _obj: "offset",
-              horizontal: { _unit: "pixelsUnit", _value: offsetX },
-              vertical: { _unit: "pixelsUnit", _value: offsetY },
-            },
-            _options: { dialogOptions: "dontDisplay" },
+      var commands = [
+        {
+          _obj: "placeEvent",
+          target: { _path: token, _kind: "local" },
+          offset: {
+            _obj: "offset",
+            horizontal: { _unit: "pixelsUnit", _value: offsetX },
+            vertical: { _unit: "pixelsUnit", _value: offsetY },
           },
-          {
-            _obj: "set",
-            _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-            to: { _obj: "layer", name: layerName },
-            _options: { dialogOptions: "dontDisplay" },
-          },
-        ],
-        {}
-      );
+          _options: { dialogOptions: "dontDisplay" },
+        },
+        {
+          _obj: "set",
+          _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+          to: { _obj: "layer", name: layerName },
+          _options: { dialogOptions: "dontDisplay" },
+        },
+      ];
+      await batchPlay(commands, {});
+      if (revealSelection) {
+        // GPT Image returns the requested resolution, so scale the full-canvas
+        // result to the Photoshop document before applying the selection mask.
+        var targetDoc = app.activeDocument;
+        var targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
+        var targetWidth = _asPixels(targetDoc && targetDoc.width);
+        var targetHeight = _asPixels(targetDoc && targetDoc.height);
+        var layerWidth = _asPixels(targetLayer && targetLayer.bounds && targetLayer.bounds.width);
+        var layerHeight = _asPixels(targetLayer && targetLayer.bounds && targetLayer.bounds.height);
+        if (targetWidth > 0 && targetHeight > 0 && layerWidth > 0 && layerHeight > 0) {
+          var scaleX = targetWidth / layerWidth * 100;
+          var scaleY = targetHeight / layerHeight * 100;
+          var scale = Math.max(scaleX, scaleY);
+          if (Math.abs(scale - 100) > 0.01) {
+            await batchPlay([{
+              _obj: "transform",
+              freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
+              width: { _unit: "percentUnit", _value: scale },
+              height: { _unit: "percentUnit", _value: scale },
+              _options: { dialogOptions: "dontDisplay" },
+            }], {});
+          }
+        }
+        await batchPlay([{
+          _obj: "make",
+          new: { _class: "channel" },
+          at: { _ref: "channel", _enum: "channel", _value: "mask" },
+          using: { _enum: "userMaskEnabled", _value: "revealSelection" },
+          _options: { dialogOptions: "dontDisplay" },
+        }], {});
+      }
     },
     { commandName: "贴回结果图层" }
   );
@@ -950,7 +982,7 @@ function getWorkflowDescription(wf) {
   if (wf.gptImage) {
     var auth = loadSettings().gptImageAuth;
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于活动图层的选区进行编辑。";
+    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前文档的选区蒙版进行编辑。";
   }
   return wf.description || "";
 }
@@ -1018,6 +1050,14 @@ function getSelectionAspectRatio(bounds) {
   return normalizeGptAspectRatio(bounds.width + ":" + bounds.height);
 }
 
+function getDocumentAspectRatio() {
+  var doc = app.activeDocument;
+  var width = _asPixels(doc && doc.width);
+  var height = _asPixels(doc && doc.height);
+  if (width <= 0 || height <= 0) throw new Error("文档尺寸无效");
+  return normalizeGptAspectRatio(width + ":" + height);
+}
+
 function renderGptEditReferenceInput(container) {
   var records;
   try {
@@ -1061,7 +1101,7 @@ function renderGptImageLayerInputs() {
   if (modeSelect.value === "edit") {
     var editHint = document.createElement("div");
     editHint.className = "input-note";
-    editHint.textContent = "画面比例将自动跟随当前矩形选区。";
+    editHint.textContent = "画面比例将自动跟随当前文档，选区蒙版决定实际编辑区域。";
     container.appendChild(editHint);
     renderGptEditReferenceInput(container);
     return;
@@ -1270,6 +1310,8 @@ async function onRunClick() {
   try {
     var resultBuffer;
     var placement = null;
+    var gptMaskB64 = "";
+    var revealSelection = false;
     if (wf.gptImage) {
       var mode = gptMode;
       var images = [];
@@ -1288,10 +1330,12 @@ async function onRunClick() {
           images.push(await exportLayerPNG(referenceIds[ri]));
         }
       } else if (mode === "edit") {
-        var editInput = await exportActiveLayerSelectionPNG();
-        images.push(editInput.image);
-        placement = editInput.bounds;
-        inputs.gptAspectRatio = getSelectionAspectRatio(editInput.bounds);
+        // Match the RunningHub inpaint flow: send the complete document and
+        // a selection mask, then reveal the generated layer only in the selection.
+        images.push(await exportActiveDocPNG());
+        gptMaskB64 = await exportSelectionMaskPNG(true);
+        inputs.gptAspectRatio = getDocumentAspectRatio();
+        revealSelection = true;
         if (inputs.gptEditUseReference) {
           if (!inputs.gptEditReferenceLayer) throw new Error("请选择编辑参考图层");
           images.push(await exportLayerPNG(inputs.gptEditReferenceLayer));
@@ -1306,7 +1350,8 @@ async function onRunClick() {
         prompt,
         inputs.gptAspectRatio,
         inputs.gptResolution,
-        images
+        images,
+        gptMaskB64
       );
     } else {
       var imageB64 = await exportActiveDocPNG();
@@ -1328,7 +1373,7 @@ async function onRunClick() {
       };
       layerName = "ComfyPSGPT - " + (gptModeNames[mode] || mode);
     }
-    await placeImageBytesAsLayer(resultBuffer, layerName, placement);
+    await placeImageBytesAsLayer(resultBuffer, layerName, placement, revealSelection);
 
     setStatus("完成 ✓", "ok");
   } catch (e) {

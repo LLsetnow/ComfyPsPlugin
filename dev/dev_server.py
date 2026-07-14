@@ -351,9 +351,13 @@ async def handle_codex_image(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "INVALID_IMAGES", "message": "参考图模式需要 1 或 2 张图片"}, status=400
         )
-    if mode == "edit" and len(images) != 1:
+    if mode == "edit" and not 1 <= len(images) <= 2:
         return web.json_response(
-            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要一张图片"}, status=400
+            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要完整文档图，可额外添加一张参考图"}, status=400
+        )
+    if mode == "edit" and not body.get("mask"):
+        return web.json_response(
+            {"error": "MISSING_MASK", "message": "图像编辑模式需要选区蒙版"}, status=400
         )
 
     print(
@@ -405,6 +409,7 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
 
     print(
         f"  [mock /gpt-image] provider={provider}  mode={mode}  refs={len(images)}  "
+        f"mask={'✓' if body.get('mask') else '—'}  "
         f"prompt={'✓' if prompt else '—'}"
     )
     await asyncio.sleep(1.2)
