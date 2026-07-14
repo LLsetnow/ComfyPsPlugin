@@ -15,7 +15,9 @@ Photoshop 插件(UXP)无法直接执行命令并抓 stdout,所以由这个小服
 
 import asyncio
 import base64
+import binascii
 import json
+import math
 import os
 import re
 import shutil
@@ -24,7 +26,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
 
 BRIDGE_DIR = Path(__file__).resolve().parent
 
@@ -56,10 +58,25 @@ _task_progress: dict[str, dict] = {}
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
 CODEX_IMAGE_MAX_INPUT_BYTES = 45 * 1024 * 1024
+OPENAI_GPT_IMAGE_MODEL = "gpt-image-2"
+OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images"
 
 
 class CodexImageError(RuntimeError):
     """Codex 图像扩展返回的可展示错误。"""
+
+
+class GptImageRequestError(ValueError):
+    """GPT Image 请求参数错误。"""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class OpenAIImageError(RuntimeError):
+    """OpenAI Image API 返回的可展示错误。"""
 
 
 class CodexAppServerClient:
@@ -337,6 +354,137 @@ def build_codex_image_prompt(mode: str, prompt: str, aspect_ratio: str, resoluti
         f"{prompt.strip()}\n"
         "不要解释，不要执行命令，不要创建其他文件；只完成图像生成。"
     )
+
+
+def parse_gpt_image_request(body: dict):
+    """校验 GPT Image 端点共享的请求字段。"""
+    mode = (body.get("mode") or "generate").strip().lower()
+    prompt = (body.get("prompt") or "").strip()
+    aspect_ratio = (body.get("aspectRatio") or "").strip()
+    resolution = (body.get("resolution") or "").strip()
+    images = body.get("images") or []
+
+    if mode not in ("generate", "reference", "edit"):
+        raise GptImageRequestError(
+            "INVALID_MODE", "mode 必须是 generate、reference 或 edit")
+    if not prompt:
+        raise GptImageRequestError("MISSING_PROMPT", "请输入关键词或编辑说明")
+    if len(prompt) > 8000:
+        raise GptImageRequestError("PROMPT_TOO_LONG", "提示词不能超过 8000 个字符")
+    if not isinstance(images, list):
+        raise GptImageRequestError("INVALID_IMAGES", "images 必须是图片数组")
+    if mode == "generate" and images:
+        raise GptImageRequestError("INVALID_IMAGES", "文生图模式不接受参考图")
+    if mode == "reference" and not 1 <= len(images) <= 2:
+        raise GptImageRequestError("INVALID_IMAGES", "参考图模式需要选择 1 或 2 个图层")
+    if mode == "edit" and len(images) != 1:
+        raise GptImageRequestError("INVALID_IMAGES", "图像编辑模式需要一个选区裁剪图")
+    if any(not isinstance(image, str) for image in images):
+        raise GptImageRequestError("INVALID_IMAGES", "参考图格式不正确")
+    return mode, prompt, aspect_ratio, resolution, images
+
+
+def resolve_openai_image_size(aspect_ratio: str, resolution: str) -> str:
+    """将 UI 的比例与分辨率档位转换为 gpt-image-2 的合法像素尺寸。"""
+    target_pixels = {
+        "1k": 1_048_576,
+        "2k": 4_194_304,
+        "4k": 8_294_400,
+    }.get((resolution or "").lower(), 1_048_576)
+    try:
+        parts = aspect_ratio.split(":")
+        ratio = float(parts[0]) / float(parts[1])
+        if ratio <= 0 or ratio > 3 or ratio < 1 / 3:
+            raise ValueError()
+    except (ValueError, IndexError, ZeroDivisionError):
+        ratio = 1.0
+
+    width = max(16, int(round(math.sqrt(target_pixels * ratio) / 16.0)) * 16)
+    height = max(16, int(round(math.sqrt(target_pixels / ratio) / 16.0)) * 16)
+    while width > 3840 or height > 3840 or width * height > 8_294_400:
+        width = max(16, width - 16)
+        height = max(16, height - 16)
+    while width * height < 655_360:
+        width += 16
+        height += 16
+    return f"{width}x{height}"
+
+
+async def run_openai_gpt_image(
+    api_key: str,
+    mode: str,
+    prompt: str,
+    aspect_ratio: str,
+    resolution: str,
+    image_paths: list[Path],
+) -> bytes:
+    """调用 OpenAI gpt-image-2，返回 PNG 二进制结果。"""
+    if not api_key or not api_key.strip():
+        raise GptImageRequestError("MISSING_API_KEY", "请输入 OpenAI API Key")
+
+    headers = {"Authorization": "Bearer " + api_key.strip()}
+    size = resolve_openai_image_size(aspect_ratio, resolution)
+    timeout = ClientTimeout(total=CODEX_IMAGE_TIMEOUT_SECONDS)
+    opened_files = []
+    try:
+        async with ClientSession(timeout=timeout) as session:
+            if mode == "generate":
+                payload = {
+                    "model": OPENAI_GPT_IMAGE_MODEL,
+                    "prompt": prompt,
+                    "size": size,
+                    "quality": "auto",
+                }
+                async with session.post(
+                    OPENAI_IMAGE_API_URL + "/generations", headers=headers, json=payload
+                ) as response:
+                    response_body = await response.text()
+            else:
+                form = FormData()
+                form.add_field("model", OPENAI_GPT_IMAGE_MODEL)
+                form.add_field("prompt", prompt)
+                form.add_field("size", size)
+                form.add_field("quality", "auto")
+                for image_path in image_paths:
+                    image_file = image_path.open("rb")
+                    opened_files.append(image_file)
+                    form.add_field(
+                        "image",
+                        image_file,
+                        filename=image_path.name,
+                        content_type="image/png",
+                    )
+                async with session.post(
+                    OPENAI_IMAGE_API_URL + "/edits", headers=headers, data=form
+                ) as response:
+                    response_body = await response.text()
+
+                # FormData 会在请求时处理 Content-Type，不能手工覆盖。
+            if response.status < 200 or response.status >= 300:
+                message = "OpenAI API 请求失败"
+                try:
+                    error = json.loads(response_body).get("error") or {}
+                    message = error.get("message") or error.get("code") or message
+                except (TypeError, ValueError):
+                    pass
+                raise OpenAIImageError(f"{message} (HTTP {response.status})")
+    except ClientError as e:
+        raise OpenAIImageError(f"无法连接 OpenAI API: {e}") from e
+    finally:
+        for image_file in opened_files:
+            image_file.close()
+
+    try:
+        result = json.loads(response_body)
+        b64 = result["data"][0]["b64_json"]
+        image_bytes = base64.b64decode(b64, validate=True)
+    except (KeyError, IndexError, TypeError, ValueError, binascii.Error) as e:
+        raise OpenAIImageError("OpenAI API 未返回有效图片") from e
+    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise OpenAIImageError("OpenAI API 未返回 PNG 图片")
+    if len(image_bytes) > CODEX_IMAGE_MAX_INPUT_BYTES:
+        raise OpenAIImageError("OpenAI API 返回的图片过大")
+    return image_bytes
 
 
 async def _run_codex_command(args: list[str], timeout: int = 10):
@@ -785,44 +933,12 @@ async def handle_codex_status(request):
     }))
 
 
-async def handle_codex_image(request):
+async def handle_codex_image_body(body):
     """通过已登录的本地 Codex 生成、参考生成或编辑一张图片。"""
     try:
-        body = await request.json()
-    except Exception:
-        return cors(web.json_response(
-            {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
-
-    mode = (body.get("mode") or "generate").strip().lower()
-    prompt = (body.get("prompt") or "").strip()
-    aspect_ratio = (body.get("aspectRatio") or "").strip()
-    resolution = (body.get("resolution") or "").strip()
-    images = body.get("images") or []
-
-    if mode not in ("generate", "reference", "edit"):
-        return cors(web.json_response(
-            {"error": "INVALID_MODE", "message": "mode 必须是 generate、reference 或 edit"}, status=400))
-    if not prompt:
-        return cors(web.json_response(
-            {"error": "MISSING_PROMPT", "message": "请输入关键词或编辑说明"}, status=400))
-    if len(prompt) > 8000:
-        return cors(web.json_response(
-            {"error": "PROMPT_TOO_LONG", "message": "提示词不能超过 8000 个字符"}, status=400))
-    if not isinstance(images, list):
-        return cors(web.json_response(
-            {"error": "INVALID_IMAGES", "message": "images 必须是图片数组"}, status=400))
-    if mode == "generate" and images:
-        return cors(web.json_response(
-            {"error": "INVALID_IMAGES", "message": "文生图模式不接受参考图"}, status=400))
-    if mode == "reference" and not 1 <= len(images) <= 2:
-        return cors(web.json_response(
-            {"error": "INVALID_IMAGES", "message": "参考图模式需要选择 1 或 2 个图层"}, status=400))
-    if mode == "edit" and len(images) != 1:
-        return cors(web.json_response(
-            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要一个选区裁剪图"}, status=400))
-    if any(not isinstance(image, str) for image in images):
-        return cors(web.json_response(
-            {"error": "INVALID_IMAGES", "message": "参考图格式不正确"}, status=400))
+        mode, prompt, aspect_ratio, resolution, images = parse_gpt_image_request(body)
+    except GptImageRequestError as e:
+        return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
 
     import uuid
     task_id = str(uuid.uuid4())[:8]
@@ -868,6 +984,115 @@ async def handle_codex_image(request):
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass
+
+
+async def handle_codex_image(request):
+    """兼容旧的 /codex/image 调用。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
+    return await handle_codex_image_body(body)
+
+
+async def handle_gpt_image(request):
+    """按认证方式路由 GPT Image 请求：Codex 订阅或 OpenAI API Key。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
+
+    provider = (body.get("provider") or "codex").strip().lower()
+    if provider == "codex":
+        return await handle_codex_image_body(body)
+    if provider not in ("api-key", "apikey", "openai"):
+        return cors(web.json_response(
+            {"error": "INVALID_PROVIDER", "message": "provider 必须是 codex 或 api-key"}, status=400))
+
+    try:
+        mode, prompt, aspect_ratio, resolution, images = parse_gpt_image_request(body)
+    except GptImageRequestError as e:
+        return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
+
+    api_key = (body.get("apiKey") or "").strip()
+    if not api_key:
+        return cors(web.json_response(
+            {"error": "MISSING_API_KEY", "message": "请输入 OpenAI API Key"}, status=400))
+
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    _task_progress[task_id] = {"percent": 10, "message": "准备 OpenAI GPT Image 请求…"}
+    tmp = Path(tempfile.mkdtemp(prefix="comfyps_openai_image_"))
+    try:
+        image_paths = []
+        for index, image in enumerate(images):
+            image_path = tmp / f"input_{index + 1}.png"
+            try:
+                write_codex_input_image(image, image_path)
+            except CodexImageError as e:
+                raise GptImageRequestError("INVALID_IMAGES", str(e)) from e
+            image_paths.append(image_path)
+
+        _task_progress[task_id] = {"percent": 35, "message": "正在调用 OpenAI GPT Image…"}
+        result_bytes = await run_openai_gpt_image(
+            api_key, mode, prompt, aspect_ratio, resolution, image_paths
+        )
+        _task_progress[task_id] = {"percent": 100, "message": "完成"}
+        response = web.Response(body=result_bytes, content_type="image/png")
+        response.headers["X-Task-Id"] = task_id
+        return cors(response)
+    except GptImageRequestError as e:
+        _task_progress[task_id] = {"percent": 0, "message": e.message}
+        return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
+    except OpenAIImageError as e:
+        _task_progress[task_id] = {"percent": 0, "message": str(e)}
+        return cors(web.json_response(
+            {"error": "OPENAI_IMAGE_ERROR", "message": str(e)}, status=502))
+    except asyncio.TimeoutError:
+        _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 生成超时"}
+        return cors(web.json_response(
+            {"error": "OPENAI_TIMEOUT", "message": "OpenAI GPT Image 生成超时"}, status=504))
+    except Exception as e:
+        _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 任务失败"}
+        return cors(web.json_response(
+            {"error": "OPENAI_BRIDGE_ERROR", "message": f"OpenAI GPT Image 任务失败: {e}"}, status=500))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def handle_gpt_image_status(request):
+    """测试 OpenAI API Key；Codex 状态仍由 /codex/status 负责。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "message": "请求体不是 JSON"}, status=400))
+    api_key = (body.get("apiKey") or "").strip()
+    if not api_key:
+        return cors(web.json_response(
+            {"ok": False, "message": "请输入 OpenAI API Key"}, status=400))
+
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            async with session.get(
+                "https://api.openai.com/v1/models/" + OPENAI_GPT_IMAGE_MODEL,
+                headers={"Authorization": "Bearer " + api_key},
+            ) as response:
+                response_body = await response.text()
+        if 200 <= response.status < 300:
+            return cors(web.json_response({"ok": True, "message": "OpenAI GPT Image API Key 可用"}))
+        message = "OpenAI API Key 不可用"
+        try:
+            error = json.loads(response_body).get("error") or {}
+            message = error.get("message") or error.get("code") or message
+        except (TypeError, ValueError):
+            pass
+        return cors(web.json_response({"ok": False, "message": message}, status=response.status))
+    except (ClientError, asyncio.TimeoutError) as e:
+        return cors(web.json_response(
+            {"ok": False, "message": f"无法连接 OpenAI API: {e}"}, status=502))
 
 
 async def handle_run(request):
@@ -955,6 +1180,8 @@ def main():
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
+    app.router.add_post("/gpt-image", handle_gpt_image)
+    app.router.add_post("/gpt-image/status", handle_gpt_image_status)
     app.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
 
     port = int(CONFIG["port"])

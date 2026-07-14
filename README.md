@@ -78,5 +78,20 @@ python bridge/bridge.py
 2. 点面板里的「运行」。
 3. 状态走完「导出 → 云端处理 → 贴回」后,结果作为新图层出现,选区外像素不变。
 
+## GPT Image
+
+工作流页的「GPT Image」支持三种模式：
+
+- **文生图**：填写关键词，选择画面比例和分辨率。
+- **添加参考图**：从当前文档的图层下拉框中选择 1 或 2 个图层作为参考图。
+- **图像编辑**：使用当前活动图层；插件会复制文档、裁剪现有选区作为输入，完成后关闭副本并将结果贴回选区中心。
+
+在设置页选择认证方式：
+
+- **Codex 订阅**：在本机终端完成 `codex login`，并确保 `codex features list` 中 `image_generation` 已启用。此路径通过本机 Codex CLI 调用，不需要 API Key。
+- **OpenAI API Key**：桥会直接调用 `gpt-image-2` 的图像接口。API 使用量与 ChatGPT/Codex 订阅分开计费，账户也可能需要完成 OpenAI 的组织验证。
+
+OpenAI API Key 保存在本机插件设置中；每次仅随本机桥的 GPT Image 请求传递，不会写入 `bridge/config.json`。生产桥提供 `POST /gpt-image` 和 `POST /gpt-image/status`；旧的 `POST /codex/image` 仍保留兼容。
+
 ## 许可证
 MIT

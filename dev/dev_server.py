@@ -364,6 +364,64 @@ async def handle_codex_image(request: web.Request) -> web.Response:
     return web.Response(body=DEMO_PNG, content_type="image/png")
 
 
+async def handle_gpt_image(request: web.Request) -> web.Response:
+    """Mock /gpt-image，覆盖 Codex 订阅与 OpenAI API Key 两种认证。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400
+        )
+
+    provider = (body.get("provider") or "codex").strip().lower()
+    if provider not in ("codex", "api-key", "apikey", "openai"):
+        return web.json_response(
+            {"error": "INVALID_PROVIDER", "message": "无效的 GPT Image 认证方式"}, status=400
+        )
+    if provider != "codex" and not (body.get("apiKey") or "").strip():
+        return web.json_response(
+            {"error": "MISSING_API_KEY", "message": "请输入 OpenAI API Key"}, status=400
+        )
+
+    mode = (body.get("mode") or "generate").strip().lower()
+    prompt = (body.get("prompt") or "").strip()
+    images = body.get("images") or []
+    if mode not in ("generate", "reference", "edit"):
+        return web.json_response(
+            {"error": "INVALID_MODE", "message": "无效的 GPT Image 模式"}, status=400
+        )
+    if not prompt:
+        return web.json_response(
+            {"error": "MISSING_PROMPT", "message": "请输入关键词或编辑说明"}, status=400
+        )
+    if mode == "reference" and not 1 <= len(images) <= 2:
+        return web.json_response(
+            {"error": "INVALID_IMAGES", "message": "参考图模式需要 1 或 2 张图片"}, status=400
+        )
+    if mode == "edit" and len(images) != 1:
+        return web.json_response(
+            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要一张图片"}, status=400
+        )
+
+    print(
+        f"  [mock /gpt-image] provider={provider}  mode={mode}  refs={len(images)}  "
+        f"prompt={'✓' if prompt else '—'}"
+    )
+    await asyncio.sleep(1.2)
+    return web.Response(body=DEMO_PNG, content_type="image/png")
+
+
+async def handle_gpt_image_status(request: web.Request) -> web.Response:
+    """Mock OpenAI GPT Image API Key 检测。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("apiKey") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入 OpenAI API Key"}, status=400)
+    return web.json_response({"ok": True, "message": "OpenAI GPT Image API Key 可用（开发模拟）"})
+
+
 async def handle_run(request: web.Request) -> web.Response:
     """Mock bridge /run 端点 — 模拟延迟后返回 demo 图。"""
     try:
@@ -457,6 +515,8 @@ def main():
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
+    app.router.add_post("/gpt-image", handle_gpt_image)
+    app.router.add_post("/gpt-image/status", handle_gpt_image_status)
 
     # Demo 图
     app.router.add_get("/demo-image.png", handle_demo_image)

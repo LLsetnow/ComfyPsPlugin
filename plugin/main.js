@@ -111,10 +111,10 @@ var WORKFLOWS = [
         ],
       },
       {
-        id: "gptResolution", type: "select", label: "分辨率", default: "1024x1024", options: [
-          { value: "1024x1024", label: "1024 × 1024" },
-          { value: "1024x1536", label: "1024 × 1536" },
-          { value: "1536x1024", label: "1536 × 1024" },
+        id: "gptResolution", type: "select", label: "分辨率", default: "1k", options: [
+          { value: "1k", label: "1K（快速）" },
+          { value: "2k", label: "2K（细节）" },
+          { value: "4k", label: "4K（最高）" },
         ],
       },
     ],
@@ -133,6 +133,8 @@ var SETTINGS_KEYS = {
   comfyuiUrl: "comfyps.comfyuiUrl",
   theme: "comfyps.theme",
   apiType: "comfyps.apiType",
+  gptImageAuth: "comfyps.gptImageAuth",
+  gptImageApiKey: "comfyps.gptImageApiKey",
 };
 
 function loadSettings() {
@@ -144,6 +146,8 @@ function loadSettings() {
     comfyuiUrl: localStorage.getItem(SETTINGS_KEYS.comfyuiUrl) || "http://127.0.0.1:8188",
     theme: localStorage.getItem(SETTINGS_KEYS.theme) || "dark",
     apiType: localStorage.getItem(SETTINGS_KEYS.apiType) || "",
+    gptImageAuth: localStorage.getItem(SETTINGS_KEYS.gptImageAuth) || "codex",
+    gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
   };
 }
 
@@ -660,21 +664,23 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 }
 
 // =========================================================================
-// 调用本地 Codex 图像桥
+// 调用本地 GPT Image 桥
 // =========================================================================
-async function callCodexImage(bridgeUrl, mode, prompt, aspectRatio, resolution, images) {
+async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images) {
   var progressFill = _progressFill;
   var progressMsg = _progressMsg;
   var progressBar = _progressBar;
   var pollTimer = 0;
-  var url = bridgeUrl.replace(/\/+$/, "") + "/codex/image";
+  var url = bridgeUrl.replace(/\/+$/, "") + "/gpt-image";
   var body = {
+    provider: provider || "codex",
     mode: mode,
     prompt: prompt || "",
     aspectRatio: aspectRatio || "",
     resolution: resolution || "",
     images: images || [],
   };
+  if (provider === "api-key" && apiKey) body.apiKey = apiKey;
 
   var resp;
   try {
@@ -684,7 +690,7 @@ async function callCodexImage(bridgeUrl, mode, prompt, aspectRatio, resolution, 
       body: JSON.stringify(body),
     });
   } catch (e) {
-    throw new Error("连不上本地 Codex 图像桥(" + url + "):" + (e && e.message ? e.message : e));
+    throw new Error("连不上本地 GPT Image 桥(" + url + "):" + (e && e.message ? e.message : e));
   }
   if (!resp.ok) {
     var detail = "";
@@ -694,7 +700,7 @@ async function callCodexImage(bridgeUrl, mode, prompt, aspectRatio, resolution, 
     } catch (_) {
       detail = "HTTP " + resp.status;
     }
-    throw new Error("Codex 图像生成失败:" + detail);
+    throw new Error("GPT Image 生成失败:" + detail);
   }
 
   var taskId = resp.headers.get("X-Task-Id");
@@ -1145,9 +1151,11 @@ async function onRunClick() {
         placement = editInput.bounds;
       }
 
-      if (labelEl) labelEl.textContent = "Codex 正在生成图像…";
-      resultBuffer = await callCodexImage(
+      if (labelEl) labelEl.textContent = "GPT Image 正在生成图像…";
+      resultBuffer = await callGptImage(
         settings.bridgeUrl,
+        settings.gptImageAuth,
+        settings.gptImageApiKey,
         mode,
         prompt,
         inputs.gptAspectRatio,
@@ -1214,20 +1222,24 @@ function renderSettings() {
   var bridgeInput = $("settingBridgeUrl");
   var apiKeyInput = $("settingApiKey");
   var comfyuiInput = $("settingComfyuiUrl");
+  var gptImageApiKeyInput = $("settingGptImageApiKey");
   var balanceDisplay = $("balanceDisplay");
 
   if (bridgeInput) bridgeInput.value = s.bridgeUrl;
   if (apiKeyInput) apiKeyInput.value = s.apiKey;
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
+  if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
   _segSelect("segBackend", s.backend);
   _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
+  _segSelect("segGptImageAuth", s.gptImageAuth);
 
   // 显示已保存的 API 类型标签
   _showApiTypeBadge(s.apiType);
 
   _applyBackendVisibility();
   _applySiteLink();
+  _applyGptImageAuthVisibility();
 }
 
 function _showApiTypeBadge(apiType) {
@@ -1249,6 +1261,14 @@ function _applyBackendVisibility() {
 
   if (rhSettings) rhSettings.style.display = isComfyui ? "none" : "block";
   if (comfyuiSettings) comfyuiSettings.style.display = isComfyui ? "block" : "none";
+}
+
+function _applyGptImageAuthVisibility() {
+  var auth = _segGet("segGptImageAuth") || "codex";
+  var codexSettings = $("gptImageCodexSettings");
+  var apiSettings = $("gptImageApiSettings");
+  if (codexSettings) codexSettings.style.display = auth === "codex" ? "block" : "none";
+  if (apiSettings) apiSettings.style.display = auth === "api-key" ? "block" : "none";
 }
 
 function _applySiteLink() {
@@ -1317,12 +1337,60 @@ async function testApiKey() {
   }
 }
 
+function _showGptImageAuthStatus(ok, message) {
+  var display = $("gptImageAuthStatus");
+  if (!display) return;
+  display.style.display = "block";
+  display.innerHTML = "";
+  var badge = document.createElement("span");
+  badge.className = "balance-badge " + (ok ? "ok" : "err");
+  badge.textContent = message;
+  display.appendChild(badge);
+}
+
+async function testGptImageAuth() {
+  var auth = _segGet("segGptImageAuth") || "codex";
+  var btn = auth === "codex" ? $("btnTestCodex") : $("btnTestGptImageKey");
+  var originalText = btn ? btn.textContent : "测试";
+  if (btn) { btn.disabled = true; btn.textContent = "检测中…"; }
+
+  var settings = loadSettings();
+  var url = settings.bridgeUrl.replace(/\/+$/, "");
+  var requestUrl = auth === "codex" ? url + "/codex/status" : url + "/gpt-image/status";
+  var options = null;
+  if (auth !== "codex") {
+    var apiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
+    if (!apiKey) {
+      _showGptImageAuthStatus(false, "请输入 OpenAI API Key");
+      if (btn) { btn.disabled = false; btn.textContent = originalText; }
+      return;
+    }
+    options = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: apiKey }),
+    };
+  }
+
+  try {
+    var response = await fetchWithTimeout(requestUrl, options, 15000);
+    var data = await response.json();
+    _showGptImageAuthStatus(!!data.ok, data.message || (data.ok ? "认证可用" : "认证失败"));
+  } catch (e) {
+    _showGptImageAuthStatus(false, "桥连接失败或认证检测超时");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+  }
+}
+
 function saveAllSettings() {
   var bridgeUrl = ($("settingBridgeUrl") ? $("settingBridgeUrl").value : "").trim();
   var apiKey = ($("settingApiKey") ? $("settingApiKey").value : "").trim();
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
+  var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var backend = _segGet("segBackend") || "runninghub";
   var site = _segGet("segSite") || "ai";
+  var gptImageAuth = _segGet("segGptImageAuth") || "codex";
 
   var theme = _segGet("segTheme") || "dark";
   applyTheme(theme);
@@ -1332,6 +1400,8 @@ function saveAllSettings() {
   saveSetting("rhSite", site);
   saveSetting("apiKey", apiKey);
   saveSetting("comfyuiUrl", comfyuiUrl);
+  saveSetting("gptImageAuth", gptImageAuth);
+  saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("theme", theme);
 }
 
@@ -1399,11 +1469,23 @@ function saveAllSettings() {
     });
   }
 
+  // ---- 设置页: GPT Image 认证方式 ----
+  var segGptImageAuth = $("segGptImageAuth");
+  if (segGptImageAuth) {
+    segGptImageAuth.addEventListener("click", function (e) {
+      if (e.target.tagName === "BUTTON") {
+        _segSelect("segGptImageAuth", e.target.dataset.value);
+        _applyGptImageAuthVisibility();
+        saveAllSettings();
+      }
+    });
+  }
+
   // ---- 加载时应用主题 ----
   applyTheme(loadSettings().theme);
 
   // ---- 设置页: 输入自动保存 ----
-  ["settingBridgeUrl", "settingApiKey", "settingComfyuiUrl"].forEach(function (id) {
+  ["settingBridgeUrl", "settingApiKey", "settingComfyuiUrl", "settingGptImageApiKey"].forEach(function (id) {
     var el = $(id);
     if (el) el.addEventListener("blur", saveAllSettings);
   });
@@ -1411,6 +1493,10 @@ function saveAllSettings() {
   // ---- 设置页: 测试 Key ----
   var btnTestKey = $("btnTestKey");
   if (btnTestKey) btnTestKey.addEventListener("click", testApiKey);
+  var btnTestCodex = $("btnTestCodex");
+  if (btnTestCodex) btnTestCodex.addEventListener("click", testGptImageAuth);
+  var btnTestGptImageKey = $("btnTestGptImageKey");
+  if (btnTestGptImageKey) btnTestGptImageKey.addEventListener("click", testGptImageAuth);
 
   // ---- 桥健康轮询 ----
   startHealthPolling();
