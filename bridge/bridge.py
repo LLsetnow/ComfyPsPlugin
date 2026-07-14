@@ -24,6 +24,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zlib
@@ -62,6 +63,8 @@ _task_progress: dict[str, dict] = {}
 # OpenAI 请求或停止本地 Codex app-server 进程。
 _gpt_image_tasks: dict[str, asyncio.Task] = {}
 _pending_gpt_image_cancellations: set[str] = set()
+# RunningHub 任务取消事件：task_id -> threading.Event
+_rh_cancel_events: dict[str, threading.Event] = {}
 _GPT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
@@ -786,6 +789,7 @@ def run_inpaint_blocking(
     extra_set_args: list[str] | None = None,
     image_node_id: str | None = None,
     task_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> bytes:
     """RunningHub 模式: 上传蒙版(可选) → 注入提示词 → 跑工作流 → 读结果字节。"""
     cfg = CONFIG
@@ -844,6 +848,7 @@ def run_inpaint_blocking(
         output_dir=out_dir,
         set_args=set_args,
         on_tick=on_progress,
+        cancel_event=cancel_event,
     )
 
     if task_id:
@@ -1408,8 +1413,7 @@ async def handle_run(request):
     extra_set_args = body.get("extraSetArgs") or []
     image_node_id = body.get("imageNodeId") or None
 
-    import uuid
-    task_id = str(uuid.uuid4())[:8]
+    task_id = body.get("taskId") or str(uuid.uuid4())[:8]
 
     if not image_b64:
         return cors(web.json_response(
@@ -1437,30 +1441,51 @@ async def handle_run(request):
                 lambda: run_comfyui_blocking(img_path, mask_path if needs_mask else None, out_dir, prompt, comfyui_url),
             )
         else:
-            result_bytes = await loop.run_in_executor(
-                None,
-                lambda: run_inpaint_blocking(
-                    img_path, mask_path if needs_mask else None, out_dir,
-                    prompt, api_key, site, needs_mask, workflow_id, workflow_file,
-                    extra_set_args, image_node_id, task_id,
-                ),
-            )
+            cancel_event = threading.Event()
+            _rh_cancel_events[task_id] = cancel_event
+            try:
+                result_bytes = await loop.run_in_executor(
+                    None,
+                    lambda: run_inpaint_blocking(
+                        img_path, mask_path if needs_mask else None, out_dir,
+                        prompt, api_key, site, needs_mask, workflow_id, workflow_file,
+                        extra_set_args, image_node_id, task_id, cancel_event,
+                    ),
+                )
+            finally:
+                _rh_cancel_events.pop(task_id, None)
 
         resp = web.Response(body=result_bytes, content_type="image/png")
         resp.headers["X-Task-Id"] = task_id
         return cors(resp)
     except RhCliError as e:
+        code = getattr(e, "code", "RH_ERROR")
+        http_status = 499 if code == "TASK_CANCELLED" else 500
         return cors(web.json_response(
-            {"error": getattr(e, "code", "RH_ERROR"), "message": getattr(e, "message", str(e))},
-            status=500))
+            {"error": code, "message": getattr(e, "message", str(e))},
+            status=http_status))
     except Exception as e:
         return cors(web.json_response({"error": "BRIDGE_ERROR", "message": str(e)}, status=500))
     finally:
+        _rh_cancel_events.pop(task_id, None)
         try:
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass
+
+
+async def handle_cancel(request):
+    """取消 RunningHub 任务（设置取消事件，由轮询线程负责调用 RunningHub cancel API）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response({"ok": False, "message": "BAD_JSON"}, status=400))
+    task_id = body.get("taskId", "")
+    event = _rh_cancel_events.get(task_id)
+    if event:
+        event.set()
+        return cors(web.json_response({"ok": True}))
+    return cors(web.json_response({"ok": False, "message": "task not found or already completed"}))
 
 
 def main():
@@ -1477,6 +1502,7 @@ def main():
     app.router.add_post("/gpt-image", handle_gpt_image)
     app.router.add_post("/gpt-image/cancel", handle_gpt_image_cancel)
     app.router.add_post("/gpt-image/status", handle_gpt_image_status)
+    app.router.add_post("/cancel", handle_cancel)
     app.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
 
     port = int(CONFIG["port"])

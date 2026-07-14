@@ -851,7 +851,7 @@ function refreshRunButton() {
 // =========================================================================
 // 调用本地桥 /run
 // =========================================================================
-async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, onProgress) {
+async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, taskId, onProgress) {
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/run";
   var body = {
@@ -862,6 +862,7 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
     workflowFile: workflow.workflowFile || "",
     imageNodeId: workflow.imageNodeId || "",
     needsMask: workflow.needsMask,
+    taskId: taskId || "",
   };
   if (workflow.needsMask) {
     body.mask = maskB64;
@@ -1294,9 +1295,20 @@ function onQueueStopClick() {
   if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
   var task = _workQueue[_selectedQueueIdx];
   if (!task || task.status !== "running" || !task.runState) return;
-  task.runState.cancelRequested = true;
-  if (task.runState.abortController) {
-    try { task.runState.abortController.abort(); } catch (_) {}
+  var rs = task.runState;
+  rs.cancelRequested = true;
+  if (rs.abortController) {
+    // GPT Image 任务：通过 AbortController 中断 fetch
+    try { rs.abortController.abort(); } catch (_) {}
+  } else if (rs.taskId) {
+    // RunningHub 任务：通知 bridge 调用 RunningHub cancel API
+    var cancelUrl = loadSettings().bridgeUrl.replace(/\/+$/, "") + "/cancel";
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", cancelUrl, true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.send(JSON.stringify({taskId: rs.taskId}));
+    } catch (_) {}
   }
   setStatus("正在停止任务…", "");
   renderWorkQueue();
@@ -1937,6 +1949,7 @@ async function onRunClick() {
     qTaskId = wf.gptImage
       ? runState.taskId
       : ("rh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6));
+    if (!wf.gptImage) runState.taskId = qTaskId;
     try { psDocName = app.activeDocument ? (app.activeDocument.name || "untitled") : "untitled"; } catch (_) {}
     queueItem = {
       id: qTaskId,
@@ -2061,7 +2074,7 @@ async function onRunClick() {
       }
       resultBuffer = await callBridge(
         settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
-        runState.onProgress
+        runState.taskId, runState.onProgress
       );
     }
 
@@ -2099,12 +2112,13 @@ async function onRunClick() {
 
     setStatus("任务已加入队列 ✓", "ok");
   } catch (e) {
+    var wasCancelled = isGptTaskCancelled(e) || !!(runState && runState.cancelRequested);
     if (queueItem) {
-      queueItem.status = isGptTaskCancelled(e) ? "cancelled" : "failed";
+      queueItem.status = wasCancelled ? "cancelled" : "failed";
       queueItem.runState = null;
       renderWorkQueue();
     }
-    if (isGptTaskCancelled(e)) {
+    if (wasCancelled) {
       setStatus("已停止任务", "");
     } else {
       setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
