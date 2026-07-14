@@ -91,7 +91,7 @@ var WORKFLOWS = [
     icon: "✦",
     active: true,
     gptImage: true,
-    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。",
+    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。",
     inputs: [
       {
         id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
@@ -132,6 +132,12 @@ var SETTINGS_KEYS = {
   gptImageApiKey: "comfyps.gptImageApiKey",
   gptImageLocalValidation: "comfyps.gptImageLocalValidation",
 };
+
+// =========================================================================
+// 工作队列全局状态
+// =========================================================================
+var _workQueue = [];
+var _selectedQueueIdx = -1;
 
 function loadSettings() {
   return {
@@ -194,6 +200,17 @@ function bytesToBase64(arrayBuffer) {
     out += i + 2 < len ? B[b2 & 63] : "=";
   }
   return out;
+}
+
+function base64ToBytes(b64str) {
+  var data = b64str.indexOf(",") !== -1 ? b64str.split(",")[1] : b64str;
+  var binary = atob(data);
+  var len = binary.length;
+  var bytes = new Uint8Array(len);
+  for (var i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 // =========================================================================
@@ -415,6 +432,51 @@ function _parseSelectionBounds(result) {
   return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
 }
 
+// Photoshop 的选区边界可能带有小数像素，且极少数情况下会延伸到画布外。
+// 上传裁切图时必须把图层和蒙版裁到同一个整数矩形，否则返图缩放后会出现
+// 一像素偏移或蒙版尺寸不一致。向外取整可以保证整个选区都被保留。
+function _normalizeSelectionCropBounds(bounds) {
+  var doc = app.activeDocument;
+  var docWidth = _asPixels(doc && doc.width);
+  var docHeight = _asPixels(doc && doc.height);
+  var left = Math.floor(_asPixels(bounds && bounds.left));
+  var top = Math.floor(_asPixels(bounds && bounds.top));
+  var right = Math.ceil(_asPixels(bounds && bounds.right));
+  var bottom = Math.ceil(_asPixels(bounds && bounds.bottom));
+
+  if (docWidth > 0) {
+    left = Math.max(0, Math.min(left, Math.floor(docWidth)));
+    right = Math.max(0, Math.min(right, Math.ceil(docWidth)));
+  }
+  if (docHeight > 0) {
+    top = Math.max(0, Math.min(top, Math.floor(docHeight)));
+    bottom = Math.max(0, Math.min(bottom, Math.ceil(docHeight)));
+  }
+  if (right <= left || bottom <= top) throw new Error("选区外接矩形无效");
+  return {
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
+function _cropDescriptor(bounds, options) {
+  return {
+    _obj: "crop",
+    to: {
+      _obj: "rectangle",
+      top: { _unit: "pixelsUnit", _value: bounds.top },
+      left: { _unit: "pixelsUnit", _value: bounds.left },
+      bottom: { _unit: "pixelsUnit", _value: bounds.bottom },
+      right: { _unit: "pixelsUnit", _value: bounds.right },
+    },
+    _options: options || { dialogOptions: "silent" },
+  };
+}
+
 async function _readSelectionBounds() {
   var doc = app.activeDocument;
   if (doc && doc.selection && doc.selection.bounds) {
@@ -500,7 +562,7 @@ async function exportActiveLayerSelectionPNG() {
   await executeAsModal(
     async function () {
       try {
-        bounds = await _readSelectionBounds();
+        bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
         _isolateLayer(records, layerId);
         if (typeof app.activeDocument.duplicate === "function") {
           duplicateDoc = await app.activeDocument.duplicate("ComfyPS GPT Image Input");
@@ -516,17 +578,7 @@ async function exportActiveLayerSelectionPNG() {
           }], {});
           duplicated = true;
           await batchPlay([
-            {
-              _obj: "crop",
-              to: {
-                _obj: "rectangle",
-                top: { _unit: "pixelsUnit", _value: bounds.top },
-                left: { _unit: "pixelsUnit", _value: bounds.left },
-                bottom: { _unit: "pixelsUnit", _value: bounds.bottom },
-                right: { _unit: "pixelsUnit", _value: bounds.right },
-              },
-              _options: noDialog,
-            },
+            _cropDescriptor(bounds, noDialog),
             _pngSaveDescriptor(token),
           ], {});
         }
@@ -558,9 +610,12 @@ async function exportActiveLayerSelectionPNG() {
 // =========================================================================
 // 导出当前选区为蒙版 PNG (base64, 默认白=选中；GPT Image 为透明=编辑区)
 // =========================================================================
-async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
+async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBounds) {
   var doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
+
+  var normalizedCropBounds = cropBounds
+    ? _normalizeSelectionCropBounds(cropBounds) : null;
 
   var folder = await localFileSystem.getDataFolder();
   var file = await folder.createFile("comfyps_mask.png", { overwrite: true });
@@ -594,6 +649,7 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
   var tempLayer = null;
   var tempLayerCreated = false;
   var batchPlayLayerCreated = false;
+  var batchPlayDuplicate = false;
   var channelCreated = false;
 
   var removeSourceChannel = async function () {
@@ -645,9 +701,33 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
           if (sourceChannel && typeof sourceChannel.duplicate === "function") {
             try { await sourceChannel.duplicate(duplicateDoc); } catch (_) {}
           }
+          if (normalizedCropBounds) {
+            if (typeof duplicateDoc.crop === "function") {
+              await duplicateDoc.crop(normalizedCropBounds);
+            } else {
+              await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
+            }
+          }
+        } else {
+          // The Action Manager fallback duplicates the document and makes it
+          // active. Crop that temporary document before building the mask so
+          // the saved PNG has exactly the same dimensions as the input image.
+          await batchPlay([{
+            _obj: "duplicate",
+            _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
+            name: "ComfyPS Mask Input",
+            _options: noDialog,
+          }], {});
+          batchPlayDuplicate = true;
+          if (normalizedCropBounds) {
+            await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
+          }
         }
 
-        var workDoc = duplicateDoc || doc;
+        // When the Action Manager fallback duplicated the document, the DOM
+        // object still points at the original document. Leave workDoc null so
+        // the following batchPlay layer creation targets the active duplicate.
+        var workDoc = duplicateDoc || (batchPlayDuplicate ? null : doc);
         if (workDoc && typeof workDoc.createLayer === "function") {
           tempLayer = await workDoc.createLayer({ name: "ComfyPS Mask" });
           tempLayerCreated = true;
@@ -697,9 +777,9 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot) {
           } catch (_) {}
         }
 
-        if (duplicateDoc) {
+        if (duplicateDoc || batchPlayDuplicate) {
           try {
-            if (typeof duplicateDoc.closeWithoutSaving === "function") {
+            if (duplicateDoc && typeof duplicateDoc.closeWithoutSaving === "function") {
               await duplicateDoc.closeWithoutSaving();
             } else {
               await batchPlay([{
@@ -752,10 +832,8 @@ function canStartWorkflow(workflow, settings) {
 
 function refreshRunButton() {
   var runBtn = $("runBtn");
-  var stopBtn = $("stopGptBtn");
   var label = $("btnLabel");
   var spinner = $("btnSpinner");
-  var progressBar = $("progressBar");
   var workflow = findWorkflow(_selectedWorkflowId);
   if (!runBtn || !workflow) return;
 
@@ -765,24 +843,15 @@ function refreshRunButton() {
   runBtn.disabled = !canStart;
   if (label) {
     label.hidden = false;
-    label.textContent = activeRun ? "生成中" : (canStart ? "运行 — " + workflow.name : "其他任务进行中");
+    label.textContent = "生成";
   }
   if (spinner) spinner.hidden = !activeRun;
-  if (progressBar) progressBar.style.display = activeRun ? "block" : "none";
-  if (stopBtn) {
-    stopBtn.style.display = workflow.gptImage ? "block" : "none";
-    stopBtn.disabled = !activeRun || !!activeRun.cancelRequested;
-    stopBtn.textContent = activeRun && activeRun.cancelRequested ? "正在停止…" : "停止生成";
-  }
 }
 
 // =========================================================================
 // 调用本地桥 /run
 // =========================================================================
-async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs) {
-  var progressFill = $("progressFill");
-  var progressMsg = $("progressMsg");
-  var progressBar = $("progressBar");
+async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, onProgress) {
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/run";
   var body = {
@@ -831,17 +900,15 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 
   // 提取任务 ID 并启动进度轮询
   var taskId = resp.headers.get("X-Task-Id");
-  if (taskId && progressBar && progressFill && progressMsg) {
+  if (taskId && onProgress) {
     pollTimer = setInterval(async function () {
       try {
         var pr = await fetch(bridgeUrl.replace(/\/+$/, "") + "/progress?taskId=" + taskId);
         if (pr.ok) {
           var data = await pr.json();
-          progressFill.style.width = (data.percent || 0) + "%";
-          progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
-          if (data.percent >= 100) {
-            clearInterval(pollTimer);
-          }
+          var pct = data.percent || 0;
+          onProgress(pct, (data.message || "") + (pct > 0 ? " (" + pct + "%)" : ""));
+          if (pct >= 100) clearInterval(pollTimer);
         }
       } catch (_) {}
     }, 2000);
@@ -875,18 +942,16 @@ function throwIfGptTaskCancelled(runState) {
   if (runState && runState.cancelRequested) throw makeGptTaskCancelledError();
 }
 
-function startGptProgressPolling(bridgeUrl, taskId, progressBar, progressFill, progressMsg) {
-  if (!taskId || !progressBar || !progressFill || !progressMsg) return 0;
+function startGptProgressPolling(bridgeUrl, taskId, onProgress) {
+  if (!taskId || !onProgress) return 0;
   var timer = setInterval(async function () {
     try {
       var pr = await fetch(bridgeUrl.replace(/\/+$/, "") + "/progress?taskId=" + encodeURIComponent(taskId));
       if (pr.ok) {
         var data = await pr.json();
-        progressFill.style.width = (data.percent || 0) + "%";
-        progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
-        if (data.percent >= 100 || data.message === "已停止") {
-          clearInterval(timer);
-        }
+        var pct = data.percent || 0;
+        onProgress(pct, (data.message || "") + (pct > 0 ? " (" + pct + "%)" : ""));
+        if (pct >= 100 || data.message === "已停止") clearInterval(timer);
       }
     } catch (_) {}
   }, 1000);
@@ -894,9 +959,6 @@ function startGptProgressPolling(bridgeUrl, taskId, progressBar, progressFill, p
 }
 
 async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images, maskB64, runState, localValidation) {
-  var progressFill = $("progressFill");
-  var progressMsg = $("progressMsg");
-  var progressBar = $("progressBar");
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/gpt-image";
   throwIfGptTaskCancelled(runState);
@@ -925,7 +987,7 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
     if (runState && runState.abortController) fetchOptions.signal = runState.abortController.signal;
     if (runState) runState.bridgeRequestStarted = true;
     var request = fetch(url, fetchOptions);
-    pollTimer = startGptProgressPolling(bridgeUrl, taskId, progressBar, progressFill, progressMsg);
+    pollTimer = startGptProgressPolling(bridgeUrl, taskId, runState && runState.onProgress);
     resp = await request;
   } catch (e) {
     if ((runState && runState.cancelRequested) || (e && e.name === "AbortError")) {
@@ -1020,17 +1082,256 @@ async function removeSelectionSnapshotChannel(channelName) {
   } catch (_) {}
 }
 
-async function _alignPlacedLayerToCanvas(layer, docWidth, docHeight) {
-  if (!layer || !layer.bounds || docWidth <= 0 || docHeight <= 0) return;
-  // GPT Image / RunningHub 局部编辑的输入和蒙版都是整张文档画布。
+// =========================================================================
+// 工作队列: 文件保存
+// =========================================================================
+async function _getOrCreateCacheFolder(psDocName, taskId) {
+  var base;
+  var token = localStorage.getItem("comfyps.cacheBasePath");
+  if (token) {
+    try {
+      base = await localFileSystem.getEntryForPersistentToken(token);
+    } catch (_) {
+      base = await localFileSystem.getDataFolder();
+    }
+  } else {
+    base = await localFileSystem.getDataFolder();
+  }
+  var safeName = psDocName.replace(/[\/\\:\*\?"<>\|]/g, "_") || "untitled";
+  var docFolder;
+  try {
+    docFolder = await base.createEntry(safeName, { type: require("uxp").storage.types.folder, overwrite: false });
+  } catch (_) {
+    var entries = await base.getEntries();
+    docFolder = null;
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].name === safeName) { docFolder = entries[i]; break; }
+    }
+    if (!docFolder) throw new Error("无法创建缓存目录: " + safeName);
+  }
+  var taskFolder;
+  try {
+    taskFolder = await docFolder.createEntry(taskId, { type: require("uxp").storage.types.folder, overwrite: false });
+  } catch (_) {
+    var tEntries = await docFolder.getEntries();
+    taskFolder = null;
+    for (var j = 0; j < tEntries.length; j++) {
+      if (tEntries[j].name === taskId) { taskFolder = tEntries[j]; break; }
+    }
+    if (!taskFolder) throw new Error("无法创建任务目录: " + taskId);
+  }
+  return taskFolder;
+}
+
+async function saveTaskResult(resultBuffer, maskB64, taskId, psDocName) {
+  var resultFile = null;
+  var maskFile = null;
+  var thumbUrl = "";
+  var savedOk = false;
+  try {
+    var folder = await _getOrCreateCacheFolder(psDocName, taskId);
+    resultFile = await folder.createEntry("result.png", { type: require("uxp").storage.types.file, overwrite: true });
+    await resultFile.write(new Uint8Array(resultBuffer), { type: "binary" });
+    if (maskB64) {
+      var maskBytes = base64ToBytes(maskB64);
+      maskFile = await folder.createEntry("mask.png", { type: require("uxp").storage.types.file, overwrite: true });
+      await maskFile.write(maskBytes, { type: "binary" });
+    }
+    var blob = new Blob([new Uint8Array(resultBuffer)], { type: "image/png" });
+    thumbUrl = URL.createObjectURL(blob);
+    savedOk = true;
+  } catch (e) {
+    console.error("ComfyPS: 保存任务结果失败", e);
+    try {
+      var blob2 = new Blob([new Uint8Array(resultBuffer)], { type: "image/png" });
+      thumbUrl = URL.createObjectURL(blob2);
+    } catch (_) {}
+  }
+  return { resultFile: resultFile, maskFile: maskFile, thumbUrl: thumbUrl, savedOk: savedOk };
+}
+
+// =========================================================================
+// 工作队列: UI 渲染与操作
+// =========================================================================
+function renderQueueProgress() {
+  var fill = $("queueProgressFill");
+  var msg = $("queueProgressMsg");
+  var bar = $("queueProgressBar");
+  if (!bar) return;
+
+  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
+  var task = hasSelection ? _workQueue[_selectedQueueIdx] : null;
+
+  if (task && task.status === "running") {
+    bar.style.display = "block";
+    if (fill) fill.style.width = (task.percent || 0) + "%";
+    if (msg) msg.textContent = task.progressMsg || "正在提交任务…";
+  } else {
+    bar.style.display = "none";
+  }
+}
+
+function renderWorkQueue() {
+  var container = $("workQueueCards");
+  var importBtn = $("queueImportBtn");
+  var previewBtn = $("queuePreviewBtn");
+  var stopBtn = $("queueStopBtn");
+  var section = $("workQueueSection");
+  if (!container) return;
+
+  container.innerHTML = "";
+  for (var i = 0; i < _workQueue.length; i++) {
+    (function (task, idx) {
+      var card = document.createElement("div");
+      card.className = "queue-card" + (idx === _selectedQueueIdx ? " selected" : "");
+      if (task.status === "failed" || task.status === "cancelled") card.className += " queue-card-error";
+
+      if (task.status === "running") {
+        var spinnerWrap = document.createElement("div");
+        spinnerWrap.className = "queue-thumb-running";
+        var sp = document.createElement("span");
+        sp.className = "spinner";
+        spinnerWrap.appendChild(sp);
+        card.appendChild(spinnerWrap);
+      } else {
+        var img = document.createElement("img");
+        img.className = "queue-thumb";
+        img.src = task.thumbUrl || "";
+        img.alt = task.wfName;
+        card.appendChild(img);
+      }
+
+      var label = document.createElement("div");
+      label.className = "queue-card-label";
+      label.textContent = task.wfName;
+      card.appendChild(label);
+
+      if (task.status === "failed") {
+        var badge = document.createElement("div");
+        badge.className = "queue-card-status-badge";
+        badge.textContent = "失败";
+        card.appendChild(badge);
+      } else if (task.status === "cancelled") {
+        var badge2 = document.createElement("div");
+        badge2.className = "queue-card-status-badge";
+        badge2.textContent = "已停止";
+        card.appendChild(badge2);
+      } else if (!task.savedOk && task.status === "completed") {
+        var badge3 = document.createElement("div");
+        badge3.className = "queue-card-status-badge";
+        badge3.textContent = "保存失败";
+        card.appendChild(badge3);
+      }
+
+      card.addEventListener("click", function () {
+        _selectedQueueIdx = idx;
+        renderWorkQueue();
+      });
+      container.appendChild(card);
+    })(_workQueue[i], i);
+  }
+
+  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
+  var selectedTask = hasSelection ? _workQueue[_selectedQueueIdx] : null;
+  var isCompleted = selectedTask && selectedTask.status === "completed";
+  var isRunning = selectedTask && selectedTask.status === "running";
+
+  if (importBtn) importBtn.disabled = !isCompleted;
+  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
+  if (stopBtn) stopBtn.disabled = !isRunning;
+  if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
+  renderQueueProgress();
+}
+
+async function onQueueImportClick() {
+  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
+  var task = _workQueue[_selectedQueueIdx];
+  if (task.status !== "completed") return;
+  if (!task.resultFile) {
+    setStatus("该任务结果文件未保存，无法导入", "err");
+    return;
+  }
+  if (!app.activeDocument) {
+    setStatus("请先打开一个 Photoshop 文档再导入", "err");
+    return;
+  }
+  var importBtn = $("queueImportBtn");
+  if (importBtn) { importBtn.disabled = true; importBtn.textContent = "导入中…"; }
+  try {
+    var resultBytes = await task.resultFile.read({ type: "binary" });
+    if (!resultBytes || !resultBytes.byteLength) throw new Error("结果文件为空");
+    await placeImageBytesAsLayer(
+      resultBytes, task.layerName, task.placement, task.revealSelection, task.selectionSnapshotChannel
+    );
+    task.selectionSnapshotChannel = "";
+    task.revealSelection = false;
+    setStatus("已导入: " + task.layerName + " ✓", "ok");
+  } catch (e) {
+    setStatus("导入失败: " + (e && e.message ? e.message : String(e)), "err");
+  } finally {
+    if (importBtn) { importBtn.disabled = false; importBtn.textContent = "导入"; }
+    renderWorkQueue();
+  }
+}
+
+function onQueuePreviewClick() {
+  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
+  var task = _workQueue[_selectedQueueIdx];
+  if (!task.thumbUrl) { setStatus("没有可预览的图像", "err"); return; }
+  var modal = $("queuePreviewModal");
+  var modalImg = $("queuePreviewImg");
+  if (!modal || !modalImg) return;
+  modalImg.src = task.thumbUrl;
+  modal.style.display = "flex";
+}
+
+function onQueuePreviewClose() {
+  var modal = $("queuePreviewModal");
+  if (modal) modal.style.display = "none";
+}
+
+function onQueueStopClick() {
+  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
+  var task = _workQueue[_selectedQueueIdx];
+  if (!task || task.status !== "running" || !task.runState) return;
+  task.runState.cancelRequested = true;
+  if (task.runState.abortController) {
+    try { task.runState.abortController.abort(); } catch (_) {}
+  }
+  setStatus("正在停止任务…", "");
+  renderWorkQueue();
+}
+
+// =========================================================================
+// 工作队列: 缓存路径设置
+// =========================================================================
+async function browseCachePath() {
+  var btn = $("btnBrowseCachePath");
+  var display = $("cachePathDisplay");
+  if (btn) { btn.disabled = true; btn.textContent = "选择中…"; }
+  try {
+    var folder = await localFileSystem.getFolder();
+    if (!folder) return;
+    var token = localFileSystem.createPersistentToken(folder);
+    localStorage.setItem("comfyps.cacheBasePath", token);
+    if (display) display.textContent = "已设置（自定义路径）";
+  } catch (e) {
+    console.error("ComfyPS: 选择缓存路径失败", e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "浏览"; }
+  }
+}
+
+async function _alignPlacedLayerToPosition(layer, targetLeft, targetTop) {
+  if (!layer || !layer.bounds || !isFinite(targetLeft) || !isFinite(targetTop)) return;
   // placeEvent 的默认中心放置在缩放后可能留下非零的左/上偏移，因此
-  // 必须用实际边界重新对齐到 Photoshop 文档坐标 (0, 0)，否则选区蒙版
-  // 也会跟着错位。
+  // 必须用实际边界重新对齐到目标文档坐标。GPT 编辑的目标坐标是选区
+  // 外接矩形左上角；整画布工作流的目标坐标则是 (0, 0)。
   var bounds = layer.boundsNoEffects || layer.bounds;
   var left = _asPixels(bounds && bounds.left);
   var top = _asPixels(bounds && bounds.top);
-  var dx = -left;
-  var dy = -top;
+  var dx = targetLeft - left;
+  var dy = targetTop - top;
   if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
 
   if (typeof layer.translate === "function") {
@@ -1106,12 +1407,21 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
       await batchPlay(commands, {});
       if (revealSelection) {
         // GPT Image and RunningHub inpaint may return a different resolution,
-        // so scale the full-canvas result to the Photoshop document before
-        // applying the selection mask.
+        // so scale the result to its intended Photoshop canvas before applying
+        // the selection mask. GPT edit uses the cropped selection rectangle;
+        // RunningHub still uses the full document canvas.
         var targetDoc = app.activeDocument;
         var targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
         var targetWidth = _asPixels(targetDoc && targetDoc.width);
         var targetHeight = _asPixels(targetDoc && targetDoc.height);
+        var targetLeft = 0;
+        var targetTop = 0;
+        if (placement) {
+          targetWidth = _asPixels(placement.width);
+          targetHeight = _asPixels(placement.height);
+          targetLeft = _asPixels(placement.left);
+          targetTop = _asPixels(placement.top);
+        }
         var layerWidth = _asPixels(targetLayer && targetLayer.bounds && targetLayer.bounds.width);
         var layerHeight = _asPixels(targetLayer && targetLayer.bounds && targetLayer.bounds.height);
         if (targetWidth > 0 && targetHeight > 0 && layerWidth > 0 && layerHeight > 0) {
@@ -1130,9 +1440,9 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
         }
         // Re-read the bounds after the optional scale. The selection snapshot
         // is in document coordinates, so the output layer must share the same
-        // canvas origin before Photoshop creates its layer mask.
+        // document position before Photoshop creates its layer mask.
         targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
-        await _alignPlacedLayerToCanvas(targetLayer, targetWidth, targetHeight);
+        await _alignPlacedLayerToPosition(targetLayer, targetLeft, targetTop);
         try {
           // Restore the selection captured at submission time. The user may
           // have changed the active selection while a long GPT task ran.
@@ -1287,7 +1597,7 @@ function getWorkflowDescription(wf) {
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
     var debugText = gptSettings.gptImageLocalValidation
       ? " 当前已启用本地验证：不会调用模型。" : "";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。" + debugText;
+    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
   }
   return wf.description || "";
 }
@@ -1355,14 +1665,6 @@ function getSelectionAspectRatio(bounds) {
   return normalizeGptAspectRatio(bounds.width + ":" + bounds.height);
 }
 
-function getDocumentAspectRatio() {
-  var doc = app.activeDocument;
-  var width = _asPixels(doc && doc.width);
-  var height = _asPixels(doc && doc.height);
-  if (width <= 0 || height <= 0) throw new Error("文档尺寸无效");
-  return normalizeGptAspectRatio(width + ":" + height);
-}
-
 function renderGptEditReferenceInput(container) {
   var records;
   try {
@@ -1406,7 +1708,7 @@ function renderGptImageLayerInputs() {
   if (modeSelect.value === "edit") {
     var editHint = document.createElement("div");
     editHint.className = "input-note";
-    editHint.textContent = "画面比例将自动跟随当前文档，活动图层的选区蒙版决定实际编辑区域。";
+    editHint.textContent = "仅上传活动图层的选区外接矩形，画面比例自动跟随该矩形；返图会放回原选区位置。";
     container.appendChild(editHint);
     renderGptEditReferenceInput(container);
     return;
@@ -1619,12 +1921,54 @@ async function onRunClick() {
   }
   _activeRuns[runSlot] = runState;
   refreshRunButton();
-  setStatus("");
 
-  var progressFill = $("progressFill");
-  var progressMsg = $("progressMsg");
-  if (progressFill) progressFill.style.width = "0";
-  if (progressMsg) progressMsg.textContent = runState.localValidation ? "正在快速验证活动图层与选区…" : "正在提交任务…";
+  // 任务提交提示（短暂显示后自动清除）
+  setStatus("任务已提交 ✓", "ok");
+  setTimeout(function () {
+    var el = $("status");
+    if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
+  }, 2000);
+
+  // 立即入队（非本地验证模式）
+  var queueItem = null;
+  var qTaskId = "";
+  var psDocName = "untitled";
+  if (!runState.localValidation) {
+    qTaskId = wf.gptImage
+      ? runState.taskId
+      : ("rh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6));
+    try { psDocName = app.activeDocument ? (app.activeDocument.name || "untitled") : "untitled"; } catch (_) {}
+    queueItem = {
+      id: qTaskId,
+      wfName: wf.name,
+      wfId: wf.id,
+      layerName: "",
+      status: "running",
+      runState: runState,
+      runSlot: runSlot,
+      resultFile: null,
+      maskFile: null,
+      hasMask: false,
+      revealSelection: false,
+      selectionSnapshotChannel: "",
+      placement: null,
+      thumbUrl: "",
+      savedOk: false,
+      percent: 0,
+      progressMsg: "正在提交任务…"
+    };
+    // 进度回调：更新队列项数据，并刷新进度条显示
+    (function (item) {
+      runState.onProgress = function (pct, msg) {
+        item.percent = pct;
+        item.progressMsg = msg;
+        renderQueueProgress();
+      };
+    })(queueItem);
+    _workQueue.push(queueItem);
+    _selectedQueueIdx = _workQueue.length - 1;
+    renderWorkQueue();
+  }
 
   try {
     var resultBuffer;
@@ -1661,21 +2005,24 @@ async function onRunClick() {
           throwIfGptTaskCancelled(runState);
         }
       } else if (mode === "edit") {
-        // Send the active layer on the full document canvas (including its
-        // transparent pixels) plus a same-size selection mask. The generated
-        // result is revealed only inside the selection when placed back.
-        images.push(await exportActiveLayerPNG());
+        // Send only the active layer's selection bounding rectangle. The mask
+        // is cropped to the exact same rectangle below, which keeps the model
+        // input small while preserving the original document coordinates for
+        // placement when the result is imported.
+        var editInput = await exportActiveLayerSelectionPNG();
+        images.push(editInput.image);
         throwIfGptTaskCancelled(runState);
         // OpenAI /edits requires an alpha mask (transparent = editable),
         // while local Codex receives the mask as an ordinary reference image
         // and therefore needs an explicit black/white selection map.
         var maskExport = await exportSelectionMaskPNG(
-          settings.gptImageAuth !== "codex", true
+          settings.gptImageAuth !== "codex", true, editInput.bounds
         );
         gptMaskB64 = maskExport.mask;
         selectionSnapshotChannel = maskExport.selectionChannelName;
         throwIfGptTaskCancelled(runState);
-        inputs.gptAspectRatio = getDocumentAspectRatio();
+        placement = editInput.bounds;
+        inputs.gptAspectRatio = getSelectionAspectRatio(editInput.bounds);
         revealSelection = true;
         if (inputs.gptEditUseReference) {
           if (!inputs.gptEditReferenceLayer) throw new Error("请选择编辑参考图层");
@@ -1713,7 +2060,8 @@ async function onRunClick() {
         revealSelection = true;
       }
       resultBuffer = await callBridge(
-        settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs
+        settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
+        runState.onProgress
       );
     }
 
@@ -1727,15 +2075,37 @@ async function onRunClick() {
       layerName = "ComfyPSGPT - " + (runState.localValidation ? "本地验证 - " : "") + (gptModeNames[mode] || mode);
     }
     throwIfGptTaskCancelled(runState);
-    await placeImageBytesAsLayer(
-      resultBuffer, layerName, placement, revealSelection, selectionSnapshotChannel
-    );
-    selectionSnapshotChannel = "";
 
-    setStatus("完成 ✓", "ok");
+    var saveMaskB64 = (wf.gptImage && gptMaskB64) ? gptMaskB64
+      : (!wf.gptImage && wf.needsMask && maskB64) ? maskB64 : "";
+
+    var saveResult = await saveTaskResult(resultBuffer, saveMaskB64, qTaskId, psDocName);
+
+    if (queueItem) {
+      queueItem.status = "completed";
+      queueItem.layerName = layerName;
+      queueItem.resultFile = saveResult.resultFile;
+      queueItem.maskFile = saveResult.maskFile;
+      queueItem.hasMask = !!(saveMaskB64 && saveResult.maskFile);
+      queueItem.revealSelection = revealSelection;
+      queueItem.selectionSnapshotChannel = selectionSnapshotChannel;
+      queueItem.placement = placement;
+      queueItem.thumbUrl = saveResult.thumbUrl;
+      queueItem.savedOk = saveResult.savedOk;
+      queueItem.runState = null;
+    }
+    selectionSnapshotChannel = "";
+    renderWorkQueue();
+
+    setStatus("任务已加入队列 ✓", "ok");
   } catch (e) {
+    if (queueItem) {
+      queueItem.status = isGptTaskCancelled(e) ? "cancelled" : "failed";
+      queueItem.runState = null;
+      renderWorkQueue();
+    }
     if (isGptTaskCancelled(e)) {
-      setStatus("已停止 GPT Image 任务", "");
+      setStatus("已停止任务", "");
     } else {
       setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
       console.error(e);
@@ -1745,6 +2115,7 @@ async function onRunClick() {
       await removeSelectionSnapshotChannel(selectionSnapshotChannel);
     }
     if (_activeRuns[runSlot] === runState) _activeRuns[runSlot] = null;
+    if (queueItem && queueItem.runState) queueItem.runState = null;
     refreshRunButton();
   }
 }
@@ -1795,6 +2166,12 @@ function renderSettings() {
   _applyBackendVisibility();
   _applySiteLink();
   _applyGptImageAuthVisibility();
+
+  var cachePathDisplay = $("cachePathDisplay");
+  if (cachePathDisplay) {
+    cachePathDisplay.textContent = localStorage.getItem("comfyps.cacheBasePath")
+      ? "已设置（自定义路径）" : "默认（插件数据目录）";
+  }
 }
 
 function _showApiTypeBadge(apiType) {
@@ -1981,8 +2358,22 @@ function saveAllSettings() {
   // ---- 运行按钮 ----
   var runBtn = $("runBtn");
   if (runBtn) runBtn.addEventListener("click", onRunClick);
-  var stopGptBtn = $("stopGptBtn");
-  if (stopGptBtn) stopGptBtn.addEventListener("click", onStopGptClick);
+
+  // ---- 工作队列按钮 ----
+  var queueImportBtn = $("queueImportBtn");
+  if (queueImportBtn) queueImportBtn.addEventListener("click", onQueueImportClick);
+  var queuePreviewBtn = $("queuePreviewBtn");
+  if (queuePreviewBtn) queuePreviewBtn.addEventListener("click", onQueuePreviewClick);
+  var queueStopBtn = $("queueStopBtn");
+  if (queueStopBtn) queueStopBtn.addEventListener("click", onQueueStopClick);
+  var queuePreviewClose = $("queuePreviewClose");
+  if (queuePreviewClose) queuePreviewClose.addEventListener("click", onQueuePreviewClose);
+  var queuePreviewModal = $("queuePreviewModal");
+  if (queuePreviewModal) {
+    queuePreviewModal.addEventListener("click", function (e) {
+      if (e.target === queuePreviewModal) onQueuePreviewClose();
+    });
+  }
 
   // ---- 重启桥按钮 ----
   var restartBtn = $("restartBtn");
@@ -2059,6 +2450,16 @@ function saveAllSettings() {
   if (btnTestCodex) btnTestCodex.addEventListener("click", testGptImageAuth);
   var btnTestGptImageKey = $("btnTestGptImageKey");
   if (btnTestGptImageKey) btnTestGptImageKey.addEventListener("click", testGptImageAuth);
+
+  // ---- 设置页: 缓存路径 ----
+  var btnBrowseCachePath = $("btnBrowseCachePath");
+  if (btnBrowseCachePath) btnBrowseCachePath.addEventListener("click", browseCachePath);
+  var btnClearCachePath = $("btnClearCachePath");
+  if (btnClearCachePath) btnClearCachePath.addEventListener("click", function () {
+    localStorage.removeItem("comfyps.cacheBasePath");
+    var d = $("cachePathDisplay");
+    if (d) d.textContent = "默认（插件数据目录）";
+  });
 
   // ---- 桥健康轮询 ----
   startHealthPolling();

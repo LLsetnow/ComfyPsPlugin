@@ -433,6 +433,106 @@
       border-top: 1px solid var(--border);
     }
     .section-title:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+    /* ---- 工作队列 ---- */
+    #workQueueSection {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+    .queue-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+    .queue-cards-row {
+      display: flex;
+      flex-direction: row;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      margin-bottom: 8px;
+    }
+    .queue-card {
+      flex-shrink: 0;
+      width: 80px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      cursor: pointer;
+      overflow: hidden;
+      transition: border-color 0.15s;
+    }
+    .queue-card:hover { border-color: var(--accent); }
+    .queue-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 100, 150, 255), 0.25); }
+    .queue-card.queue-card-error { opacity: 0.65; }
+    .queue-thumb {
+      width: 80px;
+      height: 72px;
+      object-fit: cover;
+      display: block;
+    }
+    .queue-thumb-running {
+      width: 80px;
+      height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-input);
+    }
+    .queue-card-label {
+      font-size: 9.5px;
+      color: var(--text-dim);
+      text-align: center;
+      padding: 3px 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .queue-card-status-badge {
+      font-size: 9px;
+      color: var(--danger, #e05);
+      text-align: center;
+      padding: 2px 4px;
+    }
+    .queue-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .queue-actions button { flex: 1; }
+    .btn-danger { color: var(--danger, #e05); border-color: var(--danger, #e05); }
+    .btn-danger:not(:disabled):hover { background: var(--danger, #e05); color: #fff; }
+
+    /* ---- 预览模态框 ---- */
+    #queuePreviewModal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.88);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #queuePreviewImg {
+      max-width: 100%;
+      max-height: calc(100% - 56px);
+      border-radius: var(--radius);
+      object-fit: contain;
+    }
+    #queuePreviewClose {
+      padding: 6px 20px;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: var(--font);
+    }
+    #queuePreviewClose:hover { border-color: var(--accent); color: var(--accent); }
   </style>
 </head>
 <body>
@@ -496,19 +596,33 @@
         <span id="btnLabel">运行</span>
         <span id="btnSpinner" class="spinner" hidden></span>
       </button>
-      <button id="stopGptBtn" class="btn-stop" style="display:none;" disabled>停止生成</button>
     </div>
 
-    <!-- 进度条 -->
-    <div id="progressBar" style="display:none;margin-top:6px;">
-      <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
-        <div id="progressFill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.5s;"></div>
-      </div>
-      <div id="progressMsg" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
+    <!-- 进度条（已整合到工作队列，保留元素供旧引用兼容） -->
+    <div id="progressBar" style="display:none;">
+      <div><div id="progressFill"></div></div>
+      <div id="progressMsg"></div>
     </div>
 
     <!-- 状态 -->
     <div id="status"></div>
+
+    <!-- 工作队列 -->
+    <div id="workQueueSection" style="display:none;">
+      <div class="queue-section-title">工作队列</div>
+      <div id="workQueueCards" class="queue-cards-row"></div>
+      <div id="queueProgressBar" style="display:none;margin-bottom:6px;">
+        <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+          <div id="queueProgressFill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.4s;"></div>
+        </div>
+        <div id="queueProgressMsg" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
+      </div>
+      <div class="queue-actions">
+        <button id="queueImportBtn" class="btn-sm" disabled>导入</button>
+        <button id="queuePreviewBtn" class="btn-sm" disabled>预览</button>
+        <button id="queueStopBtn" class="btn-sm btn-danger" disabled>停止</button>
+      </div>
+    </div>
   </div>
 
   <!-- ================================================================= -->
@@ -611,6 +725,23 @@
         <input id="settingComfyuiUrl" type="text" value="http://127.0.0.1:8188" />
       </div>
     </div>
+
+    <!-- 结果缓存路径 -->
+    <div class="section-title">结果缓存路径</div>
+    <div class="setting-row">
+      <div class="setting-hint" id="cachePathDisplay">默认（插件数据目录）</div>
+      <div class="input-row" style="margin-top:4px;">
+        <button id="btnBrowseCachePath" class="btn-sm">浏览</button>
+        <button id="btnClearCachePath" class="btn-sm">重置</button>
+      </div>
+      <div class="setting-hint" style="margin-top:4px;">存储结构：&lt;根目录&gt;/&lt;文档名&gt;/&lt;任务ID&gt;/result.png</div>
+    </div>
+  </div>
+
+  <!-- 预览模态框 -->
+  <div id="queuePreviewModal">
+    <img id="queuePreviewImg" src="" alt="预览" />
+    <button id="queuePreviewClose">关闭</button>
   </div>
 
   <script src="main.js"></script>
