@@ -1094,6 +1094,7 @@ function renderGptImageLayerInputs() {
   two.value = "2";
   two.textContent = "2 个图层";
   count.appendChild(two);
+  count.value = "1";
   container.appendChild(count);
 
   var layerSelects = document.createElement("div");
