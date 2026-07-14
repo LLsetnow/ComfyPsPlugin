@@ -1132,11 +1132,11 @@ async function saveTaskResult(resultBuffer, maskB64, taskId, psDocName) {
   try {
     var folder = await _getOrCreateCacheFolder(psDocName, taskId);
     resultFile = await folder.createEntry("result.png", { type: require("uxp").storage.types.file, overwrite: true });
-    await resultFile.write(new Uint8Array(resultBuffer), { type: "binary" });
+    await resultFile.write(new Uint8Array(resultBuffer), { format: formats.binary });
     if (maskB64) {
       var maskBytes = base64ToBytes(maskB64);
       maskFile = await folder.createEntry("mask.png", { type: require("uxp").storage.types.file, overwrite: true });
-      await maskFile.write(maskBytes, { type: "binary" });
+      await maskFile.write(maskBytes, { format: formats.binary });
     }
     var blob = new Blob([new Uint8Array(resultBuffer)], { type: "image/png" });
     thumbUrl = URL.createObjectURL(blob);
@@ -1259,7 +1259,7 @@ async function onQueueImportClick() {
   var importBtn = $("queueImportBtn");
   if (importBtn) { importBtn.disabled = true; importBtn.textContent = "导入中…"; }
   try {
-    var resultBytes = await task.resultFile.read({ type: "binary" });
+    var resultBytes = await task.resultFile.read({ format: formats.binary });
     if (!resultBytes || !resultBytes.byteLength) throw new Error("结果文件为空");
     await placeImageBytesAsLayer(
       resultBytes, task.layerName, task.placement, task.revealSelection, task.selectionSnapshotChannel
@@ -1284,11 +1284,16 @@ function onQueuePreviewClick() {
   if (!modal || !modalImg) return;
   modalImg.src = task.thumbUrl;
   modal.style.display = "flex";
+  // UXP: native <select> renders above fixed overlays regardless of z-index
+  var selects = document.querySelectorAll("select");
+  for (var i = 0; i < selects.length; i++) selects[i].style.visibility = "hidden";
 }
 
 function onQueuePreviewClose() {
   var modal = $("queuePreviewModal");
   if (modal) modal.style.display = "none";
+  var selects = document.querySelectorAll("select");
+  for (var i = 0; i < selects.length; i++) selects[i].style.visibility = "";
 }
 
 function onQueueStopClick() {
