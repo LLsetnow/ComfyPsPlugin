@@ -357,7 +357,8 @@ def build_codex_image_prompt(
         "generate": "文生图：不要参考任何现有图像。",
         "reference": "参考图生成：后续附带的图片是参考图，综合保留其主体、风格或构图中与提示词一致的元素。",
         "edit": (
-            "图像编辑：第 1 张附图是当前完整文档，按提示词修改选区中的内容，并尽量保留未要求改变的内容。"
+            "图像编辑：第 1 张附图是当前活动图层的完整画布内容（透明区域表示图层没有内容），"
+            "按提示词修改选区中的内容，并尽量保留未要求改变的内容。"
             + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但不要改变第 1 张图的画布构图。"
                if image_count > 1 else "")
             + ("最后一张附图是选区蒙版：透明区域是允许编辑的区域，白色不透明区域必须保持不变。蒙版只用于定位，不要把它当作视觉素材。"
@@ -384,8 +385,8 @@ def build_openai_image_prompt(mode: str, prompt: str, image_count: int) -> str:
     if mode != "edit":
         return prompt.strip()
     input_roles = (
-        "第 1 张输入图是当前完整文档。请求中的 mask 指定实际编辑区域；"
-        "请输出完整画布，并保持 mask 之外的内容不变。"
+        "第 1 张输入图是当前活动图层的完整画布内容，透明区域表示该图层没有内容。"
+        "请求中的 mask 指定实际编辑区域；请输出完整画布，并保持 mask 之外的内容不变。"
     )
     if image_count > 1:
         input_roles += (
@@ -442,7 +443,7 @@ def parse_gpt_image_request(body: dict):
         raise GptImageRequestError("INVALID_IMAGES", "参考图模式需要选择 1 或 2 个图层")
     if mode == "edit" and not 1 <= len(images) <= 2:
         raise GptImageRequestError(
-            "INVALID_IMAGES", "图像编辑模式需要完整文档图，可额外添加一张参考图")
+            "INVALID_IMAGES", "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图")
     if mode != "edit" and mask:
         raise GptImageRequestError("INVALID_MASK", "只有图像编辑模式可以使用选区蒙版")
     if mode == "edit" and not isinstance(mask, str):
