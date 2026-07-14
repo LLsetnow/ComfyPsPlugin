@@ -91,13 +91,13 @@ var WORKFLOWS = [
     icon: "✦",
     active: true,
     gptImage: true,
-    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于当前文档的选区蒙版进行编辑。",
+    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。",
     inputs: [
       {
         id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
           { value: "generate", label: "文生图" },
           { value: "reference", label: "添加参考图" },
-          { value: "edit", label: "图像编辑（当前文档选区）" },
+          { value: "edit", label: "图像编辑（活动图层选区）" },
         ],
       },
       { id: "wfPrompt", type: "textarea", label: "关键词 / 编辑说明", placeholder: "例如：午后阳光下的极简室内产品摄影", default: "" },
@@ -393,6 +393,10 @@ async function exportLayerPNG(layerId) {
   var buf = await file.read({ format: formats.binary });
   if (!buf || buf.byteLength === 0) throw new Error("导出参考图层失败");
   return bytesToBase64(buf);
+}
+
+async function exportActiveLayerPNG() {
+  return exportLayerPNG(_activeLayerId());
 }
 
 function _parseSelectionBounds(result) {
@@ -982,7 +986,7 @@ function getWorkflowDescription(wf) {
   if (wf.gptImage) {
     var auth = loadSettings().gptImageAuth;
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前文档的选区蒙版进行编辑。";
+    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。";
   }
   return wf.description || "";
 }
@@ -1101,7 +1105,7 @@ function renderGptImageLayerInputs() {
   if (modeSelect.value === "edit") {
     var editHint = document.createElement("div");
     editHint.className = "input-note";
-    editHint.textContent = "画面比例将自动跟随当前文档，选区蒙版决定实际编辑区域。";
+    editHint.textContent = "画面比例将自动跟随当前文档，活动图层的选区蒙版决定实际编辑区域。";
     container.appendChild(editHint);
     renderGptEditReferenceInput(container);
     return;
@@ -1330,9 +1334,10 @@ async function onRunClick() {
           images.push(await exportLayerPNG(referenceIds[ri]));
         }
       } else if (mode === "edit") {
-        // Match the RunningHub inpaint flow: send the complete document and
-        // a selection mask, then reveal the generated layer only in the selection.
-        images.push(await exportActiveDocPNG());
+        // Send the active layer on the full document canvas (including its
+        // transparent pixels) plus a same-size selection mask. The generated
+        // result is revealed only inside the selection when placed back.
+        images.push(await exportActiveLayerPNG());
         gptMaskB64 = await exportSelectionMaskPNG(true);
         inputs.gptAspectRatio = getDocumentAspectRatio();
         revealSelection = true;

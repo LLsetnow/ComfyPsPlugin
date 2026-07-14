@@ -353,7 +353,7 @@ async def handle_codex_image(request: web.Request) -> web.Response:
         )
     if mode == "edit" and not 1 <= len(images) <= 2:
         return web.json_response(
-            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要完整文档图，可额外添加一张参考图"}, status=400
+            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图"}, status=400
         )
     if mode == "edit" and not body.get("mask"):
         return web.json_response(
@@ -404,7 +404,7 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
         )
     if mode == "edit" and not 1 <= len(images) <= 2:
         return web.json_response(
-            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要完整文档图，可额外添加一张参考图"}, status=400
+            {"error": "INVALID_IMAGES", "message": "图像编辑模式需要活动图层完整画布图，可额外添加一张参考图"}, status=400
         )
     if mode == "edit" and not body.get("mask"):
         return web.json_response(
