@@ -1106,7 +1106,10 @@ async function onRunClick() {
   btn.disabled = true;
   var labelEl = $("btnLabel");
   var spinnerEl = $("btnSpinner");
-  if (labelEl) { labelEl.hidden = true; }
+  if (labelEl) {
+    labelEl.hidden = false;
+    labelEl.textContent = "生成中";
+  }
   if (spinnerEl) spinnerEl.hidden = false;
   setStatus("");
 
