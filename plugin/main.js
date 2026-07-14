@@ -1022,9 +1022,10 @@ async function removeSelectionSnapshotChannel(channelName) {
 
 async function _alignPlacedLayerToCanvas(layer, docWidth, docHeight) {
   if (!layer || !layer.bounds || docWidth <= 0 || docHeight <= 0) return;
-  // GPT Image 的输入和蒙版都是整张文档画布。placeEvent 的默认中心放置
-  // 在缩放后可能留下非零的左/上偏移，因此必须用实际边界重新对齐到
-  // Photoshop 文档坐标 (0, 0)，否则选区蒙版也会跟着错位。
+  // GPT Image / RunningHub 局部编辑的输入和蒙版都是整张文档画布。
+  // placeEvent 的默认中心放置在缩放后可能留下非零的左/上偏移，因此
+  // 必须用实际边界重新对齐到 Photoshop 文档坐标 (0, 0)，否则选区蒙版
+  // 也会跟着错位。
   var bounds = layer.boundsNoEffects || layer.bounds;
   var left = _asPixels(bounds && bounds.left);
   var top = _asPixels(bounds && bounds.top);
@@ -1104,8 +1105,9 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
       ];
       await batchPlay(commands, {});
       if (revealSelection) {
-        // GPT Image returns the requested resolution, so scale the full-canvas
-        // result to the Photoshop document before applying the selection mask.
+        // GPT Image and RunningHub inpaint may return a different resolution,
+        // so scale the full-canvas result to the Photoshop document before
+        // applying the selection mask.
         var targetDoc = app.activeDocument;
         var targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
         var targetWidth = _asPixels(targetDoc && targetDoc.width);
@@ -1628,7 +1630,7 @@ async function onRunClick() {
     var resultBuffer;
     var placement = null;
     var gptMaskB64 = "";
-    var gptSelectionSnapshotChannel = "";
+    var selectionSnapshotChannel = "";
     var revealSelection = false;
     if (wf.gptImage) {
       var mode = gptMode;
@@ -1671,7 +1673,7 @@ async function onRunClick() {
           settings.gptImageAuth !== "codex", true
         );
         gptMaskB64 = maskExport.mask;
-        gptSelectionSnapshotChannel = maskExport.selectionChannelName;
+        selectionSnapshotChannel = maskExport.selectionChannelName;
         throwIfGptTaskCancelled(runState);
         inputs.gptAspectRatio = getDocumentAspectRatio();
         revealSelection = true;
@@ -1701,7 +1703,14 @@ async function onRunClick() {
       var imageB64 = await exportActiveDocPNG();
       var maskB64 = "";
       if (wf.needsMask) {
-        maskB64 = await exportSelectionMaskPNG();
+        // RunningHub receives the same white=selected mask that is used to
+        // create the returned layer mask. Keep the selection channel snapshot
+        // until the result has been placed so the input and output masks are
+        // guaranteed to use identical document coordinates.
+        var runningHubMaskExport = await exportSelectionMaskPNG(false, true);
+        maskB64 = runningHubMaskExport.mask;
+        selectionSnapshotChannel = runningHubMaskExport.selectionChannelName;
+        revealSelection = true;
       }
       resultBuffer = await callBridge(
         settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs
@@ -1719,9 +1728,9 @@ async function onRunClick() {
     }
     throwIfGptTaskCancelled(runState);
     await placeImageBytesAsLayer(
-      resultBuffer, layerName, placement, revealSelection, gptSelectionSnapshotChannel
+      resultBuffer, layerName, placement, revealSelection, selectionSnapshotChannel
     );
-    gptSelectionSnapshotChannel = "";
+    selectionSnapshotChannel = "";
 
     setStatus("完成 ✓", "ok");
   } catch (e) {
@@ -1732,8 +1741,8 @@ async function onRunClick() {
       console.error(e);
     }
   } finally {
-    if (typeof gptSelectionSnapshotChannel !== "undefined" && gptSelectionSnapshotChannel) {
-      await removeSelectionSnapshotChannel(gptSelectionSnapshotChannel);
+    if (typeof selectionSnapshotChannel !== "undefined" && selectionSnapshotChannel) {
+      await removeSelectionSnapshotChannel(selectionSnapshotChannel);
     }
     if (_activeRuns[runSlot] === runState) _activeRuns[runSlot] = null;
     refreshRunButton();
