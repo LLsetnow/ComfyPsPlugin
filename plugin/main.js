@@ -1002,12 +1002,36 @@ function _appendGptLayerSelect(container, inputId, labelText, records) {
   container.appendChild(select);
 }
 
+function updateGptAspectRatioVisibility() {
+  var modeSelect = $("gptImageMode");
+  var ratioLabel = $("gptAspectRatioLabel");
+  var ratioInput = $("gptAspectRatio");
+  var isEdit = modeSelect && modeSelect.value === "edit";
+  if (ratioLabel) ratioLabel.style.display = isEdit ? "none" : "";
+  if (ratioInput) ratioInput.style.display = isEdit ? "none" : "";
+}
+
+function getSelectionAspectRatio(bounds) {
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+    throw new Error("选区范围无效");
+  }
+  return normalizeGptAspectRatio(bounds.width + ":" + bounds.height);
+}
+
 function renderGptImageLayerInputs() {
   var container = $("gptImageLayerInputs");
   var modeSelect = $("gptImageMode");
   if (!container || !modeSelect) return;
+  updateGptAspectRatioVisibility();
   var renderVersion = ++_gptLayerRenderVersion;
   container.innerHTML = "";
+  if (modeSelect.value === "edit") {
+    var editHint = document.createElement("div");
+    editHint.className = "input-note";
+    editHint.textContent = "画面比例将自动跟随当前矩形选区。";
+    container.appendChild(editHint);
+    return;
+  }
   if (modeSelect.value !== "reference") return;
 
   var records;
@@ -1079,6 +1103,7 @@ function selectWorkflow(wfId) {
     var label = document.createElement("label");
     label.textContent = inp.label;
     label.htmlFor = inp.id;
+    if (inp.id === "gptAspectRatio") label.id = "gptAspectRatioLabel";
     container.appendChild(label);
 
     if (inp.type === "textarea") {
@@ -1190,7 +1215,10 @@ async function onRunClick() {
   var runSlot = getRunSlot(wf, settings);
   var inputs = getWorkflowInputs();
   var prompt = inputs.wfPrompt || "";
-  if (wf.gptImage) inputs.gptAspectRatio = normalizeGptAspectRatio(inputs.gptAspectRatio);
+  var gptMode = wf.gptImage ? (inputs.gptImageMode || "generate") : "";
+  if (wf.gptImage && gptMode !== "edit") {
+    inputs.gptAspectRatio = normalizeGptAspectRatio(inputs.gptAspectRatio);
+  }
   _activeRuns[runSlot] = { workflowId: wf.id };
   refreshRunButton();
   setStatus("");
@@ -1204,7 +1232,7 @@ async function onRunClick() {
     var resultBuffer;
     var placement = null;
     if (wf.gptImage) {
-      var mode = inputs.gptImageMode || "generate";
+      var mode = gptMode;
       var images = [];
       if (!prompt.trim()) throw new Error("请输入关键词或编辑说明");
 
@@ -1224,6 +1252,7 @@ async function onRunClick() {
         var editInput = await exportActiveLayerSelectionPNG();
         images.push(editInput.image);
         placement = editInput.bounds;
+        inputs.gptAspectRatio = getSelectionAspectRatio(editInput.bounds);
       }
 
       resultBuffer = await callGptImage(
