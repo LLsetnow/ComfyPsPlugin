@@ -541,49 +541,132 @@ async function exportSelectionMaskPNG(forGptImage) {
     };
   };
 
+  var channelName = "comfyps_sel_" + Date.now();
+  var sourceChannel = null;
+  var duplicateDoc = null;
+  var tempLayer = null;
+  var tempLayerCreated = false;
+  var batchPlayLayerCreated = false;
+  var channelCreated = false;
+
+  var removeSourceChannel = async function () {
+    if (!channelCreated) return;
+    if (sourceChannel && typeof sourceChannel.remove === "function") {
+      try {
+        await sourceChannel.remove();
+        return;
+      } catch (_) {}
+    }
+    try {
+      await batchPlay(
+        [{
+          _obj: "delete",
+          _target: [{ _ref: "channel", _name: channelName }],
+          _options: noDialog,
+        }],
+        {}
+      );
+    } catch (_) {}
+  };
+
   await executeAsModal(
     async function () {
       try {
         await batchPlay(
-          [{ _obj: "duplicate", _target: [{ _ref: "channel", _property: "selection" }], name: "comfyps_sel", _options: noDialog }],
+          [{ _obj: "duplicate", _target: [{ _ref: "channel", _property: "selection" }], name: channelName, _options: noDialog }],
           {}
         );
+        channelCreated = true;
       } catch (e) {
         throw new Error("请先做一个选区(未检测到选区)");
       }
 
-      await batchPlay([{ _obj: "make", _target: [{ _ref: "layer" }], _options: noDialog }], {});
-
-      await batchPlay(
-        [
-          setSel({ _enum: "ordinal", _value: "allEnum" }),
-          fillCmd(forGptImage ? "white" : "black"),
-          setSel({ _ref: "channel", _name: "comfyps_sel" }),
-          // GPT Image uses the transparent part of the mask as the edit area;
-          // RunningHub keeps its existing white=edit mask convention.
-          fillCmd(forGptImage ? "clear" : "white"),
-          setSel({ _enum: "ordinal", _value: "none" }),
-          {
-            _obj: "save",
-            as: { _obj: "PNGFormat", method: { _enum: "PNGMethod", _value: "quick" } },
-            in: { _path: token, _kind: "local" },
-            copy: true, lowerCase: true,
-            _options: noDialog,
-          },
-        ],
-        {}
-      );
-
       try {
+        // Keep all fill operations in a temporary document. This prevents
+        // Photoshop from applying the mask-building commands to the user's
+        // active document or showing a "Make/Fill" command error there.
+        try {
+          if (doc.channels && typeof doc.channels.getByName === "function") {
+            sourceChannel = doc.channels.getByName(channelName);
+          }
+        } catch (_) {}
+
+        if (typeof doc.duplicate === "function") {
+          duplicateDoc = await doc.duplicate("ComfyPS Mask Input");
+          // Document.duplicate normally copies custom channels. Explicitly
+          // duplicate it as well when the DOM channel API is available.
+          if (sourceChannel && typeof sourceChannel.duplicate === "function") {
+            try { await sourceChannel.duplicate(duplicateDoc); } catch (_) {}
+          }
+        }
+
+        var workDoc = duplicateDoc || doc;
+        if (workDoc && typeof workDoc.createLayer === "function") {
+          tempLayer = await workDoc.createLayer({ name: "ComfyPS Mask" });
+          tempLayerCreated = true;
+        } else {
+          // Browser mock and very old hosts use the Action Manager fallback.
+          await batchPlay([{
+            _obj: "make",
+            _target: [{ _ref: "layer" }],
+            using: { _obj: "layer", name: "ComfyPS Mask" },
+            _options: noDialog,
+          }], {});
+          batchPlayLayerCreated = true;
+        }
+
         await batchPlay(
           [
-            { _obj: "delete", _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }], _options: noDialog },
-            setSel({ _ref: "channel", _name: "comfyps_sel" }),
-            { _obj: "delete", _target: [{ _ref: "channel", _name: "comfyps_sel" }], _options: noDialog },
+            setSel({ _enum: "ordinal", _value: "allEnum" }),
+            fillCmd(forGptImage ? "white" : "black"),
+            setSel({ _ref: "channel", _name: channelName }),
+            // GPT Image uses the transparent part of the mask as the edit area;
+            // RunningHub keeps its existing white=edit mask convention.
+            fillCmd(forGptImage ? "clear" : "white"),
+            setSel({ _enum: "ordinal", _value: "none" }),
+            {
+              _obj: "save",
+              as: { _obj: "PNGFormat", method: { _enum: "PNGMethod", _value: "quick" } },
+              in: { _path: token, _kind: "local" },
+              copy: true, lowerCase: true,
+              _options: noDialog,
+            },
           ],
           {}
         );
-      } catch (_) {}
+      } finally {
+        if (tempLayerCreated && tempLayer) {
+          try { tempLayer.delete(); } catch (_) {}
+        } else if (batchPlayLayerCreated) {
+          try {
+            await batchPlay(
+              [{
+                _obj: "delete",
+                _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+                _options: noDialog,
+              }],
+              {}
+            );
+          } catch (_) {}
+        }
+
+        if (duplicateDoc) {
+          try {
+            if (typeof duplicateDoc.closeWithoutSaving === "function") {
+              await duplicateDoc.closeWithoutSaving();
+            } else {
+              await batchPlay([{
+                _obj: "close",
+                saving: { _enum: "yesNo", _value: "no" },
+                _options: noDialog,
+              }], {});
+            }
+          } catch (_) {}
+        }
+
+        // After closing the duplicate, the original document is active again.
+        await removeSourceChannel();
+      }
     },
     { commandName: "导出选区蒙版" }
   );
