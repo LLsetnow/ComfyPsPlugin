@@ -196,7 +196,7 @@
     }
     label:first-child { margin-top: 0; }
 
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       padding: 6px 8px;
       background: var(--bg-input);
@@ -211,16 +211,18 @@
       box-shadow: none;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
-    input:focus, textarea:focus {
+    input:focus, textarea:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 2px var(--accent-glow);
       outline: none;
     }
-    input:focus-visible, textarea:focus-visible {
+    input:focus-visible, textarea:focus-visible, select:focus-visible {
       outline: none;
     }
     textarea { resize: vertical; min-height: 52px; line-height: 1.4; }
+    select { min-height: 30px; }
     input[type="password"] { -webkit-text-security: disc; }
+    .input-note { font-size: 10.5px; color: var(--warn); line-height: 1.4; margin-top: 6px; }
 
     /* ---- Run button ---- */
     .btn-run {

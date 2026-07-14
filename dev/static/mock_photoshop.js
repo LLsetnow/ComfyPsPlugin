@@ -10,6 +10,18 @@
   // -------------------------------------------------------------------
   // Mock 文档状态
   // -------------------------------------------------------------------
+  const MOCK_LAYERS = [
+    { id: 1, name: "产品主体", visible: true },
+    {
+      id: 2,
+      name: "环境组",
+      visible: true,
+      layers: [
+        { id: 3, name: "背景", visible: true },
+        { id: 4, name: "光影", visible: true },
+      ],
+    },
+  ];
   const MOCK_DOC = {
     width: 512,
     height: 512,
@@ -17,6 +29,8 @@
     resolution: 72,
     bitsPerChannel: 8,
     mode: "RGBColor",
+    layers: MOCK_LAYERS,
+    activeLayers: [MOCK_LAYERS[0]],
     _selection: null, // null = 无选区; {x,y,w,h}
   };
 
@@ -68,8 +82,38 @@
           }
           _selectionChannel = desc.name || "comfyps_sel";
         }
+        if (ref?._ref === "document") {
+          MOCK_DOC._hasDuplicate = true;
+        }
         return { _obj: "duplicate" };
       }
+
+      // ---- get selection bounds ----
+      case "get": {
+        const property = desc._target?.[0]?._property;
+        if (property === "selection") {
+          if (!MOCK_DOC._selection) throw new Error("请先做一个选区(未检测到选区)");
+          const s = MOCK_DOC._selection;
+          return {
+            selection: {
+              left: { _unit: "pixelsUnit", _value: s.x },
+              top: { _unit: "pixelsUnit", _value: s.y },
+              right: { _unit: "pixelsUnit", _value: s.x + s.w },
+              bottom: { _unit: "pixelsUnit", _value: s.y + s.h },
+            },
+          };
+        }
+        return { _obj: "get" };
+      }
+
+      // ---- crop duplicated document ----
+      case "crop":
+        return { _obj: "crop" };
+
+      // ---- close duplicated document ----
+      case "close":
+        MOCK_DOC._hasDuplicate = false;
+        return { _obj: "close" };
 
       // ---- make (新图层) ----
       case "make": {
@@ -124,7 +168,7 @@
       // ---- placeEvent ----
       case "placeEvent": {
         const token = desc.target?._path;
-        const layer = { id: _nextLayerId++, name: "Placed", token };
+        const layer = { id: _nextLayerId++, name: "Placed", token, offset: desc.offset };
         _virtualLayers.push(layer);
         return { _obj: "placeEvent" };
       }

@@ -85,6 +85,40 @@ var WORKFLOWS = [
       return ["9:denoise=" + (inputs.wfDenoise || 0.1)];
     },
   },
+  {
+    id: "gpt-image",
+    name: "GPT Image",
+    icon: "✦",
+    active: true,
+    gptImage: true,
+    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或基于活动图层的选区进行编辑。",
+    inputs: [
+      {
+        id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
+          { value: "generate", label: "文生图" },
+          { value: "reference", label: "添加参考图" },
+          { value: "edit", label: "图像编辑（当前图层选区）" },
+        ],
+      },
+      { id: "wfPrompt", type: "textarea", label: "关键词 / 编辑说明", placeholder: "例如：午后阳光下的极简室内产品摄影", default: "" },
+      {
+        id: "gptAspectRatio", type: "select", label: "画面比例", default: "1:1", options: [
+          { value: "1:1", label: "1:1 方形" },
+          { value: "2:3", label: "2:3 竖图" },
+          { value: "3:2", label: "3:2 横图" },
+          { value: "9:16", label: "9:16 竖屏" },
+          { value: "16:9", label: "16:9 宽屏" },
+        ],
+      },
+      {
+        id: "gptResolution", type: "select", label: "分辨率", default: "1024x1024", options: [
+          { value: "1024x1024", label: "1024 × 1024" },
+          { value: "1024x1536", label: "1024 × 1536" },
+          { value: "1536x1024", label: "1536 × 1024" },
+        ],
+      },
+    ],
+  },
   { id: "blend", name: "物体溶图", icon: "🖼", active: false },
 ];
 
@@ -119,7 +153,8 @@ function isEnterprise() {
 }
 
 function applyTheme(theme) {
-  document.body.classList.toggle("light", theme === "light");
+  if (theme === "light") document.body.classList.add("light");
+  else document.body.classList.remove("light");
 }
 
 function saveSetting(key, value) {
@@ -221,6 +256,242 @@ async function exportActiveDocPNG() {
   var buf = await file.read({ format: formats.binary });
   if (!buf || buf.byteLength === 0) throw new Error("导出的 PNG 为空");
   return bytesToBase64(buf);
+}
+
+// =========================================================================
+// GPT Image: 图层与选区输入
+// =========================================================================
+function _asPixels(value) {
+  if (typeof value === "number") return value;
+  if (value && typeof value._value === "number") return value._value;
+  if (value && typeof value.value === "number") return value.value;
+  var parsed = parseFloat(value);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function _layerChildren(layer) {
+  if (!layer || !layer.layers) return [];
+  return layer.layers;
+}
+
+function _flattenLayers(layers, parents, output) {
+  if (!layers) return;
+  for (var li = 0; li < layers.length; li++) {
+    var layer = layers[li];
+    if (!layer) continue;
+    var id = String(layer.id);
+    var record = {
+      id: id,
+      name: layer.name || ("图层 " + id),
+      path: parents.concat([layer.name || ("图层 " + id)]).join(" / "),
+      ancestorIds: parents._ids ? parents._ids.slice() : [],
+      layer: layer,
+    };
+    output.push(record);
+
+    var childParents = parents.concat([layer.name || ("图层 " + id)]);
+    childParents._ids = record.ancestorIds.concat([id]);
+    _flattenLayers(_layerChildren(layer), childParents, output);
+  }
+}
+
+function getDocumentLayerRecords() {
+  var doc = app.activeDocument;
+  if (!doc) throw new Error("没有打开的文档");
+  var records = [];
+  var root = [];
+  root._ids = [];
+  _flattenLayers(doc.layers || [], root, records);
+  if (!records.length) throw new Error("当前文档没有可用图层");
+  return records;
+}
+
+function findLayerRecord(records, id) {
+  for (var ri = 0; ri < records.length; ri++) {
+    if (records[ri].id === String(id)) return records[ri];
+  }
+  return null;
+}
+
+function _containsId(ids, id) {
+  for (var ii = 0; ii < ids.length; ii++) {
+    if (ids[ii] === String(id)) return true;
+  }
+  return false;
+}
+
+function _snapshotLayerVisibility(records) {
+  var snapshot = [];
+  for (var si = 0; si < records.length; si++) {
+    snapshot.push({ layer: records[si].layer, visible: records[si].layer.visible !== false });
+  }
+  return snapshot;
+}
+
+function _restoreLayerVisibility(snapshot) {
+  for (var si = 0; si < snapshot.length; si++) {
+    try { snapshot[si].layer.visible = snapshot[si].visible; } catch (_) {}
+  }
+}
+
+function _isolateLayer(records, targetId) {
+  var target = findLayerRecord(records, targetId);
+  if (!target) throw new Error("找不到所选图层，请重新选择");
+  for (var li = 0; li < records.length; li++) {
+    var record = records[li];
+    var shouldShow = record.id === target.id ||
+      _containsId(record.ancestorIds, target.id) ||
+      _containsId(target.ancestorIds, record.id);
+    try { record.layer.visible = shouldShow; } catch (_) {}
+  }
+  return target;
+}
+
+function _pngSaveDescriptor(token) {
+  return {
+    _obj: "save",
+    as: { _obj: "PNGFormat", method: { _enum: "PNGMethod", _value: "quick" } },
+    in: { _path: token, _kind: "local" },
+    copy: true,
+    lowerCase: true,
+    _options: { dialogOptions: "dontDisplay" },
+  };
+}
+
+async function exportLayerPNG(layerId) {
+  var folder = await localFileSystem.getDataFolder();
+  var file = await folder.createFile("comfyps_gpt_reference_" + layerId + ".png", { overwrite: true });
+  var token = await localFileSystem.createSessionToken(file);
+  var records = getDocumentLayerRecords();
+  var visibility = _snapshotLayerVisibility(records);
+
+  await executeAsModal(
+    async function () {
+      try {
+        _isolateLayer(records, layerId);
+        await batchPlay([_pngSaveDescriptor(token)], {});
+      } finally {
+        _restoreLayerVisibility(visibility);
+      }
+    },
+    { commandName: "导出 GPT Image 参考图层" }
+  );
+
+  var buf = await file.read({ format: formats.binary });
+  if (!buf || buf.byteLength === 0) throw new Error("导出参考图层失败");
+  return bytesToBase64(buf);
+}
+
+function _parseSelectionBounds(result) {
+  var selection = result && (result.selection || result);
+  if (!selection || selection.top === undefined || selection.left === undefined ||
+      selection.right === undefined || selection.bottom === undefined) {
+    throw new Error("请先做一个选区");
+  }
+  var left = _asPixels(selection.left);
+  var top = _asPixels(selection.top);
+  var right = _asPixels(selection.right);
+  var bottom = _asPixels(selection.bottom);
+  if (right <= left || bottom <= top) throw new Error("选区范围无效");
+  return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
+}
+
+async function _readSelectionBounds() {
+  var doc = app.activeDocument;
+  if (doc && doc.selection && doc.selection.bounds) {
+    return _parseSelectionBounds(doc.selection.bounds);
+  }
+  var result = await batchPlay(
+    [{
+      _obj: "get",
+      _target: [
+        { _property: "selection" },
+        { _ref: "document", _enum: "ordinal", _value: "targetEnum" },
+      ],
+      _options: { dialogOptions: "dontDisplay" },
+    }],
+    {}
+  );
+  return _parseSelectionBounds(result && result[0]);
+}
+
+function _activeLayerId() {
+  var doc = app.activeDocument;
+  var activeLayers = doc && doc.activeLayers;
+  if (!activeLayers || !activeLayers.length || activeLayers[0].id === undefined) {
+    throw new Error("请先在 Photoshop 中选择一个图层");
+  }
+  return String(activeLayers[0].id);
+}
+
+async function exportActiveLayerSelectionPNG() {
+  var folder = await localFileSystem.getDataFolder();
+  var file = await folder.createFile("comfyps_gpt_edit_input.png", { overwrite: true });
+  var token = await localFileSystem.createSessionToken(file);
+  var layerId = _activeLayerId();
+  var records = getDocumentLayerRecords();
+  var visibility = _snapshotLayerVisibility(records);
+  var bounds;
+  var duplicated = false;
+  var duplicateDoc = null;
+  var noDialog = { dialogOptions: "dontDisplay" };
+
+  await executeAsModal(
+    async function () {
+      try {
+        bounds = await _readSelectionBounds();
+        _isolateLayer(records, layerId);
+        if (typeof app.activeDocument.duplicate === "function") {
+          duplicateDoc = await app.activeDocument.duplicate("ComfyPS GPT Image Input");
+          duplicated = true;
+          await duplicateDoc.crop(bounds);
+          await batchPlay([_pngSaveDescriptor(token)], {});
+        } else {
+          await batchPlay([{
+            _obj: "duplicate",
+            _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
+            name: "ComfyPS GPT Image Input",
+            _options: noDialog,
+          }], {});
+          duplicated = true;
+          await batchPlay([
+            {
+              _obj: "crop",
+              to: {
+                _obj: "rectangle",
+                top: { _unit: "pixelsUnit", _value: bounds.top },
+                left: { _unit: "pixelsUnit", _value: bounds.left },
+                bottom: { _unit: "pixelsUnit", _value: bounds.bottom },
+                right: { _unit: "pixelsUnit", _value: bounds.right },
+              },
+              _options: noDialog,
+            },
+            _pngSaveDescriptor(token),
+          ], {});
+        }
+      } finally {
+        if (duplicated) {
+          try {
+            if (duplicateDoc && typeof duplicateDoc.closeWithoutSaving === "function") {
+              await duplicateDoc.closeWithoutSaving();
+            } else {
+              await batchPlay([{
+                _obj: "close",
+                saving: { _enum: "yesNo", _value: "no" },
+                _options: noDialog,
+              }], {});
+            }
+          } catch (_) {}
+        }
+        _restoreLayerVisibility(visibility);
+      }
+    },
+    { commandName: "导出 GPT Image 图层选区" }
+  );
+
+  var buf = await file.read({ format: formats.binary });
+  if (!buf || buf.byteLength === 0) throw new Error("导出当前图层选区失败");
+  return { image: bytesToBase64(buf), bounds: bounds };
 }
 
 // =========================================================================
@@ -389,13 +660,83 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 }
 
 // =========================================================================
+// 调用本地 Codex 图像桥
+// =========================================================================
+async function callCodexImage(bridgeUrl, mode, prompt, aspectRatio, resolution, images) {
+  var progressFill = _progressFill;
+  var progressMsg = _progressMsg;
+  var progressBar = _progressBar;
+  var pollTimer = 0;
+  var url = bridgeUrl.replace(/\/+$/, "") + "/codex/image";
+  var body = {
+    mode: mode,
+    prompt: prompt || "",
+    aspectRatio: aspectRatio || "",
+    resolution: resolution || "",
+    images: images || [],
+  };
+
+  var resp;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error("连不上本地 Codex 图像桥(" + url + "):" + (e && e.message ? e.message : e));
+  }
+  if (!resp.ok) {
+    var detail = "";
+    try {
+      var j = JSON.parse(await resp.text());
+      detail = j.message || j.error || JSON.stringify(j);
+    } catch (_) {
+      detail = "HTTP " + resp.status;
+    }
+    throw new Error("Codex 图像生成失败:" + detail);
+  }
+
+  var taskId = resp.headers.get("X-Task-Id");
+  if (taskId && progressBar && progressFill && progressMsg) {
+    pollTimer = setInterval(async function () {
+      try {
+        var pr = await fetch(bridgeUrl.replace(/\/+$/, "") + "/progress?taskId=" + taskId);
+        if (pr.ok) {
+          var data = await pr.json();
+          progressFill.style.width = (data.percent || 0) + "%";
+          progressMsg.textContent = (data.message || "") + " (" + (data.percent || 0) + "%)";
+          if (data.percent >= 100) {
+            clearInterval(pollTimer);
+            _pollTimer = 0;
+          }
+        }
+      } catch (_) {}
+    }, 2000);
+    _pollTimer = pollTimer;
+  }
+
+  return await resp.arrayBuffer();
+}
+
+// =========================================================================
 // 把结果贴成新图层
 // =========================================================================
-async function placeImageBytesAsLayer(arrayBuffer, layerName) {
+async function placeImageBytesAsLayer(arrayBuffer, layerName, placement) {
   var folder = await localFileSystem.getDataFolder();
   var file = await folder.createFile("comfyps_result.png", { overwrite: true });
   await file.write(arrayBuffer);
   var token = await localFileSystem.createSessionToken(file);
+  var offsetX = 0;
+  var offsetY = 0;
+  if (placement) {
+    var doc = app.activeDocument;
+    var docWidth = _asPixels(doc && doc.width);
+    var docHeight = _asPixels(doc && doc.height);
+    // placeEvent 的偏移量以画布中心为基准。选区裁剪输入与输出均按其中心贴回。
+    offsetX = placement.left + placement.width / 2 - docWidth / 2;
+    offsetY = placement.top + placement.height / 2 - docHeight / 2;
+  }
 
   await executeAsModal(
     async function () {
@@ -406,8 +747,8 @@ async function placeImageBytesAsLayer(arrayBuffer, layerName) {
             target: { _path: token, _kind: "local" },
             offset: {
               _obj: "offset",
-              horizontal: { _unit: "pixelsUnit", _value: 0 },
-              vertical: { _unit: "pixelsUnit", _value: 0 },
+              horizontal: { _unit: "pixelsUnit", _value: offsetX },
+              vertical: { _unit: "pixelsUnit", _value: offsetY },
             },
             _options: { dialogOptions: "dontDisplay" },
           },
@@ -558,6 +899,75 @@ function renderWorkflowGrid() {
   });
 }
 
+var _gptLayerRenderVersion = 0;
+
+function _appendGptLayerSelect(container, inputId, labelText, records) {
+  var label = document.createElement("label");
+  label.textContent = labelText;
+  label.htmlFor = inputId;
+  container.appendChild(label);
+
+  var select = document.createElement("select");
+  select.id = inputId;
+  for (var li = 0; li < records.length; li++) {
+    var option = document.createElement("option");
+    option.value = records[li].id;
+    option.textContent = records[li].path;
+    select.appendChild(option);
+  }
+  container.appendChild(select);
+}
+
+function renderGptImageLayerInputs() {
+  var container = $("gptImageLayerInputs");
+  var modeSelect = $("gptImageMode");
+  if (!container || !modeSelect) return;
+  var renderVersion = ++_gptLayerRenderVersion;
+  container.innerHTML = "";
+  if (modeSelect.value !== "reference") return;
+
+  var records;
+  try {
+    records = getDocumentLayerRecords();
+  } catch (e) {
+    var empty = document.createElement("div");
+    empty.className = "input-note";
+    empty.textContent = e && e.message ? e.message : "无法读取图层";
+    container.appendChild(empty);
+    return;
+  }
+  if (renderVersion !== _gptLayerRenderVersion) return;
+
+  var countLabel = document.createElement("label");
+  countLabel.textContent = "参考图数量";
+  countLabel.htmlFor = "gptReferenceCount";
+  container.appendChild(countLabel);
+  var count = document.createElement("select");
+  count.id = "gptReferenceCount";
+  var one = document.createElement("option");
+  one.value = "1";
+  one.textContent = "1 个图层";
+  count.appendChild(one);
+  var two = document.createElement("option");
+  two.value = "2";
+  two.textContent = "2 个图层";
+  count.appendChild(two);
+  container.appendChild(count);
+
+  var layerSelects = document.createElement("div");
+  layerSelects.id = "gptReferenceLayerSelects";
+  container.appendChild(layerSelects);
+  var renderSelects = function () {
+    layerSelects.innerHTML = "";
+    _appendGptLayerSelect(layerSelects, "gptReferenceLayer1", "参考图层 1", records);
+    if (count.value === "2") {
+      _appendGptLayerSelect(layerSelects, "gptReferenceLayer2", "参考图层 2", records);
+    }
+  };
+  count.addEventListener("change", renderSelects);
+  renderSelects();
+}
+
 function selectWorkflow(wfId) {
   _selectedWorkflowId = wfId;
   var wf = findWorkflow(wfId);
@@ -626,6 +1036,21 @@ function selectWorkflow(wfId) {
       row.appendChild(slider);
       row.appendChild(valDisplay);
       container.appendChild(row);
+    } else if (inp.type === "select") {
+      var select = document.createElement("select");
+      select.id = inp.id;
+      var options = inp.options || [];
+      for (var oi = 0; oi < options.length; oi++) {
+        var option = document.createElement("option");
+        option.value = options[oi].value;
+        option.textContent = options[oi].label;
+        select.appendChild(option);
+      }
+      if (inp.default !== undefined) select.value = inp.default;
+      if (inp.id === "gptImageMode") {
+        select.addEventListener("change", renderGptImageLayerInputs);
+      }
+      container.appendChild(select);
     } else {
       var ip = document.createElement("input");
       ip.id = inp.id;
@@ -635,6 +1060,13 @@ function selectWorkflow(wfId) {
       container.appendChild(ip);
     }
   });
+
+  if (wf.gptImage) {
+    var gptLayerInputs = document.createElement("div");
+    gptLayerInputs.id = "gptImageLayerInputs";
+    container.appendChild(gptLayerInputs);
+    renderGptImageLayerInputs();
+  }
 
   runBtn.style.display = "flex";
   runBtn.querySelector("#btnLabel").textContent = "运行 — " + wf.name;
@@ -648,6 +1080,12 @@ function getWorkflowInputs() {
     var el = $(inp.id);
     values[inp.id] = el ? el.value : (inp.default || "");
   });
+  var refCount = $("gptReferenceCount");
+  if (refCount) values.gptReferenceCount = refCount.value;
+  var ref1 = $("gptReferenceLayer1");
+  if (ref1) values.gptReferenceLayer1 = ref1.value;
+  var ref2 = $("gptReferenceLayer2");
+  if (ref2) values.gptReferenceLayer2 = ref2.value;
   return values;
 }
 
@@ -671,17 +1109,8 @@ async function onRunClick() {
     var settings = loadSettings();
     var inputs = getWorkflowInputs();
     var wf = findWorkflow(_selectedWorkflowId);
+    if (!wf) throw new Error("请先选择一个工作流");
     var prompt = inputs.wfPrompt || "";
-    var resolution = parseInt(inputs.wfResolution) || 1024;
-
-    var imageB64 = await exportActiveDocPNG();
-    var maskB64 = "";
-    if (wf && wf.needsMask) {
-      maskB64 = await exportSelectionMaskPNG();
-    }
-
-    // 按钮显示处理状态
-    if (labelEl) labelEl.textContent = "云端处理中…";
 
     // 启动进度条
     _progressBar = $("progressBar");
@@ -689,19 +1118,65 @@ async function onRunClick() {
     _progressMsg = $("progressMsg");
     if (_progressBar) _progressBar.style.display = "block";
 
-    var resultBuffer = await callBridge(settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf);
+    var resultBuffer;
+    var placement = null;
+    if (wf.gptImage) {
+      var mode = inputs.gptImageMode || "generate";
+      var images = [];
+      if (!prompt.trim()) throw new Error("请输入关键词或编辑说明");
+
+      if (mode === "reference") {
+        var referenceIds = [inputs.gptReferenceLayer1];
+        if (inputs.gptReferenceCount === "2") referenceIds.push(inputs.gptReferenceLayer2);
+        if (!referenceIds[0] || (referenceIds.length === 2 && !referenceIds[1])) {
+          throw new Error("请选择参考图层");
+        }
+        if (referenceIds.length === 2 && referenceIds[0] === referenceIds[1]) {
+          throw new Error("两张参考图请选择不同的图层");
+        }
+        if (labelEl) labelEl.textContent = "正在导出参考图层…";
+        for (var ri = 0; ri < referenceIds.length; ri++) {
+          images.push(await exportLayerPNG(referenceIds[ri]));
+        }
+      } else if (mode === "edit") {
+        if (labelEl) labelEl.textContent = "正在裁剪当前图层选区…";
+        var editInput = await exportActiveLayerSelectionPNG();
+        images.push(editInput.image);
+        placement = editInput.bounds;
+      }
+
+      if (labelEl) labelEl.textContent = "Codex 正在生成图像…";
+      resultBuffer = await callCodexImage(
+        settings.bridgeUrl,
+        mode,
+        prompt,
+        inputs.gptAspectRatio,
+        inputs.gptResolution,
+        images
+      );
+    } else {
+      var imageB64 = await exportActiveDocPNG();
+      var maskB64 = "";
+      if (wf.needsMask) {
+        maskB64 = await exportSelectionMaskPNG();
+      }
+      if (labelEl) labelEl.textContent = "云端处理中…";
+      resultBuffer = await callBridge(settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf);
+    }
 
     if (_progressBar) _progressBar.style.display = "none";
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = 0; }
 
-    var layerName = "ComfyPS - " + (wf ? wf.name : "结果");
-    await placeImageBytesAsLayer(resultBuffer, layerName);
+    var layerName = "ComfyPS - " + wf.name;
+    await placeImageBytesAsLayer(resultBuffer, layerName, placement);
 
     setStatus("完成 ✓", "ok");
   } catch (e) {
     setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
     console.error(e);
   } finally {
+    if (_progressBar) _progressBar.style.display = "none";
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = 0; }
     btn.disabled = false;
     var labelEl2 = $("btnLabel");
     var spinnerEl2 = $("btnSpinner");
