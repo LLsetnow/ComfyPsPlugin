@@ -66,6 +66,10 @@ _GPT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
 CODEX_IMAGE_MAX_INPUT_BYTES = 45 * 1024 * 1024
+# 编辑模式最多会同时发送活动图层、额外参考图和选区蒙版三张 PNG。
+# 这些图片以 base64 放在 JSON 中，单张 45MB 的二进制输入展开后会更大，
+# 因此请求上限不能沿用普通工作流的 64MB。
+GPT_IMAGE_REQUEST_MAX_BYTES = 256 * 1024 * 1024
 # Codex app-server 使用 JSONL；图像事件可能携带远大于 asyncio 默认 64KB 的内容。
 # 仍限制为 64MB，避免异常进程无限制占用桥的内存。
 CODEX_APP_SERVER_LINE_LIMIT = 64 * 1024 * 1024
@@ -1236,6 +1240,11 @@ async def handle_gpt_image(request):
     """按认证方式路由 GPT Image 请求：Codex 订阅或 OpenAI API Key。"""
     try:
         body = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        return cors(web.json_response(
+            {"error": "REQUEST_TOO_LARGE", "message": "GPT Image 请求体过大，请降低输入图像尺寸"},
+            status=413,
+        ))
     except Exception:
         return cors(web.json_response(
             {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
@@ -1457,7 +1466,7 @@ async def handle_run(request):
 def main():
     global CONFIG
     CONFIG = load_config()
-    app = web.Application(client_max_size=64 * 1024 * 1024)
+    app = web.Application(client_max_size=GPT_IMAGE_REQUEST_MAX_BYTES)
     app.router.add_post("/run", handle_run)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/progress", handle_progress)
