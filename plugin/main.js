@@ -1631,7 +1631,7 @@ function getWorkflowDescription(wf) {
     var auth = gptSettings.gptImageAuth;
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
     var debugText = gptSettings.gptImageLocalValidation
-      ? " 当前已启用本地验证：不会调用模型。" : "";
+      ? " 当前已启用本地验证：不会调用桥或上传图片。" : "";
     return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
   }
   return wf.description || "";
