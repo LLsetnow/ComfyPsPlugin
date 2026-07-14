@@ -507,13 +507,14 @@ function _activeLayerId() {
 
 // 本地验证不应走 PNG 导出、桥或图像模型。直接在 Photoshop 中复制当前
 // 图层，并将当前选区变成副本的图层蒙版，能在极短时间内验证图层、选区
-// 和蒙版创建这条本地路径。
+// 和蒙版创建这条本地路径。返回外接矩形，便于把实际选区坐标显示给用户。
 async function runFastGptEditValidation(layerName) {
   var sourceLayerId = _activeLayerId();
+  var bounds;
   await executeAsModal(
     async function () {
       // 先读取选区，避免在复制了图层之后才发现没有选区。
-      await _readSelectionBounds();
+      bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
       await batchPlay([{
         _obj: "duplicate",
         _target: [{ _ref: "layer", _id: Number(sourceLayerId) }],
@@ -545,6 +546,7 @@ async function runFastGptEditValidation(layerName) {
     },
     { commandName: "GPT Image 快速本地验证" }
   );
+  return bounds;
 }
 
 async function exportActiveLayerSelectionPNG() {
@@ -1927,7 +1929,9 @@ async function onRunClick() {
     setStatus("没有打开的文档", "err");
     return;
   }
-  if (!canStartWorkflow(wf, settings)) {
+  var localValidationRequested = !!(wf.gptImage && settings.gptImageLocalValidation);
+  var localValidationCanStart = localValidationRequested && !_activeRuns.gptImage && !_activeRuns.other;
+  if (!localValidationCanStart && !canStartWorkflow(wf, settings)) {
     setStatus(wf.gptImage ? "GPT Image 正在生成中" : "已有 RunningHub 工作流正在运行", "err");
     refreshRunButton();
     return;
@@ -1937,6 +1941,10 @@ async function onRunClick() {
   var inputs = getWorkflowInputs();
   var prompt = inputs.wfPrompt || "";
   var gptMode = wf.gptImage ? (inputs.gptImageMode || "generate") : "";
+  if (localValidationRequested && gptMode !== "edit") {
+    setStatus("本地验证模式仅支持“图像编辑”", "err");
+    return;
+  }
   if (wf.gptImage && gptMode !== "edit") {
     inputs.gptAspectRatio = normalizeGptAspectRatio(inputs.gptAspectRatio);
   }
@@ -1945,22 +1953,27 @@ async function onRunClick() {
     cancelRequested: false,
     taskId: wf.gptImage ? makeGptTaskId() : "",
     bridgeRequestStarted: false,
-    localValidation: !!(wf.gptImage && settings.gptImageLocalValidation),
+    localValidation: localValidationRequested,
     localValidationInfo: "",
     abortController: null
   };
-  if (wf.gptImage && typeof AbortController !== "undefined") {
+  if (wf.gptImage && !runState.localValidation && typeof AbortController !== "undefined") {
     try { runState.abortController = new AbortController(); } catch (_) {}
   }
   _activeRuns[runSlot] = runState;
   refreshRunButton();
 
-  // 任务提交提示（短暂显示后自动清除）
-  setStatus("任务已提交 ✓", "ok");
-  setTimeout(function () {
-    var el = $("status");
-    if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
-  }, 2000);
+  // 本地验证不创建队列项，也不发送任何网络请求；只在 Photoshop 内
+  // 复制图层和创建蒙版。普通任务继续使用短暂的提交提示。
+  if (runState.localValidation) {
+    setStatus("正在进行本地验证…", "");
+  } else {
+    setStatus("任务已提交 ✓", "ok");
+    setTimeout(function () {
+      var el = $("status");
+      if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
+    }, 2000);
+  }
 
   // 立即入队（非本地验证模式）
   var queueItem = null;
@@ -2017,10 +2030,13 @@ async function onRunClick() {
         if (mode !== "edit") {
           throw new Error("本地验证模式仅支持“图像编辑”；请切换到图像编辑模式后再运行");
         }
-        await runFastGptEditValidation("ComfyPSGPT - 本地验证 - 图像编辑");
-        if (progressFill) progressFill.style.width = "100%";
-        if (progressMsg) progressMsg.textContent = "本地验证完成";
-        setStatus("本地验证完成 ✓（已复制活动图层并创建选区蒙版）", "ok");
+        var validationBounds = await runFastGptEditValidation("ComfyPSGPT - 本地验证 - 图像编辑");
+        setStatus(
+          "本地验证完成 ✓（已复制图层并创建蒙版；外接矩形 " +
+          validationBounds.width + "×" + validationBounds.height +
+          "，位置 " + validationBounds.left + "," + validationBounds.top + "）",
+          "ok"
+        );
         return;
       }
       if (!prompt.trim() && !runState.localValidation) throw new Error("请输入关键词或编辑说明");
