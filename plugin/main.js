@@ -1108,6 +1108,7 @@ async function onRunClick() {
   var spinnerEl = $("btnSpinner");
   if (labelEl) { labelEl.hidden = true; }
   if (spinnerEl) spinnerEl.hidden = false;
+  setStatus("");
 
   try {
     if (!app.activeDocument) throw new Error("没有打开的文档");
