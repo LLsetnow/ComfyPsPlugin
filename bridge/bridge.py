@@ -340,12 +340,18 @@ def write_codex_input_image(b64: str, path: Path):
     path.write_bytes(data)
 
 
-def build_codex_image_prompt(mode: str, prompt: str, aspect_ratio: str, resolution: str) -> str:
+def build_codex_image_prompt(
+    mode: str, prompt: str, aspect_ratio: str, resolution: str, image_count: int = 0
+) -> str:
     """把 UI 选项转为稳定、只生成一张图的 Codex 提示词。"""
     mode_text = {
         "generate": "文生图：不要参考任何现有图像。",
         "reference": "参考图生成：后续附带的图片是参考图，综合保留其主体、风格或构图中与提示词一致的元素。",
-        "edit": "图像编辑：后续附带的图片是编辑目标。按提示词修改它，并尽量保留未要求改变的内容。",
+        "edit": (
+            "图像编辑：第 1 张附图是当前选区的编辑目标。按提示词修改它，并尽量保留未要求改变的内容。"
+            + ("第 2 张附图仅作参考图；参考其风格、主体或细节，但输出必须基于第 1 张的选区构图和比例。"
+               if image_count > 1 else "")
+        ),
     }[mode]
     size_text = ""
     if aspect_ratio:
@@ -360,6 +366,19 @@ def build_codex_image_prompt(mode: str, prompt: str, aspect_ratio: str, resoluti
         f"{prompt.strip()}\n"
         "不要解释，不要执行命令，不要创建其他文件；只完成图像生成。"
     )
+
+
+def build_openai_image_prompt(mode: str, prompt: str, image_count: int) -> str:
+    """为 GPT Image API 明确多图编辑时每张图的职责。"""
+    if mode != "edit":
+        return prompt.strip()
+    input_roles = "第 1 张输入图是当前选区的编辑目标。"
+    if image_count > 1:
+        input_roles += (
+            "第 2 张输入图仅作参考图；参考其风格、主体或细节，"
+            "但输出必须基于第 1 张的选区构图和比例。"
+        )
+    return input_roles + "\n用户编辑要求：\n" + prompt.strip()
 
 
 def validate_gpt_aspect_ratio(aspect_ratio: str) -> str:
@@ -406,8 +425,9 @@ def parse_gpt_image_request(body: dict):
         raise GptImageRequestError("INVALID_IMAGES", "文生图模式不接受参考图")
     if mode == "reference" and not 1 <= len(images) <= 2:
         raise GptImageRequestError("INVALID_IMAGES", "参考图模式需要选择 1 或 2 个图层")
-    if mode == "edit" and len(images) != 1:
-        raise GptImageRequestError("INVALID_IMAGES", "图像编辑模式需要一个选区裁剪图")
+    if mode == "edit" and not 1 <= len(images) <= 2:
+        raise GptImageRequestError(
+            "INVALID_IMAGES", "图像编辑模式需要一个选区裁剪图，可额外添加一张参考图")
     if any(not isinstance(image, str) for image in images):
         raise GptImageRequestError("INVALID_IMAGES", "参考图格式不正确")
     return mode, prompt, aspect_ratio, resolution, images
@@ -453,6 +473,7 @@ async def run_openai_gpt_image(
 
     headers = {"Authorization": "Bearer " + api_key.strip()}
     size = resolve_openai_image_size(aspect_ratio, resolution)
+    effective_prompt = build_openai_image_prompt(mode, prompt, len(image_paths))
     timeout = ClientTimeout(total=CODEX_IMAGE_TIMEOUT_SECONDS)
     opened_files = []
     try:
@@ -460,7 +481,7 @@ async def run_openai_gpt_image(
             if mode == "generate":
                 payload = {
                     "model": OPENAI_GPT_IMAGE_MODEL,
-                    "prompt": prompt,
+                    "prompt": effective_prompt,
                     "size": size,
                     "quality": "auto",
                 }
@@ -471,7 +492,7 @@ async def run_openai_gpt_image(
             else:
                 form = FormData()
                 form.add_field("model", OPENAI_GPT_IMAGE_MODEL)
-                form.add_field("prompt", prompt)
+                form.add_field("prompt", effective_prompt)
                 form.add_field("size", size)
                 form.add_field("quality", "auto")
                 for image_path in image_paths:
@@ -985,7 +1006,8 @@ async def handle_codex_image_body(body):
             write_codex_input_image(image, image_path)
             image_paths.append(image_path)
 
-        codex_prompt = build_codex_image_prompt(mode, prompt, aspect_ratio, resolution)
+        codex_prompt = build_codex_image_prompt(
+            mode, prompt, aspect_ratio, resolution, len(image_paths))
         result_bytes = await asyncio.wait_for(
             client.generate(codex_prompt, image_paths),
             timeout=CODEX_IMAGE_TIMEOUT_SECONDS + 15,
