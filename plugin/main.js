@@ -885,6 +885,24 @@ function findWorkflow(id) {
   return null;
 }
 
+function getWorkflowDescription(wf) {
+  if (!wf) return "";
+  if (wf.gptImage) {
+    var auth = loadSettings().gptImageAuth;
+    var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
+    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于活动图层的选区进行编辑。";
+  }
+  return wf.description || "";
+}
+
+function renderWorkflowDescription(wf) {
+  var descEl = $("workflowDesc");
+  if (!descEl) return;
+  var description = getWorkflowDescription(wf);
+  descEl.textContent = description;
+  descEl.style.display = description ? "block" : "none";
+}
+
 function renderWorkflowGrid() {
   var grid = $("workflowGrid");
   if (!grid) return;
@@ -995,15 +1013,7 @@ function selectWorkflow(wfId) {
   container.innerHTML = "";
 
   // 使用说明 — 渲染在输入区外面 (workflow grid 下方)
-  var descEl = $("workflowDesc");
-  if (descEl) {
-    if (wf.description) {
-      descEl.textContent = wf.description;
-      descEl.style.display = "block";
-    } else {
-      descEl.style.display = "none";
-    }
-  }
+  renderWorkflowDescription(wf);
 
   (wf.inputs || []).forEach(function (inp) {
     var label = document.createElement("label");
@@ -1415,6 +1425,7 @@ function saveAllSettings() {
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("theme", theme);
+  renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }
 
 // =========================================================================
