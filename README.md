@@ -93,5 +93,9 @@ python bridge/bridge.py
 
 OpenAI API Key 保存在本机插件设置中；每次仅随本机桥的 GPT Image 请求传递，不会写入 `bridge/config.json`。生产桥提供 `POST /gpt-image` 和 `POST /gpt-image/status`；旧的 `POST /codex/image` 仍保留兼容。
 
+### 本地验证模式
+
+设置页可开启「启用本地验证模式」。开启后不会调用 Codex 或 OpenAI：图像编辑仍会导出活动图层和选区蒙版，由本地桥校验 PNG、图层/蒙版尺寸与 API 蒙版 alpha 通道，然后将活动图层原样回贴并创建图层蒙版。结果图层名称会以 `ComfyPSGPT - 本地验证` 开头，可用于快速确认导出、蒙版上传和回贴流程。
+
 ## 许可证
 MIT

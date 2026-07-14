@@ -221,6 +221,7 @@ async def cors_middleware(request: web.Request, handler):
             )
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Expose-Headers"] = "X-Task-Id, X-ComfyPS-Local-Validation"
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp
 
@@ -379,6 +380,9 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
             {"error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400
         )
 
+    if body.get("localValidation"):
+        return await handle_gpt_image_local_validation(body)
+
     provider = (body.get("provider") or "codex").strip().lower()
     if provider not in ("codex", "api-key", "apikey", "openai"):
         return web.json_response(
@@ -441,6 +445,22 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
         if _mock_gpt_image_tasks.get(task_id) is task:
             _mock_gpt_image_tasks.pop(task_id, None)
         _mock_pending_gpt_image_cancellations.discard(task_id)
+
+
+async def handle_gpt_image_local_validation(body: dict) -> web.Response:
+    """开发服务器的无模型 GPT Image 输入验证。"""
+    mode = (body.get("mode") or "generate").strip().lower()
+    images = body.get("images") or []
+    mask = body.get("mask") or ""
+    if mode not in ("generate", "reference", "edit"):
+        return web.json_response({"error": "INVALID_MODE", "message": "无效的 GPT Image 模式"}, status=400)
+    if mode == "edit" and (not images or not mask):
+        return web.json_response({"error": "INVALID_EDIT_INPUT", "message": "图像编辑需要活动图层和选区蒙版"}, status=400)
+    task_id = str(body.get("taskId") or "mock_local_validation")
+    response = web.Response(body=DEMO_PNG, content_type="image/png")
+    response.headers["X-Task-Id"] = task_id
+    response.headers["X-ComfyPS-Local-Validation"] = "image=mock;mask=mock;alpha=mock"
+    return response
 
 
 async def handle_gpt_image_cancel(request: web.Request) -> web.Response:

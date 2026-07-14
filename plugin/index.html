@@ -223,10 +223,14 @@
     select { min-height: 30px; }
     input[type="password"] { -webkit-text-security: disc; }
     .input-note { font-size: 10.5px; color: var(--warn); line-height: 1.4; margin-top: 6px; }
-    .gpt-edit-reference-toggle { display: flex; align-items: center; gap: 5px; }
+    .gpt-edit-reference-toggle,
+    .setting-checkbox { display: flex; align-items: center; gap: 5px; }
     .gpt-edit-reference-toggle input,
     .gpt-edit-reference-toggle input:focus,
-    .gpt-edit-reference-toggle input:focus-visible {
+    .gpt-edit-reference-toggle input:focus-visible,
+    .setting-checkbox input,
+    .setting-checkbox input:focus,
+    .setting-checkbox input:focus-visible {
       width: auto;
       padding: 0;
       margin: 0;
@@ -545,6 +549,16 @@
       <div class="setting-hint">密钥仅从插件传给本机桥，不写入 bridge/config.json；API 用量单独计费。</div>
     </div>
     <span id="gptImageAuthStatus" style="display:none;margin:0 0 8px;"></span>
+
+    <!-- GPT Image 本地验证 -->
+    <div class="section-title">GPT Image 调试</div>
+    <div class="setting-row">
+      <label class="setting-checkbox">
+        <input id="settingGptImageLocalValidation" type="checkbox" />
+        <span>启用本地验证模式</span>
+      </label>
+      <div class="setting-hint">不调用 Codex 或 OpenAI。图像编辑会验证活动图层与选区蒙版尺寸，并将活动图层原样回贴，用于检查导出、上传和图层蒙版流程。</div>
+    </div>
 
     <!-- 主题 -->
     <div class="section-title">外观</div>

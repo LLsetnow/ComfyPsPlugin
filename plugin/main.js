@@ -130,6 +130,7 @@ var SETTINGS_KEYS = {
   apiType: "comfyps.apiType",
   gptImageAuth: "comfyps.gptImageAuth",
   gptImageApiKey: "comfyps.gptImageApiKey",
+  gptImageLocalValidation: "comfyps.gptImageLocalValidation",
 };
 
 function loadSettings() {
@@ -143,6 +144,7 @@ function loadSettings() {
     apiType: localStorage.getItem(SETTINGS_KEYS.apiType) || "",
     gptImageAuth: localStorage.getItem(SETTINGS_KEYS.gptImageAuth) || "codex",
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
+    gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
   };
 }
 
@@ -849,7 +851,7 @@ function startGptProgressPolling(bridgeUrl, taskId, progressBar, progressFill, p
   return timer;
 }
 
-async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images, maskB64, runState) {
+async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRatio, resolution, images, maskB64, runState, localValidation) {
   var progressFill = $("progressFill");
   var progressMsg = $("progressMsg");
   var progressBar = $("progressBar");
@@ -867,6 +869,7 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
     resolution: resolution || "",
     images: images || [],
   };
+  if (localValidation) body.localValidation = true;
   if (maskB64) body.mask = maskB64;
   if (provider === "api-key" && apiKey) body.apiKey = apiKey;
 
@@ -899,6 +902,9 @@ async function callGptImage(bridgeUrl, provider, apiKey, mode, prompt, aspectRat
         detail = "HTTP " + resp.status;
       }
       throw new Error("GPT Image 生成失败:" + detail);
+    }
+    if (runState && localValidation) {
+      runState.localValidationInfo = resp.headers.get("X-ComfyPS-Local-Validation") || "";
     }
     throwIfGptTaskCancelled(runState);
     return await resp.arrayBuffer();
@@ -1193,9 +1199,12 @@ function findWorkflow(id) {
 function getWorkflowDescription(wf) {
   if (!wf) return "";
   if (wf.gptImage) {
-    var auth = loadSettings().gptImageAuth;
+    var gptSettings = loadSettings();
+    var auth = gptSettings.gptImageAuth;
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。";
+    var debugText = gptSettings.gptImageLocalValidation
+      ? " 当前已启用本地验证：不会调用模型。" : "";
+    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或基于当前活动图层的选区蒙版进行编辑。" + debugText;
   }
   return wf.description || "";
 }
@@ -1518,6 +1527,8 @@ async function onRunClick() {
     cancelRequested: false,
     taskId: wf.gptImage ? makeGptTaskId() : "",
     bridgeRequestStarted: false,
+    localValidation: !!(wf.gptImage && settings.gptImageLocalValidation),
+    localValidationInfo: "",
     abortController: null
   };
   if (wf.gptImage && typeof AbortController !== "undefined") {
@@ -1530,7 +1541,7 @@ async function onRunClick() {
   var progressFill = $("progressFill");
   var progressMsg = $("progressMsg");
   if (progressFill) progressFill.style.width = "0";
-  if (progressMsg) progressMsg.textContent = "正在提交任务…";
+  if (progressMsg) progressMsg.textContent = runState.localValidation ? "正在进行本地验证…" : "正在提交任务…";
 
   try {
     var resultBuffer;
@@ -1541,7 +1552,8 @@ async function onRunClick() {
     if (wf.gptImage) {
       var mode = gptMode;
       var images = [];
-      if (!prompt.trim()) throw new Error("请输入关键词或编辑说明");
+      if (!prompt.trim() && !runState.localValidation) throw new Error("请输入关键词或编辑说明");
+      if (!prompt.trim()) prompt = "本地验证";
 
       if (mode === "reference") {
         var referenceIds = [inputs.gptReferenceLayer1];
@@ -1592,7 +1604,8 @@ async function onRunClick() {
         inputs.gptResolution,
         images,
         gptMaskB64,
-        runState
+        runState,
+        runState.localValidation
       );
     } else {
       var imageB64 = await exportActiveDocPNG();
@@ -1612,7 +1625,7 @@ async function onRunClick() {
         reference: "添加参考图",
         edit: "图像编辑"
       };
-      layerName = "ComfyPSGPT - " + (gptModeNames[mode] || mode);
+      layerName = "ComfyPSGPT - " + (runState.localValidation ? "本地验证 - " : "") + (gptModeNames[mode] || mode);
     }
     throwIfGptTaskCancelled(runState);
     await placeImageBytesAsLayer(
@@ -1620,7 +1633,11 @@ async function onRunClick() {
     );
     gptSelectionSnapshotChannel = "";
 
-    setStatus("完成 ✓", "ok");
+    if (runState.localValidation) {
+      setStatus("本地验证完成 ✓" + (runState.localValidationInfo ? "（" + runState.localValidationInfo + "）" : ""), "ok");
+    } else {
+      setStatus("完成 ✓", "ok");
+    }
   } catch (e) {
     if (isGptTaskCancelled(e)) {
       setStatus("已停止 GPT Image 任务", "");
@@ -1664,12 +1681,14 @@ function renderSettings() {
   var apiKeyInput = $("settingApiKey");
   var comfyuiInput = $("settingComfyuiUrl");
   var gptImageApiKeyInput = $("settingGptImageApiKey");
+  var gptImageLocalValidationInput = $("settingGptImageLocalValidation");
   var balanceDisplay = $("balanceDisplay");
 
   if (bridgeInput) bridgeInput.value = s.bridgeUrl;
   if (apiKeyInput) apiKeyInput.value = s.apiKey;
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
   if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
+  if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
   _segSelect("segBackend", s.backend);
   _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
@@ -1829,6 +1848,7 @@ function saveAllSettings() {
   var apiKey = ($("settingApiKey") ? $("settingApiKey").value : "").trim();
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
+  var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var backend = _segGet("segBackend") || "runninghub";
   var site = _segGet("segSite") || "ai";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
@@ -1843,6 +1863,7 @@ function saveAllSettings() {
   saveSetting("comfyuiUrl", comfyuiUrl);
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
+  saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
   saveSetting("theme", theme);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }
@@ -1933,6 +1954,8 @@ function saveAllSettings() {
     var el = $(id);
     if (el) el.addEventListener("blur", saveAllSettings);
   });
+  var gptImageLocalValidation = $("settingGptImageLocalValidation");
+  if (gptImageLocalValidation) gptImageLocalValidation.addEventListener("change", saveAllSettings);
 
   // ---- 设置页: 测试 Key ----
   var btnTestKey = $("btnTestKey");
