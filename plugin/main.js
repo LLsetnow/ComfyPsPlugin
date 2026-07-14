@@ -1018,6 +1018,39 @@ function getSelectionAspectRatio(bounds) {
   return normalizeGptAspectRatio(bounds.width + ":" + bounds.height);
 }
 
+function renderGptEditReferenceInput(container) {
+  var records;
+  try {
+    records = getDocumentLayerRecords();
+  } catch (e) {
+    var errorNote = document.createElement("div");
+    errorNote.className = "input-note";
+    errorNote.textContent = e && e.message ? e.message : "无法读取图层";
+    container.appendChild(errorNote);
+    return;
+  }
+
+  var toggleLabel = document.createElement("label");
+  toggleLabel.className = "gpt-edit-reference-toggle";
+  var toggle = document.createElement("input");
+  toggle.id = "gptEditUseReference";
+  toggle.type = "checkbox";
+  toggleLabel.appendChild(toggle);
+  toggleLabel.appendChild(document.createTextNode(" 添加参考图"));
+  container.appendChild(toggleLabel);
+
+  var referenceFields = document.createElement("div");
+  referenceFields.id = "gptEditReferenceFields";
+  container.appendChild(referenceFields);
+  var renderReferenceFields = function () {
+    referenceFields.innerHTML = "";
+    if (!toggle.checked) return;
+    _appendGptLayerSelect(referenceFields, "gptEditReferenceLayer", "参考图层", records);
+  };
+  toggle.addEventListener("change", renderReferenceFields);
+  renderReferenceFields();
+}
+
 function renderGptImageLayerInputs() {
   var container = $("gptImageLayerInputs");
   var modeSelect = $("gptImageMode");
@@ -1030,6 +1063,7 @@ function renderGptImageLayerInputs() {
     editHint.className = "input-note";
     editHint.textContent = "画面比例将自动跟随当前矩形选区。";
     container.appendChild(editHint);
+    renderGptEditReferenceInput(container);
     return;
   }
   if (modeSelect.value !== "reference") return;
@@ -1187,6 +1221,10 @@ function getWorkflowInputs() {
   if (ref1) values.gptReferenceLayer1 = ref1.value;
   var ref2 = $("gptReferenceLayer2");
   if (ref2) values.gptReferenceLayer2 = ref2.value;
+  var editUseReference = $("gptEditUseReference");
+  if (editUseReference) values.gptEditUseReference = editUseReference.checked;
+  var editReferenceLayer = $("gptEditReferenceLayer");
+  if (editReferenceLayer) values.gptEditReferenceLayer = editReferenceLayer.value;
   return values;
 }
 
@@ -1253,6 +1291,10 @@ async function onRunClick() {
         images.push(editInput.image);
         placement = editInput.bounds;
         inputs.gptAspectRatio = getSelectionAspectRatio(editInput.bounds);
+        if (inputs.gptEditUseReference) {
+          if (!inputs.gptEditReferenceLayer) throw new Error("请选择编辑参考图层");
+          images.push(await exportLayerPNG(inputs.gptEditReferenceLayer));
+        }
       }
 
       resultBuffer = await callGptImage(
