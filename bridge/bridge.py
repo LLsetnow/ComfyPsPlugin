@@ -415,6 +415,7 @@ def load_config():
     if not Path(cfg["workflowFile"]).exists():
         raise SystemExit(f"❌ 工作流文件不存在:{cfg['workflowFile']}")
     cfg.setdefault("maskField", "image")
+    cfg.setdefault("maskChannel", "red")  # 插件保存 RGB PNG，用 red 通道：白=1.0=编辑区，黑=0.0=保留区
     cfg.setdefault("port", 8765)
     return cfg
 

@@ -296,7 +296,7 @@
   "210": {
     "inputs": {
       "image": "undefined",
-      "channel": "alpha"
+      "channel": "red"
     },
     "class_type": "LoadImageMask",
     "_meta": {
