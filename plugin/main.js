@@ -690,70 +690,35 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
       }
 
       try {
-        // Keep all fill operations in a temporary document. This prevents
-        // Photoshop from applying the mask-building commands to the user's
-        // active document or showing a "Make/Fill" command error there.
-        try {
-          if (doc.channels && typeof doc.channels.getByName === "function") {
-            sourceChannel = doc.channels.getByName(channelName);
-          }
-        } catch (_) {}
+        // Always use batchPlay to duplicate the document: this reliably switches
+        // the batchPlay active document to the copy so that all subsequent fill
+        // and save commands target the duplicate, not the original.
+        await batchPlay([{
+          _obj: "duplicate",
+          _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
+          name: "ComfyPS Mask Input",
+          _options: noDialog,
+        }], {});
+        batchPlayDuplicate = true;
 
-        if (typeof doc.duplicate === "function") {
-          duplicateDoc = await doc.duplicate("ComfyPS Mask Input");
-          // Document.duplicate normally copies custom channels. Explicitly
-          // duplicate it as well when the DOM channel API is available.
-          if (sourceChannel && typeof sourceChannel.duplicate === "function") {
-            try { await sourceChannel.duplicate(duplicateDoc); } catch (_) {}
-          }
-          if (normalizedCropBounds) {
-            if (typeof duplicateDoc.crop === "function") {
-              await duplicateDoc.crop(normalizedCropBounds);
-            } else {
-              await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
-            }
-          }
-        } else {
-          // The Action Manager fallback duplicates the document and makes it
-          // active. Crop that temporary document before building the mask so
-          // the saved PNG has exactly the same dimensions as the input image.
-          await batchPlay([{
-            _obj: "duplicate",
-            _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
-            name: "ComfyPS Mask Input",
-            _options: noDialog,
-          }], {});
-          batchPlayDuplicate = true;
-          if (normalizedCropBounds) {
-            await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
-          }
+        if (normalizedCropBounds) {
+          await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
         }
 
-        // When the Action Manager fallback duplicated the document, the DOM
-        // object still points at the original document. Leave workDoc null so
-        // the following batchPlay layer creation targets the active duplicate.
-        var workDoc = duplicateDoc || (batchPlayDuplicate ? null : doc);
-        if (workDoc && typeof workDoc.createLayer === "function") {
-          tempLayer = await workDoc.createLayer({ name: "ComfyPS Mask" });
-          tempLayerCreated = true;
-        } else {
-          // Browser mock and very old hosts use the Action Manager fallback.
-          await batchPlay([{
-            _obj: "make",
-            _target: [{ _ref: "layer" }],
-            using: { _obj: "layer", name: "ComfyPS Mask" },
-            _options: noDialog,
-          }], {});
-          batchPlayLayerCreated = true;
-        }
+        // Create a new layer at the top of the duplicate for the B&W mask.
+        await batchPlay([{
+          _obj: "make",
+          _target: [{ _ref: "layer" }],
+          using: { _obj: "layer", name: "ComfyPS Mask" },
+          _options: noDialog,
+        }], {});
+        batchPlayLayerCreated = true;
 
         await batchPlay(
           [
             setSel({ _enum: "ordinal", _value: "allEnum" }),
             fillCmd(forGptImage ? "white" : "black"),
             setSel({ _ref: "channel", _name: channelName }),
-            // GPT Image uses the transparent part of the mask as the edit area;
-            // RunningHub keeps its existing white=edit mask convention.
             fillCmd(forGptImage ? "clear" : "white"),
             setSel({ _enum: "ordinal", _value: "none" }),
             {
@@ -767,38 +732,17 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
           {}
         );
       } finally {
-        if (tempLayerCreated && tempLayer) {
-          try { tempLayer.delete(); } catch (_) {}
-        } else if (batchPlayLayerCreated) {
+        if (batchPlayDuplicate) {
           try {
-            await batchPlay(
-              [{
-                _obj: "delete",
-                _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-                _options: noDialog,
-              }],
-              {}
-            );
-          } catch (_) {}
-        }
-
-        if (duplicateDoc || batchPlayDuplicate) {
-          try {
-            if (duplicateDoc && typeof duplicateDoc.closeWithoutSaving === "function") {
-              await duplicateDoc.closeWithoutSaving();
-            } else {
-              await batchPlay([{
-                _obj: "close",
-                saving: { _enum: "yesNo", _value: "no" },
-                _options: noDialog,
-              }], {});
-            }
+            await batchPlay([{
+              _obj: "close",
+              saving: { _enum: "yesNo", _value: "no" },
+              _options: noDialog,
+            }], {});
           } catch (_) {}
         }
 
         // After closing the duplicate, the original document is active again.
-        // Keep the original alpha-channel snapshot until placement when the
-        // caller needs to make a result-layer mask from this exact selection.
         if (!keepSelectionSnapshot) await removeSourceChannel();
       }
     },

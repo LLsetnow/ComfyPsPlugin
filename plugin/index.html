@@ -58,7 +58,11 @@
     }
 
     /* ---- Pages ---- */
-    .page { display: none; }
+    .page {
+      display: none;
+      /* 留出可滚动的安全空间，避免 UXP 面板底部裁掉队列操作区。 */
+      padding-bottom: 96px;
+    }
     .page.active { display: block; }
 
     /* ---- Page 1: Home ---- */

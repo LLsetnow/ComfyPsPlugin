@@ -42,10 +42,15 @@ except ImportError:
         "   pip install git+https://github.com/LLsetnow/RH_CLI.git"
     )
 
+import inspect
+
 from rh_cli.config import require_api_key
 from rh_cli.errors import RhCliError
 from rh_cli.http import BASE_URL, RhHttpClient
 from rh_cli.workflow.client import run_workflow
+
+# 旧版 rh_cli 没有 cancel_event 参数，运行时检测一次做兼容
+_RUN_WORKFLOW_SUPPORTS_CANCEL = "cancel_event" in inspect.signature(run_workflow).parameters
 
 # ---------------------------------------------------------------------------
 # RunningHub 站点映射
@@ -410,6 +415,7 @@ def load_config():
     if not Path(cfg["workflowFile"]).exists():
         raise SystemExit(f"❌ 工作流文件不存在:{cfg['workflowFile']}")
     cfg.setdefault("maskField", "image")
+    cfg.setdefault("maskChannel", "red")  # 插件保存 RGB PNG，用 red 通道：白=1.0=编辑区，黑=0.0=保留区
     cfg.setdefault("port", 8765)
     return cfg
 
@@ -838,7 +844,7 @@ def run_inpaint_blocking(
     if task_id:
         _task_progress[task_id] = {"elapsed": 0, "message": "提交中…", "percent": 0}
 
-    result = run_workflow(
+    rw_kwargs = dict(
         api_key_arg=api_key if api_key else None,
         workflow_file=wf_file,
         workflow_id=wf_id,
@@ -848,8 +854,36 @@ def run_inpaint_blocking(
         output_dir=out_dir,
         set_args=set_args,
         on_tick=on_progress,
-        cancel_event=cancel_event,
     )
+    if _RUN_WORKFLOW_SUPPORTS_CANCEL and cancel_event is not None:
+        rw_kwargs["cancel_event"] = cancel_event
+
+    _SSL_ERRS = ("SSL", "EOF", "ConnectionReset", "RemoteDisconnected", "BrokenPipe")
+    _MAX_RETRIES = 3
+    last_exc = None
+    for _attempt in range(_MAX_RETRIES):
+        if cancel_event and cancel_event.is_set():
+            raise RhCliError("TASK_CANCELLED", "任务已取消")
+        try:
+            result = run_workflow(**rw_kwargs)
+            break
+        except Exception as _e:
+            _emsg = str(_e)
+            if any(k in _emsg for k in _SSL_ERRS):
+                last_exc = _e
+                _wait = 2 ** _attempt  # 1s, 2s, 4s
+                if task_id:
+                    _task_progress[task_id] = {
+                        "elapsed": 0,
+                        "message": "网络错误，{}s 后重试({}/{})…".format(_wait, _attempt + 1, _MAX_RETRIES),
+                        "percent": 0,
+                    }
+                import time as _time
+                _time.sleep(_wait)
+            else:
+                raise
+    else:
+        raise RuntimeError("网络连接失败（已重试 {} 次）: {}".format(_MAX_RETRIES, last_exc))
 
     if task_id:
         _task_progress[task_id] = {"elapsed": -1, "message": "完成", "percent": 100}
