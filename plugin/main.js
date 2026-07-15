@@ -51,7 +51,16 @@ var WORKFLOWS = [
     inputs: [
       { id: "wfPrompt", type: "textarea", label: "提示词 (positive)", placeholder: "例如: 干净空旷的背景", default: "" },
       { id: "wfResolution", type: "number", label: "分辨率", placeholder: "", default: 1024 },
+      {
+        id: "wfInpaintModel", type: "select", label: "模型", default: "qwen_image_edit_2511_fp8mixed.safetensors", options: [
+          { value: "qwen_image_edit_2511_fp8mixed.safetensors", label: "Qwen Image Edit 2511（FP8 Mixed，默认）" },
+          { value: "qwnImageEdit_v16Bf16.safetensors", label: "Qwn Image Edit v1.6（BF16）" },
+        ],
+      },
     ],
+    setArgs: function (inputs) {
+      return ["12:unet_name=" + (inputs.wfInpaintModel || "qwen_image_edit_2511_fp8mixed.safetensors")];
+    },
   },
   {
     id: "cleanup",
