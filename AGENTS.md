@@ -123,6 +123,15 @@ python bridge/bridge.py           # → http://127.0.0.1:8765
 插件目录：`~/Library/Application Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/`
 更新文件后需在 PS 中重新加载面板。
 
+**CRITICAL: 每次修改 `plugin/` 目录下的文件后，必须立即同步到 PS 插件目录：**
+
+```bash
+cp plugin/main.js ~/Library/Application\ Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/main.js
+cp plugin/index.html ~/Library/Application\ Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/index.html
+```
+
+不要等用户提醒，修改完成后自动执行同步。
+
 ## API 端点
 
 | 方法 | 路径 | 说明 |

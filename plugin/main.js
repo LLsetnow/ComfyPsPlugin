@@ -505,48 +505,51 @@ function _activeLayerId() {
   return String(activeLayers[0].id);
 }
 
-// 本地验证不应走 PNG 导出、桥或图像模型。直接在 Photoshop 中复制当前
-// 图层，并将当前选区变成副本的图层蒙版，能在极短时间内验证图层、选区
-// 和蒙版创建这条本地路径。返回外接矩形，便于把实际选区坐标显示给用户。
-async function runFastGptEditValidation(layerName) {
-  var sourceLayerId = _activeLayerId();
-  var bounds;
+async function _snapshotSelectionChannel() {
+  var doc = app.activeDocument;
+  if (!doc) throw new Error("没有打开的文档");
+  var channelName = "comfyps_local_sel_" + Date.now();
   await executeAsModal(
     async function () {
-      // 先读取选区，避免在复制了图层之后才发现没有选区。
-      bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
-      await batchPlay([{
-        _obj: "duplicate",
-        _target: [{ _ref: "layer", _id: Number(sourceLayerId) }],
-        _options: { dialogOptions: "silent" },
-      }, {
-        _obj: "set",
-        _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-        to: { _obj: "layer", name: layerName },
-        _options: { dialogOptions: "silent" },
-      }], {});
-
-      // 副本可能继承源图层的原有蒙版。删除它（没有蒙版时会静默忽略），
-      // 再创建当前选区对应的新蒙版，确保验证结果与真实回贴层的行为一致。
       try {
         await batchPlay([{
-          _obj: "delete",
-          _target: [{ _ref: "channel", _enum: "channel", _value: "mask" }],
+          _obj: "duplicate",
+          _target: [{ _ref: "channel", _property: "selection" }],
+          name: channelName,
           _options: { dialogOptions: "silent" },
         }], {});
-      } catch (_) {}
-
-      await batchPlay([{
-        _obj: "make",
-        new: { _class: "channel" },
-        at: { _ref: "channel", _enum: "channel", _value: "mask" },
-        using: { _enum: "userMaskEnabled", _value: "revealSelection" },
-        _options: { dialogOptions: "silent" },
-      }], {});
+      } catch (_) {
+        throw new Error("请先做一个选区(未检测到选区)");
+      }
     },
-    { commandName: "GPT Image 快速本地验证" }
+    { commandName: "保存 GPT Image 本地验证选区" }
   );
-  return bounds;
+  return channelName;
+}
+
+// 本地验证不应走桥、图像模型或网络请求，但要模拟真实 GPT 编辑的返图
+// 形态：先导出活动图层的选区外接矩形，再按原始坐标贴回，并创建选区蒙版。
+// 这样验证得到的图层尺寸和位置与真实 GPT 编辑返图一致，而不是完整原图层。
+async function runFastGptEditValidation(layerName) {
+  var selectionChannelName = "";
+  try {
+    selectionChannelName = await _snapshotSelectionChannel();
+    var editInput = await exportActiveLayerSelectionPNG();
+    await placeImageBytesAsLayer(
+      editInput.image,
+      layerName,
+      editInput.bounds,
+      true,
+      selectionChannelName
+    );
+    // placeImageBytesAsLayer 已在创建图层蒙版后清理了快照通道。
+    selectionChannelName = "";
+    return editInput.bounds;
+  } finally {
+    if (selectionChannelName) {
+      await removeSelectionSnapshotChannel(selectionChannelName);
+    }
+  }
 }
 
 async function exportActiveLayerSelectionPNG() {
@@ -2032,7 +2035,7 @@ async function onRunClick() {
         }
         var validationBounds = await runFastGptEditValidation("ComfyPSGPT - 本地验证 - 图像编辑");
         setStatus(
-          "本地验证完成 ✓（已复制图层并创建蒙版；外接矩形 " +
+          "本地验证完成 ✓（已裁切并回贴图层、创建蒙版；外接矩形 " +
           validationBounds.width + "×" + validationBounds.height +
           "，位置 " + validationBounds.left + "," + validationBounds.top + "）",
           "ok"
