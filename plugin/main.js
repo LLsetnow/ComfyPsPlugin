@@ -47,19 +47,43 @@ var WORKFLOWS = [
     workflowId: "2075283500294565890",
     workflowFile: "../workflows/inpaint_api.json",
     imageNodeId: "41",
+    inpaintVariants: {
+      qwen: {
+        workflowId: "2075283500294565890",
+        workflowFile: "../workflows/inpaint_api.json",
+        imageNodeId: "41",
+        maskNodeId: "210",
+        resolutionNodeId: "202",
+      },
+      boogu: {
+        workflowId: "2077428511296888833",
+        workflowFile: "../workflows/inpaint_boogu_api.json",
+        imageNodeId: "71",
+        maskNodeId: "214",
+        resolutionNodeId: "212",
+      },
+    },
     description: "对选区范围内的像素进行图像编辑。先画一个选区，再点运行。",
     inputs: [
       { id: "wfPrompt", type: "textarea", label: "提示词 (positive)", placeholder: "例如: 干净空旷的背景", default: "" },
       { id: "wfResolution", type: "number", label: "分辨率", placeholder: "", default: 1024 },
       {
-        id: "wfInpaintModel", type: "select", label: "模型", default: "qwen_image_edit_2511_fp8mixed.safetensors", options: [
-          { value: "qwen_image_edit_2511_fp8mixed.safetensors", label: "Qwen Image Edit 2511（FP8 Mixed，默认）" },
-          { value: "qwnImageEdit_v16Bf16.safetensors", label: "Qwn Image Edit v1.6（BF16）" },
+        id: "wfInpaintVariant", type: "select", label: "模型", default: "qwen", options: [
+          { value: "qwen", label: "QwenImage" },
+          { value: "boogu", label: "Boogu" },
         ],
       },
     ],
-    setArgs: function (inputs) {
-      return ["12:unet_name=" + (inputs.wfInpaintModel || "qwen_image_edit_2511_fp8mixed.safetensors")];
+    setArgs: function (inputs, runConfig) {
+      var resolution = getInpaintResolution(inputs.wfResolution);
+      var args = [
+        runConfig.resolutionNodeId + ":output_target_width=" + resolution,
+        runConfig.resolutionNodeId + ":output_target_height=" + resolution,
+      ];
+      if (runConfig.inpaintVariant === "qwen") {
+        args.unshift("12:unet_name=qwnImageEdit_v16Bf16.safetensors");
+      }
+      return args;
     },
   },
   {
@@ -1223,25 +1247,55 @@ function refreshRunButton() {
 // =========================================================================
 // 调用本地桥 /run
 // =========================================================================
+function getInpaintResolution(value) {
+  var resolution = parseInt(value, 10);
+  if (!isFinite(resolution) || resolution < 1) return 1024;
+  return resolution;
+}
+
+function getWorkflowRunConfig(workflow, inputs) {
+  var runConfig = {
+    workflowId: workflow.workflowId,
+    workflowFile: workflow.workflowFile || "",
+    imageNodeId: workflow.imageNodeId || "",
+    maskNodeId: workflow.maskNodeId || "",
+    resolutionNodeId: "",
+    inpaintVariant: "",
+  };
+  if (workflow.id === "inpaint" && workflow.inpaintVariants) {
+    var variantId = inputs && inputs.wfInpaintVariant === "boogu" ? "boogu" : "qwen";
+    var variant = workflow.inpaintVariants[variantId] || workflow.inpaintVariants.qwen;
+    runConfig.workflowId = variant.workflowId;
+    runConfig.workflowFile = variant.workflowFile;
+    runConfig.imageNodeId = variant.imageNodeId;
+    runConfig.maskNodeId = variant.maskNodeId;
+    runConfig.resolutionNodeId = variant.resolutionNodeId;
+    runConfig.inpaintVariant = variantId;
+  }
+  return runConfig;
+}
+
 async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, taskId, onProgress) {
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/run";
+  var runConfig = getWorkflowRunConfig(workflow, inputs);
   var body = {
     image: imageB64,
     prompt: prompt || "",
     backend: settings.backend,
-    workflowId: workflow.workflowId,
-    workflowFile: workflow.workflowFile || "",
-    imageNodeId: workflow.imageNodeId || "",
+    workflowId: runConfig.workflowId,
+    workflowFile: runConfig.workflowFile,
+    imageNodeId: runConfig.imageNodeId,
     needsMask: workflow.needsMask,
     taskId: taskId || "",
   };
+  if (runConfig.maskNodeId) body.maskNodeId = runConfig.maskNodeId;
   if (workflow.needsMask) {
     body.mask = maskB64;
   }
   // 工作流自定义参数注入 (如 denoise 等)
   if (typeof workflow.setArgs === "function") {
-    body.extraSetArgs = workflow.setArgs(inputs);
+    body.extraSetArgs = workflow.setArgs(inputs, runConfig);
   }
   if (settings.backend === "comfyui") {
     body.comfyuiUrl = settings.comfyuiUrl;
