@@ -410,6 +410,11 @@ def load_config():
     if not Path(cfg["workflowFile"]).exists():
         raise SystemExit(f"❌ 工作流文件不存在:{cfg['workflowFile']}")
     cfg.setdefault("maskField", "image")
+    # 插件输出的蒙版是 RGB PNG（无 alpha 通道）。
+    # LoadImageMask channel=alpha 时会把缺失的 alpha 当全 255，
+    # 导致 mask ≈ 0（编辑强度极低）。改为读 red 通道，
+    # 白色(255)→1.0=编辑区，黑色(0)→0.0=保留区，与蒙版约定一致。
+    cfg.setdefault("maskChannel", "red")
     cfg.setdefault("port", 8765)
     return cfg
 
