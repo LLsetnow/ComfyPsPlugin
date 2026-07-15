@@ -42,10 +42,15 @@ except ImportError:
         "   pip install git+https://github.com/LLsetnow/RH_CLI.git"
     )
 
+import inspect
+
 from rh_cli.config import require_api_key
 from rh_cli.errors import RhCliError
 from rh_cli.http import BASE_URL, RhHttpClient
 from rh_cli.workflow.client import run_workflow
+
+# 旧版 rh_cli 没有 cancel_event 参数，运行时检测一次做兼容
+_RUN_WORKFLOW_SUPPORTS_CANCEL = "cancel_event" in inspect.signature(run_workflow).parameters
 
 # ---------------------------------------------------------------------------
 # RunningHub 站点映射
@@ -838,7 +843,7 @@ def run_inpaint_blocking(
     if task_id:
         _task_progress[task_id] = {"elapsed": 0, "message": "提交中…", "percent": 0}
 
-    result = run_workflow(
+    rw_kwargs = dict(
         api_key_arg=api_key if api_key else None,
         workflow_file=wf_file,
         workflow_id=wf_id,
@@ -848,8 +853,10 @@ def run_inpaint_blocking(
         output_dir=out_dir,
         set_args=set_args,
         on_tick=on_progress,
-        cancel_event=cancel_event,
     )
+    if _RUN_WORKFLOW_SUPPORTS_CANCEL and cancel_event is not None:
+        rw_kwargs["cancel_event"] = cancel_event
+    result = run_workflow(**rw_kwargs)
 
     if task_id:
         _task_progress[task_id] = {"elapsed": -1, "message": "完成", "percent": 100}
