@@ -141,6 +141,198 @@ var SETTINGS_KEYS = {
 var _workQueue = [];
 var _selectedQueueIdx = -1;
 
+// =========================================================================
+// 当前会话日志
+// =========================================================================
+var _logEntries = [];
+var _logMaxEntries = 300;
+var _logSequence = 0;
+var _lastBridgeLogId = 0;
+var _bridgeLogLatestId = 0;
+var _logPollTimer = 0;
+var _logPollInFlight = false;
+var _logAutoScroll = true;
+var _logBatching = false;
+var _consoleCaptureInstalled = false;
+
+function _logValueToText(value) {
+  if (value === null) return "null";
+  if (typeof value === "undefined") return "undefined";
+  if (value instanceof Error) return value.message || String(value);
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    try {
+      var json = JSON.stringify(value);
+      if (typeof json === "string") return json;
+    } catch (_) {}
+  }
+  return String(value);
+}
+
+function _logLevelClass(level) {
+  if (level === "warn" || level === "warning") return "warn";
+  if (level === "error" || level === "err") return "error";
+  return "info";
+}
+
+function _logLevelLabel(level) {
+  var normalized = _logLevelClass(level);
+  if (normalized === "warn") return "警告";
+  if (normalized === "error") return "错误";
+  return "信息";
+}
+
+function _logPadTime(value) {
+  return value < 10 ? "0" + value : String(value);
+}
+
+function formatLogTime(timestamp) {
+  var date = new Date(timestamp || Date.now());
+  if (isNaN(date.getTime())) date = new Date();
+  return _logPadTime(date.getHours()) + ":"
+    + _logPadTime(date.getMinutes()) + ":"
+    + _logPadTime(date.getSeconds());
+}
+
+function renderLogPanel() {
+  var list = $("logList");
+  var count = $("logCount");
+  if (count) count.textContent = _logEntries.length + " 条";
+  if (!list) return;
+
+  while (list.firstChild) list.removeChild(list.firstChild);
+  if (_logEntries.length === 0) {
+    var empty = document.createElement("div");
+    empty.className = "log-empty";
+    empty.textContent = "暂无日志";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (var i = 0; i < _logEntries.length; i++) {
+    var entry = _logEntries[i];
+    var level = _logLevelClass(entry.level);
+    var row = document.createElement("div");
+    row.className = "log-entry level-" + level;
+
+    var time = document.createElement("span");
+    time.className = "log-time";
+    time.textContent = formatLogTime(entry.ts);
+    row.appendChild(time);
+
+    var source = document.createElement("span");
+    source.className = "log-source";
+    source.textContent = entry.source || "插件";
+    row.appendChild(source);
+
+    var levelLabel = document.createElement("span");
+    levelLabel.className = "log-level";
+    levelLabel.textContent = _logLevelLabel(level);
+    row.appendChild(levelLabel);
+
+    var message = document.createElement("span");
+    message.className = "log-message";
+    message.textContent = entry.message || "";
+    row.appendChild(message);
+    list.appendChild(row);
+  }
+
+  if (_logAutoScroll) list.scrollTop = list.scrollHeight;
+}
+
+function addLogEntry(level, message, source, timestamp) {
+  var text = _logValueToText(message);
+  _logEntries.push({
+    id: ++_logSequence,
+    ts: timestamp || Date.now(),
+    level: _logLevelClass(level),
+    source: source || "插件",
+    message: text,
+  });
+  if (_logEntries.length > _logMaxEntries) {
+    _logEntries.splice(0, _logEntries.length - _logMaxEntries);
+  }
+  if (_currentPage === "logs" && !_logBatching) renderLogPanel();
+}
+
+function clearLogPanel() {
+  _logEntries = [];
+  _lastBridgeLogId = Math.max(_lastBridgeLogId, _bridgeLogLatestId);
+  renderLogPanel();
+}
+
+function installLogCapture() {
+  if (_consoleCaptureInstalled || typeof console === "undefined") return;
+  _consoleCaptureInstalled = true;
+  var levels = ["log", "info", "warn", "error"];
+  for (var i = 0; i < levels.length; i++) {
+    var level = levels[i];
+    var original = console[level];
+    if (typeof original !== "function") continue;
+    (function (capturedLevel, capturedOriginal) {
+      console[capturedLevel] = function () {
+        var values = [];
+        for (var valueIndex = 0; valueIndex < arguments.length; valueIndex++) {
+          values.push(_logValueToText(arguments[valueIndex]));
+        }
+        addLogEntry(capturedLevel, values.join(" "), "插件");
+        try {
+          return capturedOriginal.apply(console, arguments);
+        } catch (_) {
+          return undefined;
+        }
+      };
+    })(level, original);
+  }
+}
+
+async function pollBridgeLogs() {
+  if (_logPollInFlight) return;
+  var settings = loadSettings();
+  var bridgeUrl = (settings.bridgeUrl || "").replace(/\/+$/, "");
+  if (!bridgeUrl) return;
+
+  _logPollInFlight = true;
+  try {
+    var url = bridgeUrl + "/logs?since=" + encodeURIComponent(String(_lastBridgeLogId));
+    var response = await fetchWithTimeout(url, null, 3000);
+    if (!response.ok) return;
+    var data = await response.json();
+    var entries = data.entries || [];
+    _logBatching = true;
+    try {
+      for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i] || {};
+        addLogEntry(entry.level || "info", entry.message || "", entry.source || "桥", entry.ts);
+      }
+    } finally {
+      _logBatching = false;
+    }
+    if (entries.length > 0 && _currentPage === "logs") renderLogPanel();
+    if (data.latest !== undefined && data.latest !== null) {
+      _bridgeLogLatestId = Number(data.latest) || _bridgeLogLatestId;
+      _lastBridgeLogId = Math.max(_lastBridgeLogId, _bridgeLogLatestId);
+    } else if (entries.length > 0) {
+      _lastBridgeLogId = Math.max(_lastBridgeLogId, Number(entries[entries.length - 1].id) || 0);
+    }
+  } catch (_) {
+    // 桥升级前没有 /logs 接口时静默忽略，插件仍可显示本地日志。
+  } finally {
+    _logPollInFlight = false;
+  }
+}
+
+function startLogPolling() {
+  if (_logPollTimer) return;
+  pollBridgeLogs();
+  _logPollTimer = setInterval(pollBridgeLogs, 1000);
+}
+
+function stopLogPolling() {
+  if (_logPollTimer) clearInterval(_logPollTimer);
+  _logPollTimer = 0;
+}
+
 function loadSettings() {
   return {
     bridgeUrl: localStorage.getItem(SETTINGS_KEYS.bridgeUrl) || "http://127.0.0.1:8765",
@@ -236,6 +428,7 @@ function fetchWithTimeout(url, options, timeoutMs) {
 // 状态显示
 // =========================================================================
 function setStatus(msg, kind) {
+  if (msg) addLogEntry(kind === "err" ? "error" : "info", msg, "插件");
   var el = $("status");
   if (!el) return;
   el.textContent = msg;
@@ -253,7 +446,7 @@ function normalizePageName(page) {
   // 保留数字参数兼容性，新的页面逻辑统一使用语义化名称。
   if (page === 2) return "workflow";
   if (page === 3) return "settings";
-  return page === "queue" || page === "settings" ? page : "workflow";
+  return page === "queue" || page === "logs" || page === "settings" ? page : "workflow";
 }
 
 function navigateTo(page) {
@@ -261,8 +454,10 @@ function navigateTo(page) {
   var pageIds = {
     workflow: "pageWorkflow",
     queue: "pageQueue",
+    logs: "pageLogs",
     settings: "pageSettings",
   };
+  if (pageName !== "logs") stopLogPolling();
   var pages = document.querySelectorAll(".page");
   for (var i = 0; i < pages.length; i++) { pages[i].classList.remove("active"); }
   var target = $(pageIds[pageName]);
@@ -284,6 +479,9 @@ function navigateTo(page) {
     checkBridgeHealth();
   } else if (pageName === "queue") {
     renderWorkQueue();
+  } else if (pageName === "logs") {
+    renderLogPanel();
+    startLogPolling();
   } else if (pageName === "settings") {
     renderSettings();
   }
@@ -1728,6 +1926,7 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
 var _bridgeOnline = false;
 var _healthPollTimer = 0;
 var _restarting = false;
+var _lastBridgeUiLog = "";
 
 async function checkBridgeHealth() {
   var settings = loadSettings();
@@ -1758,6 +1957,14 @@ function _setBridgeBarUI(state, text, restartEnabled) {
   var dot = $("bridgeBarDot");
   var label = $("bridgeBarText");
   var btn = $("restartBtn");
+
+  if (state !== "chk") {
+    var bridgeLogKey = state + "|" + text;
+    if (bridgeLogKey !== _lastBridgeUiLog) {
+      addLogEntry(state === "off" ? "warn" : "info", "桥状态: " + text, "插件");
+      _lastBridgeUiLog = bridgeLogKey;
+    }
+  }
 
   if (dot) dot.className = "bridge-bar-dot " + state;
   if (label) {
@@ -2220,6 +2427,10 @@ async function onRunClick() {
       runState.onProgress = function (pct, msg) {
         item.percent = pct;
         item.progressMsg = msg;
+        if (msg && msg !== item._lastLogProgress) {
+          addLogEntry("info", "任务「" + item.wfName + "」: " + msg, "插件");
+          item._lastLogProgress = msg;
+        }
         renderQueueProgress();
       };
     })(queueItem);
@@ -2636,6 +2847,9 @@ function saveAllSettings() {
 // 初始化
 // =========================================================================
 (function init() {
+  // 尽早捕获 UXP 控制台输出，确保初始化和后续运行日志都能显示。
+  installLogCapture();
+
   // ---- 全局 Top Bar 导航 ----
   var topTabs = document.querySelectorAll(".topbar-tab");
   for (var topTabIndex = 0; topTabIndex < topTabs.length; topTabIndex++) {
@@ -2663,6 +2877,18 @@ function saveAllSettings() {
   if (queuePreviewModal) {
     queuePreviewModal.addEventListener("click", function (e) {
       if (e.target === queuePreviewModal) onQueuePreviewClose();
+    });
+  }
+
+  // ---- 日志页按钮 ----
+  var logClearBtn = $("logClearBtn");
+  if (logClearBtn) logClearBtn.addEventListener("click", clearLogPanel);
+  var logAutoScrollBtn = $("logAutoScrollBtn");
+  if (logAutoScrollBtn) {
+    logAutoScrollBtn.addEventListener("click", function () {
+      _logAutoScroll = !_logAutoScroll;
+      logAutoScrollBtn.textContent = "自动滚动：" + (_logAutoScroll ? "开" : "关");
+      renderLogPanel();
     });
   }
 

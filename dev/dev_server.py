@@ -39,6 +39,25 @@ _mock_pending_gpt_image_cancellations: set[str] = set()
 # GPT Image 的编辑+参考图请求包含三张 base64 PNG，单张输入上限展开后
 # 可能超过普通 64MB JSON 请求，因此开发服务器与真实桥保持 256MB 上限。
 GPT_IMAGE_REQUEST_MAX_BYTES = 256 * 1024 * 1024
+_DEV_LOG_MAX_ENTRIES = 300
+_dev_log_entries: list[dict] = []
+_dev_log_sequence = 0
+
+
+def dev_log(message: str, level: str = "info"):
+    """记录开发桥日志，并同步输出到开发服务器终端。"""
+    global _dev_log_sequence
+    _dev_log_sequence += 1
+    _dev_log_entries.append({
+        "id": _dev_log_sequence,
+        "ts": int(time.time() * 1000),
+        "level": level,
+        "source": "桥",
+        "message": str(message),
+    })
+    if len(_dev_log_entries) > _DEV_LOG_MAX_ENTRIES:
+        del _dev_log_entries[:-_DEV_LOG_MAX_ENTRIES]
+    print(str(message), flush=True)
 
 
 # =============================================================================
@@ -291,6 +310,19 @@ async def handle_health(request: web.Request) -> web.Response:
     })
 
 
+async def handle_logs(request: web.Request) -> web.Response:
+    """返回开发桥内存日志，协议与真实桥的 /logs 一致。"""
+    try:
+        since = max(0, int(request.query.get("since", "0")))
+    except (TypeError, ValueError):
+        since = 0
+    entries = [entry for entry in _dev_log_entries if entry["id"] > since]
+    return web.json_response({
+        "entries": entries,
+        "latest": _dev_log_sequence,
+    })
+
+
 async def handle_restart(request: web.Request) -> web.Response:
     """Mock bridge /restart 端点 (dev 模式下仅返回确认)。"""
     return web.json_response({"ok": True, "message": "dev bridge restarted"})
@@ -366,11 +398,12 @@ async def handle_codex_image(request: web.Request) -> web.Response:
             {"error": "MISSING_MASK", "message": "图像编辑模式需要选区蒙版"}, status=400
         )
 
-    print(
+    dev_log(
         f"  [mock /codex/image] mode={mode}  refs={len(images)}  "
         f"prompt={'✓' if prompt else '—'}"
     )
     await asyncio.sleep(1.2)
+    dev_log("  [mock /codex/image] 完成")
     return web.Response(body=DEMO_PNG, content_type="image/png")
 
 
@@ -435,7 +468,7 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
             _mock_pending_gpt_image_cancellations.discard(task_id)
             task.cancel()
 
-    print(
+    dev_log(
         f"  [mock /gpt-image] provider={provider}  mode={mode}  refs={len(images)}  "
         f"mask={'✓' if body.get('mask') else '—'}  "
         f"prompt={'✓' if prompt else '—'}"
@@ -444,8 +477,10 @@ async def handle_gpt_image(request: web.Request) -> web.Response:
         await asyncio.sleep(1.2)
         response = web.Response(body=DEMO_PNG, content_type="image/png")
         response.headers["X-Task-Id"] = task_id
+        dev_log(f"  [mock /gpt-image] 完成 task={task_id}")
         return response
     except asyncio.CancelledError:
+        dev_log(f"  [mock /gpt-image] 已停止 task={task_id}", "warn")
         return web.json_response(
             {"error": "TASK_CANCELLED", "message": "GPT Image 任务已停止"}, status=499
         )
@@ -528,14 +563,18 @@ async def handle_run(request: web.Request) -> web.Response:
     # 记录请求信息
     img_size = len(image_b64)
     mask_size = len(mask_b64)
-    print(f"  [mock /run] backend={backend}  image={img_size // 1024}KB  mask={mask_size // 1024}KB  "
-          f"prompt={'✓' if prompt else '—'}  site={site}  key={'✓' if api_key else '—'}")
+    task_id = str(body.get("taskId") or "mock_run")
+    dev_log(f"  [mock /run] 提交 task={task_id} backend={backend}  image={img_size // 1024}KB  mask={mask_size // 1024}KB  "
+            f"prompt={'✓' if prompt else '—'}  site={site}  key={'✓' if api_key else '—'}")
 
     # 模拟云端处理延迟 (1.5~2.5s 随机, 让体验真实)
     delay = 1.5 + random.random() * 1.0
     await asyncio.sleep(delay)
 
-    return web.Response(body=DEMO_PNG, content_type="image/png")
+    dev_log(f"  [mock /run] 完成 task={task_id}")
+    response = web.Response(body=DEMO_PNG, content_type="image/png")
+    response.headers["X-Task-Id"] = task_id
+    return response
 
 
 async def handle_demo_image(request: web.Request) -> web.Response:
@@ -561,14 +600,14 @@ def main():
     global watcher
     port = int(os.environ.get("COMFYPS_DEV_PORT", "8765"))
 
-    print(f"  ComfyPS Dev Server")
-    print(f"  {'─' * 40}")
-    print(f"  UI 页面:   http://127.0.0.1:{port}")
-    print(f"  Mock 桥:   http://127.0.0.1:{port}/run")
-    print(f"  健康检查:  http://127.0.0.1:{port}/health")
-    print(f"  Demo 图:   http://127.0.0.1:{port}/demo-image.png  ({DEMO_PNG_HASH})")
-    print(f"  热更新:    WebSocket /ws  (监视 plugin/ + dev/static/)")
-    print()
+    dev_log(f"  ComfyPS Dev Server")
+    dev_log(f"  {'─' * 40}")
+    dev_log(f"  UI 页面:   http://127.0.0.1:{port}")
+    dev_log(f"  Mock 桥:   http://127.0.0.1:{port}/run")
+    dev_log(f"  日志接口:  http://127.0.0.1:{port}/logs")
+    dev_log(f"  健康检查:  http://127.0.0.1:{port}/health")
+    dev_log(f"  Demo 图:   http://127.0.0.1:{port}/demo-image.png  ({DEMO_PNG_HASH})")
+    dev_log(f"  热更新:    WebSocket /ws  (监视 plugin/ + dev/static/)")
 
     watcher = FileWatcher()
 
@@ -590,6 +629,7 @@ def main():
 
     # Mock bridge 端点 (协议与真实桥一致)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/logs", handle_logs)
     app.router.add_post("/run", handle_run)
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
