@@ -1406,7 +1406,25 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
     "comfyps_result_" + Date.now() + "_" + _resultFileSequence + ".png",
     { overwrite: true }
   );
-  await file.write(arrayBuffer);
+  // UXP may treat a bare ArrayBuffer as text unless the binary format is
+  // explicit. Local validation passes the cropped input as Base64, while
+  // bridge results are binary buffers, so normalize both forms before writing.
+  var resultBytes;
+  if (typeof arrayBuffer === "string") {
+    resultBytes = base64ToBytes(arrayBuffer);
+  } else if (arrayBuffer instanceof Uint8Array) {
+    resultBytes = arrayBuffer;
+  } else {
+    resultBytes = new Uint8Array(arrayBuffer);
+  }
+  if (!resultBytes || resultBytes.length < 8 ||
+      resultBytes[0] !== 0x89 || resultBytes[1] !== 0x50 ||
+      resultBytes[2] !== 0x4e || resultBytes[3] !== 0x47 ||
+      resultBytes[4] !== 0x0d || resultBytes[5] !== 0x0a ||
+      resultBytes[6] !== 0x1a || resultBytes[7] !== 0x0a) {
+    throw new Error("待贴回图像不是有效 PNG");
+  }
+  await file.write(resultBytes, { format: formats.binary });
   var token = await localFileSystem.createSessionToken(file);
   var offsetX = 0;
   var offsetY = 0;
