@@ -1466,6 +1466,9 @@ async def handle_run(request):
         mask_path = tmp / "mask.png"
         if needs_mask and mask_b64:
             write_b64_png(mask_b64, mask_path)
+            # debug: 保留一份供检查，下次运行时覆盖
+            import shutil as _sh
+            _sh.copy2(mask_path, BRIDGE_DIR / "debug_last_mask.png")
 
         loop = asyncio.get_event_loop()
 
