@@ -91,12 +91,11 @@ var WORKFLOWS = [
     icon: "✦",
     active: true,
     gptImage: true,
-    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。",
+    description: "使用本机 Codex 的图像生成功能。可文生图，或裁切活动图层的选区外接矩形进行编辑。",
     inputs: [
       {
         id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
           { value: "generate", label: "文生图" },
-          { value: "reference", label: "添加参考图" },
           { value: "edit", label: "图像编辑（活动图层选区）" },
         ],
       },
@@ -154,6 +153,9 @@ var _logPollInFlight = false;
 var _logAutoScroll = true;
 var _logBatching = false;
 var _consoleCaptureInstalled = false;
+var _logRenderedFirstId = 0;
+var _logRenderedCount = 0;
+var _bridgeLogFailureReported = false;
 
 function _logValueToText(value) {
   if (value === null) return "null";
@@ -172,6 +174,7 @@ function _logValueToText(value) {
 function _logLevelClass(level) {
   if (level === "warn" || level === "warning") return "warn";
   if (level === "error" || level === "err") return "error";
+  if (level === "success" || level === "ok") return "success";
   return "info";
 }
 
@@ -179,6 +182,7 @@ function _logLevelLabel(level) {
   var normalized = _logLevelClass(level);
   if (normalized === "warn") return "警告";
   if (normalized === "error") return "错误";
+  if (normalized === "success") return "成功";
   return "信息";
 }
 
@@ -194,50 +198,75 @@ function formatLogTime(timestamp) {
     + _logPadTime(date.getSeconds());
 }
 
-function renderLogPanel() {
+function _isLogListAtBottom(list) {
+  if (!list) return true;
+  return list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
+}
+
+function updateLogAutoScrollButton() {
+  var btn = $("logAutoScrollBtn");
+  if (btn) btn.textContent = "自动跟随：" + (_logAutoScroll ? "开" : "关");
+}
+
+function _createLogRow(entry) {
+  var level = _logLevelClass(entry.level);
+  var row = document.createElement("div");
+  row.className = "log-entry level-" + level;
+
+  var time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = formatLogTime(entry.ts);
+  row.appendChild(time);
+
+  var source = document.createElement("span");
+  source.className = "log-source";
+  source.textContent = entry.source || "插件";
+  row.appendChild(source);
+
+  var levelLabel = document.createElement("span");
+  levelLabel.className = "log-level";
+  levelLabel.textContent = _logLevelLabel(level);
+  row.appendChild(levelLabel);
+
+  var message = document.createElement("span");
+  message.className = "log-message";
+  message.textContent = entry.message || "";
+  row.appendChild(message);
+  return row;
+}
+
+function renderLogPanel(force) {
   var list = $("logList");
   var count = $("logCount");
   if (count) count.textContent = _logEntries.length + " 条";
   if (!list) return;
 
-  while (list.firstChild) list.removeChild(list.firstChild);
   if (_logEntries.length === 0) {
+    while (list.firstChild) list.removeChild(list.firstChild);
     var empty = document.createElement("div");
     empty.className = "log-empty";
     empty.textContent = "暂无日志";
     list.appendChild(empty);
+    _logRenderedFirstId = 0;
+    _logRenderedCount = 0;
     return;
   }
 
-  for (var i = 0; i < _logEntries.length; i++) {
-    var entry = _logEntries[i];
-    var level = _logLevelClass(entry.level);
-    var row = document.createElement("div");
-    row.className = "log-entry level-" + level;
-
-    var time = document.createElement("span");
-    time.className = "log-time";
-    time.textContent = formatLogTime(entry.ts);
-    row.appendChild(time);
-
-    var source = document.createElement("span");
-    source.className = "log-source";
-    source.textContent = entry.source || "插件";
-    row.appendChild(source);
-
-    var levelLabel = document.createElement("span");
-    levelLabel.className = "log-level";
-    levelLabel.textContent = _logLevelLabel(level);
-    row.appendChild(levelLabel);
-
-    var message = document.createElement("span");
-    message.className = "log-message";
-    message.textContent = entry.message || "";
-    row.appendChild(message);
-    list.appendChild(row);
+  var shouldFollow = _logAutoScroll && _isLogListAtBottom(list);
+  var firstId = _logEntries[0].id;
+  var needsReset = !!force || _logRenderedFirstId !== firstId
+    || _logRenderedCount > _logEntries.length;
+  if (needsReset) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    _logRenderedCount = 0;
   }
+  for (var i = _logRenderedCount; i < _logEntries.length; i++) {
+    list.appendChild(_createLogRow(_logEntries[i]));
+  }
+  _logRenderedFirstId = firstId;
+  _logRenderedCount = _logEntries.length;
 
-  if (_logAutoScroll) list.scrollTop = list.scrollHeight;
+  if (shouldFollow) list.scrollTop = list.scrollHeight;
 }
 
 function addLogEntry(level, message, source, timestamp) {
@@ -249,16 +278,18 @@ function addLogEntry(level, message, source, timestamp) {
     source: source || "插件",
     message: text,
   });
+  var trimmed = false;
   if (_logEntries.length > _logMaxEntries) {
     _logEntries.splice(0, _logEntries.length - _logMaxEntries);
+    trimmed = true;
   }
-  if (_currentPage === "logs" && !_logBatching) renderLogPanel();
+  if (_currentPage === "logs" && !_logBatching) renderLogPanel(trimmed);
 }
 
 function clearLogPanel() {
   _logEntries = [];
   _lastBridgeLogId = Math.max(_lastBridgeLogId, _bridgeLogLatestId);
-  renderLogPanel();
+  renderLogPanel(true);
 }
 
 function installLogCapture() {
@@ -296,7 +327,7 @@ async function pollBridgeLogs() {
   try {
     var url = bridgeUrl + "/logs?since=" + encodeURIComponent(String(_lastBridgeLogId));
     var response = await fetchWithTimeout(url, null, 3000);
-    if (!response.ok) return;
+    if (!response.ok) throw new Error("HTTP " + response.status);
     var data = await response.json();
     var entries = data.entries || [];
     _logBatching = true;
@@ -315,8 +346,12 @@ async function pollBridgeLogs() {
     } else if (entries.length > 0) {
       _lastBridgeLogId = Math.max(_lastBridgeLogId, Number(entries[entries.length - 1].id) || 0);
     }
+    _bridgeLogFailureReported = false;
   } catch (_) {
-    // 桥升级前没有 /logs 接口时静默忽略，插件仍可显示本地日志。
+    if (!_bridgeLogFailureReported) {
+      _bridgeLogFailureReported = true;
+      addLogEntry("warn", "无法读取本地桥日志，稍后会自动重试", "插件");
+    }
   } finally {
     _logPollInFlight = false;
   }
@@ -324,6 +359,7 @@ async function pollBridgeLogs() {
 
 function startLogPolling() {
   if (_logPollTimer) return;
+  updateLogAutoScrollButton();
   pollBridgeLogs();
   _logPollTimer = setInterval(pollBridgeLogs, 1000);
 }
@@ -351,9 +387,10 @@ function loadSettings() {
   };
 }
 
-function isEnterprise() {
-  var at = loadSettings().apiType.toLowerCase();
-  return at.indexOf("enterprise") !== -1;
+function supportsRunningHubParallel(settings) {
+  var source = settings || loadSettings();
+  var apiType = String(source.apiType || "").toLowerCase();
+  return apiType.indexOf("enterprise") !== -1 || apiType.indexOf("shared") !== -1;
 }
 
 function applyTheme(theme) {
@@ -428,7 +465,9 @@ function fetchWithTimeout(url, options, timeoutMs) {
 // 状态显示
 // =========================================================================
 function setStatus(msg, kind) {
-  if (msg) addLogEntry(kind === "err" ? "error" : "info", msg, "插件");
+  if (msg) {
+    addLogEntry(kind === "err" ? "error" : (kind === "ok" ? "success" : "info"), msg, "插件");
+  }
   var el = $("status");
   if (!el) return;
   el.textContent = msg;
@@ -993,7 +1032,7 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
 // =========================================================================
 var _activeRuns = {
   gptImage: null,
-  runningHub: null,
+  runningHub: [],
   other: null
 };
 
@@ -1002,11 +1041,43 @@ function getRunSlot(workflow, settings) {
   return settings && settings.backend === "runninghub" ? "runningHub" : "other";
 }
 
+function activeRunCount(slot) {
+  var active = _activeRuns[slot];
+  if (slot === "runningHub" && active && typeof active.length === "number") return active.length;
+  return active ? 1 : 0;
+}
+
+function registerActiveRun(slot, runState, settings) {
+  if (slot === "runningHub" && supportsRunningHubParallel(settings)) {
+    if (!_activeRuns.runningHub || typeof _activeRuns.runningHub.length !== "number") {
+      _activeRuns.runningHub = [];
+    }
+    _activeRuns.runningHub.push(runState);
+    return;
+  }
+  _activeRuns[slot] = runState;
+}
+
+function unregisterActiveRun(slot, runState) {
+  if (slot === "runningHub" && _activeRuns.runningHub
+    && typeof _activeRuns.runningHub.length === "number") {
+    for (var i = _activeRuns.runningHub.length - 1; i >= 0; i--) {
+      if (_activeRuns.runningHub[i] === runState) _activeRuns.runningHub.splice(i, 1);
+    }
+    return;
+  }
+  if (_activeRuns[slot] === runState) _activeRuns[slot] = null;
+}
+
 function canStartWorkflow(workflow, settings) {
   var slot = getRunSlot(workflow, settings);
-  if (_activeRuns[slot]) return false;
+  if (slot === "runningHub" && supportsRunningHubParallel(settings)) {
+    return activeRunCount("other") === 0;
+  }
+  if (activeRunCount(slot) > 0) return false;
   if (slot === "gptImage" || slot === "runningHub") return !_activeRuns.other;
-  return !_activeRuns.gptImage && !_activeRuns.runningHub && !_activeRuns.other;
+  return activeRunCount("gptImage") === 0 && activeRunCount("runningHub") === 0
+    && activeRunCount("other") === 0;
 }
 
 function refreshRunButton() {
@@ -1017,14 +1088,14 @@ function refreshRunButton() {
   if (!runBtn || !workflow) return;
 
   var slot = getRunSlot(workflow, loadSettings());
-  var activeRun = _activeRuns[slot];
+  var hasActiveRun = activeRunCount(slot) > 0;
   var canStart = canStartWorkflow(workflow, loadSettings());
   runBtn.disabled = !canStart;
   if (label) {
     label.hidden = false;
     label.textContent = "生成";
   }
-  if (spinner) spinner.hidden = !activeRun;
+  if (spinner) spinner.hidden = !hasActiveRun;
 }
 
 // =========================================================================
@@ -1366,6 +1437,60 @@ function renderQueueTabBadge() {
   }
 }
 
+function sortWorkQueue(selectedTaskId) {
+  var selectedId = selectedTaskId || "";
+  if (!selectedId && _selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length) {
+    selectedId = _workQueue[_selectedQueueIdx].id;
+  }
+  _workQueue.sort(function (a, b) {
+    var aCreatedAt = Number(a && a.createdAt) || 0;
+    var bCreatedAt = Number(b && b.createdAt) || 0;
+    return bCreatedAt - aCreatedAt;
+  });
+  _selectedQueueIdx = -1;
+  for (var i = 0; i < _workQueue.length; i++) {
+    if (selectedId && _workQueue[i].id === selectedId) {
+      _selectedQueueIdx = i;
+      break;
+    }
+  }
+  if (_selectedQueueIdx === -1 && _workQueue.length > 0) _selectedQueueIdx = 0;
+}
+
+function updateQueueControls() {
+  var importBtn = $("queueImportBtn");
+  var previewBtn = $("queuePreviewBtn");
+  var stopBtn = $("queueStopBtn");
+  var deleteBtn = $("queueDeleteBtn");
+  var section = $("workQueueSection");
+  var emptyState = $("queueEmptyState");
+  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
+  var selectedTask = hasSelection ? _workQueue[_selectedQueueIdx] : null;
+  var isCompleted = selectedTask && selectedTask.status === "completed";
+  var isRunning = selectedTask && selectedTask.status === "running";
+
+  if (importBtn) importBtn.disabled = !(isCompleted && selectedTask.resultFile);
+  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
+  if (stopBtn) stopBtn.disabled = !isRunning;
+  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
+  if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
+  if (emptyState) emptyState.style.display = _workQueue.length > 0 ? "none" : "block";
+  renderQueueProgress();
+}
+
+function selectWorkQueueTask(index) {
+  if (index < 0 || index >= _workQueue.length) return;
+  if (_selectedQueueIdx !== index) {
+    _selectedQueueIdx = index;
+    var cards = document.querySelectorAll("#workQueueCards .queue-card");
+    for (var i = 0; i < cards.length; i++) {
+      if (i === index) cards[i].classList.add("selected");
+      else cards[i].classList.remove("selected");
+    }
+  }
+  updateQueueControls();
+}
+
 function _queuePadTime(value) {
   return value < 10 ? "0" + value : String(value);
 }
@@ -1461,18 +1586,12 @@ function seedDevWorkQueue() {
       createdAt: demoNow - 76000
     }
   ];
-  _selectedQueueIdx = 1;
+  sortWorkQueue("demo-completed");
   renderQueueTabBadge();
 }
 
 function renderWorkQueue() {
   var container = $("workQueueCards");
-  var importBtn = $("queueImportBtn");
-  var previewBtn = $("queuePreviewBtn");
-  var stopBtn = $("queueStopBtn");
-  var deleteBtn = $("queueDeleteBtn");
-  var section = $("workQueueSection");
-  var emptyState = $("queueEmptyState");
   renderQueueTabBadge();
   if (!container) return;
 
@@ -1481,6 +1600,7 @@ function renderWorkQueue() {
     (function (task, idx) {
       var card = document.createElement("div");
       card.className = "queue-card" + (idx === _selectedQueueIdx ? " selected" : "");
+      card.dataset.taskId = task.id;
       if (task.status === "failed" || task.status === "cancelled") card.className += " queue-card-error";
 
       if (task.status === "running") {
@@ -1553,25 +1673,12 @@ function renderWorkQueue() {
       card.appendChild(cardBody);
 
       card.addEventListener("click", function () {
-        _selectedQueueIdx = idx;
-        renderWorkQueue();
+        selectWorkQueueTask(idx);
       });
       container.appendChild(card);
     })(_workQueue[i], i);
   }
-
-  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
-  var selectedTask = hasSelection ? _workQueue[_selectedQueueIdx] : null;
-  var isCompleted = selectedTask && selectedTask.status === "completed";
-  var isRunning = selectedTask && selectedTask.status === "running";
-
-  if (importBtn) importBtn.disabled = !(isCompleted && selectedTask.resultFile);
-  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
-  if (stopBtn) stopBtn.disabled = !isRunning;
-  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
-  if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
-  if (emptyState) emptyState.style.display = _workQueue.length > 0 ? "none" : "block";
-  renderQueueProgress();
+  updateQueueControls();
 }
 
 async function onQueueImportClick() {
@@ -2048,7 +2155,7 @@ function getWorkflowDescription(wf) {
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
     var debugText = gptSettings.gptImageLocalValidation
       ? " 当前已启用本地验证：不会调用桥或上传图片。" : "";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
+    return "使用 " + provider + " 的图像生成功能。可文生图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
   }
   return wf.description || "";
 }
@@ -2080,8 +2187,6 @@ function renderWorkflowGrid() {
     grid.appendChild(card);
   });
 }
-
-var _gptLayerRenderVersion = 0;
 
 function _appendGptLayerSelect(container, inputId, labelText, records) {
   var label = document.createElement("label");
@@ -2154,7 +2259,6 @@ function renderGptImageLayerInputs() {
   var modeSelect = $("gptImageMode");
   if (!container || !modeSelect) return;
   updateGptAspectRatioVisibility();
-  var renderVersion = ++_gptLayerRenderVersion;
   container.innerHTML = "";
   if (modeSelect.value === "edit") {
     var editHint = document.createElement("div");
@@ -2164,49 +2268,6 @@ function renderGptImageLayerInputs() {
     renderGptEditReferenceInput(container);
     return;
   }
-  if (modeSelect.value !== "reference") return;
-
-  var records;
-  try {
-    records = getDocumentLayerRecords();
-  } catch (e) {
-    var empty = document.createElement("div");
-    empty.className = "input-note";
-    empty.textContent = e && e.message ? e.message : "无法读取图层";
-    container.appendChild(empty);
-    return;
-  }
-  if (renderVersion !== _gptLayerRenderVersion) return;
-
-  var countLabel = document.createElement("label");
-  countLabel.textContent = "参考图数量";
-  countLabel.htmlFor = "gptReferenceCount";
-  container.appendChild(countLabel);
-  var count = document.createElement("select");
-  count.id = "gptReferenceCount";
-  var one = document.createElement("option");
-  one.value = "1";
-  one.textContent = "1 个图层";
-  count.appendChild(one);
-  var two = document.createElement("option");
-  two.value = "2";
-  two.textContent = "2 个图层";
-  count.appendChild(two);
-  count.value = "1";
-  container.appendChild(count);
-
-  var layerSelects = document.createElement("div");
-  layerSelects.id = "gptReferenceLayerSelects";
-  container.appendChild(layerSelects);
-  var renderSelects = function () {
-    layerSelects.innerHTML = "";
-    _appendGptLayerSelect(layerSelects, "gptReferenceLayer1", "参考图层 1", records);
-    if (count.value === "2") {
-      _appendGptLayerSelect(layerSelects, "gptReferenceLayer2", "参考图层 2", records);
-    }
-  };
-  count.addEventListener("change", renderSelects);
-  renderSelects();
 }
 
 function selectWorkflow(wfId) {
@@ -2316,12 +2377,6 @@ function getWorkflowInputs() {
     var el = $(inp.id);
     values[inp.id] = el ? el.value : (inp.default || "");
   });
-  var refCount = $("gptReferenceCount");
-  if (refCount) values.gptReferenceCount = refCount.value;
-  var ref1 = $("gptReferenceLayer1");
-  if (ref1) values.gptReferenceLayer1 = ref1.value;
-  var ref2 = $("gptReferenceLayer2");
-  if (ref2) values.gptReferenceLayer2 = ref2.value;
   var editUseReference = $("gptEditUseReference");
   if (editUseReference) values.gptEditUseReference = editUseReference.checked;
   var editReferenceLayer = $("gptEditReferenceLayer");
@@ -2376,7 +2431,7 @@ async function onRunClick() {
   if (wf.gptImage && !runState.localValidation && typeof AbortController !== "undefined") {
     try { runState.abortController = new AbortController(); } catch (_) {}
   }
-  _activeRuns[runSlot] = runState;
+  registerActiveRun(runSlot, runState, settings);
   refreshRunButton();
 
   // 本地验证不创建队列项，也不发送任何网络请求；只在 Photoshop 内
@@ -2434,8 +2489,8 @@ async function onRunClick() {
         renderQueueProgress();
       };
     })(queueItem);
-    _workQueue.push(queueItem);
-    _selectedQueueIdx = _workQueue.length - 1;
+    _workQueue.unshift(queueItem);
+    sortWorkQueue(queueItem.id);
     renderWorkQueue();
   }
 
@@ -2463,20 +2518,7 @@ async function onRunClick() {
       }
       if (!prompt.trim() && !runState.localValidation) throw new Error("请输入关键词或编辑说明");
 
-      if (mode === "reference") {
-        var referenceIds = [inputs.gptReferenceLayer1];
-        if (inputs.gptReferenceCount === "2") referenceIds.push(inputs.gptReferenceLayer2);
-        if (!referenceIds[0] || (referenceIds.length === 2 && !referenceIds[1])) {
-          throw new Error("请选择参考图层");
-        }
-        if (referenceIds.length === 2 && referenceIds[0] === referenceIds[1]) {
-          throw new Error("两张参考图请选择不同的图层");
-        }
-        for (var ri = 0; ri < referenceIds.length; ri++) {
-          images.push(await exportLayerPNG(referenceIds[ri]));
-          throwIfGptTaskCancelled(runState);
-        }
-      } else if (mode === "edit") {
+      if (mode === "edit") {
         // Send only the active layer's selection bounding rectangle. The mask
         // is cropped to the exact same rectangle below, which keeps the model
         // input small while preserving the original document coordinates for
@@ -2552,7 +2594,6 @@ async function onRunClick() {
     if (wf.gptImage) {
       var gptModeNames = {
         generate: "文生图",
-        reference: "添加参考图",
         edit: "图像编辑"
       };
       layerName = "ComfyPSGPT - " + (runState.localValidation ? "本地验证 - " : "") + (gptModeNames[mode] || mode);
@@ -2601,7 +2642,7 @@ async function onRunClick() {
     if (typeof selectionSnapshotChannel !== "undefined" && selectionSnapshotChannel) {
       await removeSelectionSnapshotChannel(selectionSnapshotChannel);
     }
-    if (_activeRuns[runSlot] === runState) _activeRuns[runSlot] = null;
+    unregisterActiveRun(runSlot, runState);
     if (queueItem && queueItem.runState) queueItem.runState = null;
     refreshRunButton();
   }
@@ -2664,10 +2705,10 @@ function _showApiTypeBadge(apiType) {
   var balanceDisplay = $("balanceDisplay");
   if (!balanceDisplay) return;
   if (!apiType) { balanceDisplay.style.display = "none"; return; }
-  var isEnt = apiType.toLowerCase().indexOf("enterprise") !== -1;
+  var supportsParallel = supportsRunningHubParallel({ apiType: apiType });
   balanceDisplay.style.display = "inline-block";
-  balanceDisplay.innerHTML = '<span class="balance-badge ' + (isEnt ? 'ok' : 'err') + '">'
-    + (isEnt ? '企业级 · 支持并发' : '消费级 · RunningHub 单任务，可与 GPT Image 并行')
+  balanceDisplay.innerHTML = '<span class="balance-badge ' + (supportsParallel ? 'ok' : 'err') + '">'
+    + (supportsParallel ? '共享/企业级 · 支持并发' : '消费级 · RunningHub 单任务，可与 GPT Image 并行')
     + '</span>';
 }
 
@@ -2745,13 +2786,13 @@ async function testApiKey() {
     if (balanceDisplay) {
       balanceDisplay.style.display = "block";
       if (data.ok) {
-        // 保存 API 类型: enterprise 可并发，SHARED 不行
+        // 共享/企业级密钥支持并发提交；不在插件侧限制并发数量。
         var apiType = data.api_type || "";
         saveSetting("apiType", apiType);
-        var isEnt = apiType.toLowerCase().indexOf("enterprise") !== -1;
+        var supportsParallel = supportsRunningHubParallel({ apiType: apiType });
         var html = '<span class="balance-badge ok">' + data.message + '</span>';
-        if (isEnt) {
-          html += ' <span style="font-size:10px;color:var(--accent);">(企业版 · 支持并发)</span>';
+        if (supportsParallel) {
+          html += ' <span style="font-size:10px;color:var(--accent);">(共享/企业级 · 支持并发)</span>';
         }
         balanceDisplay.innerHTML = html;
       } else {
@@ -2887,8 +2928,24 @@ function saveAllSettings() {
   if (logAutoScrollBtn) {
     logAutoScrollBtn.addEventListener("click", function () {
       _logAutoScroll = !_logAutoScroll;
-      logAutoScrollBtn.textContent = "自动滚动：" + (_logAutoScroll ? "开" : "关");
-      renderLogPanel();
+      updateLogAutoScrollButton();
+      if (_logAutoScroll) {
+        var logList = $("logList");
+        if (logList) logList.scrollTop = logList.scrollHeight;
+      }
+    });
+  }
+  var logList = $("logList");
+  if (logList) {
+    logList.addEventListener("scroll", function () {
+      var isAtBottom = _isLogListAtBottom(logList);
+      if (_logAutoScroll && !isAtBottom) {
+        _logAutoScroll = false;
+        updateLogAutoScrollButton();
+      } else if (!_logAutoScroll && isAtBottom) {
+        _logAutoScroll = true;
+        updateLogAutoScrollButton();
+      }
     });
   }
 

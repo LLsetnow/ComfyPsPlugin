@@ -11,9 +11,9 @@ rebuilding its content, which makes it unsuitable for reviewing a long stream.
 
 ## Scope
 
-This change improves the UI introduced by `feat/ui-page-logic` only. It does
-not change AI workflows, task execution, image transfer, cache formats, or
-RunningHub/OpenAI request payloads.
+This change improves the UI introduced by `feat/ui-page-logic`. It leaves the
+existing RunningHub/OpenAI request formats and cache formats intact, except for
+removing the standalone GPT Image reference-image mode from the panel.
 
 ## Navigation
 
@@ -68,6 +68,29 @@ Replace the visual list treatment with a terminal-style reader:
 - Page navigation starts log polling when Logs opens and stops it on exit;
   local plugin messages continue accumulating for the session.
 
+## GPT Image mode simplification
+
+- Remove the standalone `添加参考图` option from the GPT Image generation-mode
+  selector and remove its reference-layer controls and export branch.
+- Keep `文生图` and `图像编辑（活动图层选区）` unchanged. The optional
+  reference image within the edit flow remains an edit-specific control, not a
+  standalone generation mode.
+- Keep the bridge endpoint backward-compatible with existing `reference`
+  requests; the panel simply no longer creates them.
+
+## Shared RunningHub concurrency
+
+- Treat API types containing `shared` or `enterprise` (case-insensitive) as
+  parallel-capable RunningHub credentials.
+- While such a credential is active, a new RunningHub task remains submittable
+  while other RunningHub tasks are in progress. The panel does not impose a
+  client-side concurrent-task cap.
+- Consumer credentials retain the existing one-RunningHub-task limit. Local
+  ComfyUI tasks still block conflicting task types, while GPT Image continues
+  to use its own single-task guard.
+- The settings badge identifies shared/enterprise credentials as supporting
+  concurrent submissions.
+
 ## Verification
 
 1. With multiple completed tasks, repeatedly change selection and confirm
@@ -80,9 +103,17 @@ Replace the visual list treatment with a terminal-style reader:
    upward while new entries arrive. The scroll position remains stable until
    returning to the bottom.
 5. Run the repository's UXP ES5 compatibility check and Python syntax check.
+6. With a saved `SHARED` API type, start two RunningHub jobs before either one
+   finishes and verify both queue entries are created and the Generate button
+   remains enabled. Repeat with a consumer key and verify the second job is
+   still blocked.
+7. Verify the GPT Image mode selector exposes only `文生图` and `图像编辑`;
+   selecting either never renders the former standalone reference-layer
+   controls.
 
 ## Non-goals
 
 - Persistent historical logs across plugin restarts.
 - Live remote RunningHub node-level logs beyond the bridge's current events.
-- Changes to workflow or image-editing behavior.
+- Changing the edit-mode image data flow or the bridge's backwards-compatible
+  GPT Image endpoint modes.
