@@ -507,13 +507,14 @@ function _activeLayerId() {
 
 // 本地验证不应走 PNG 导出、桥或图像模型。直接在 Photoshop 中复制当前
 // 图层，并将当前选区变成副本的图层蒙版，能在极短时间内验证图层、选区
-// 和蒙版创建这条本地路径。
+// 和蒙版创建这条本地路径。返回外接矩形，便于把实际选区坐标显示给用户。
 async function runFastGptEditValidation(layerName) {
   var sourceLayerId = _activeLayerId();
+  var bounds;
   await executeAsModal(
     async function () {
       // 先读取选区，避免在复制了图层之后才发现没有选区。
-      await _readSelectionBounds();
+      bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
       await batchPlay([{
         _obj: "duplicate",
         _target: [{ _ref: "layer", _id: Number(sourceLayerId) }],
@@ -545,6 +546,7 @@ async function runFastGptEditValidation(layerName) {
     },
     { commandName: "GPT Image 快速本地验证" }
   );
+  return bounds;
 }
 
 async function exportActiveLayerSelectionPNG() {
@@ -851,7 +853,7 @@ function refreshRunButton() {
 // =========================================================================
 // 调用本地桥 /run
 // =========================================================================
-async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, onProgress) {
+async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, taskId, onProgress) {
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/run";
   var body = {
@@ -862,6 +864,7 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
     workflowFile: workflow.workflowFile || "",
     imageNodeId: workflow.imageNodeId || "",
     needsMask: workflow.needsMask,
+    taskId: taskId || "",
   };
   if (workflow.needsMask) {
     body.mask = maskB64;
@@ -1131,11 +1134,11 @@ async function saveTaskResult(resultBuffer, maskB64, taskId, psDocName) {
   try {
     var folder = await _getOrCreateCacheFolder(psDocName, taskId);
     resultFile = await folder.createEntry("result.png", { type: require("uxp").storage.types.file, overwrite: true });
-    await resultFile.write(new Uint8Array(resultBuffer), { type: "binary" });
+    await resultFile.write(new Uint8Array(resultBuffer), { format: formats.binary });
     if (maskB64) {
       var maskBytes = base64ToBytes(maskB64);
       maskFile = await folder.createEntry("mask.png", { type: require("uxp").storage.types.file, overwrite: true });
-      await maskFile.write(maskBytes, { type: "binary" });
+      await maskFile.write(maskBytes, { format: formats.binary });
     }
     var blob = new Blob([new Uint8Array(resultBuffer)], { type: "image/png" });
     thumbUrl = URL.createObjectURL(blob);
@@ -1176,6 +1179,7 @@ function renderWorkQueue() {
   var importBtn = $("queueImportBtn");
   var previewBtn = $("queuePreviewBtn");
   var stopBtn = $("queueStopBtn");
+  var deleteBtn = $("queueDeleteBtn");
   var section = $("workQueueSection");
   if (!container) return;
 
@@ -1239,6 +1243,7 @@ function renderWorkQueue() {
   if (importBtn) importBtn.disabled = !isCompleted;
   if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
   if (stopBtn) stopBtn.disabled = !isRunning;
+  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
   if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
   renderQueueProgress();
 }
@@ -1258,7 +1263,7 @@ async function onQueueImportClick() {
   var importBtn = $("queueImportBtn");
   if (importBtn) { importBtn.disabled = true; importBtn.textContent = "导入中…"; }
   try {
-    var resultBytes = await task.resultFile.read({ type: "binary" });
+    var resultBytes = await task.resultFile.read({ format: formats.binary });
     if (!resultBytes || !resultBytes.byteLength) throw new Error("结果文件为空");
     await placeImageBytesAsLayer(
       resultBytes, task.layerName, task.placement, task.revealSelection, task.selectionSnapshotChannel
@@ -1283,22 +1288,52 @@ function onQueuePreviewClick() {
   if (!modal || !modalImg) return;
   modalImg.src = task.thumbUrl;
   modal.style.display = "flex";
+  // UXP: native <select> renders above fixed overlays regardless of z-index
+  var selects = document.querySelectorAll("select");
+  for (var i = 0; i < selects.length; i++) selects[i].style.visibility = "hidden";
 }
 
 function onQueuePreviewClose() {
   var modal = $("queuePreviewModal");
   if (modal) modal.style.display = "none";
+  var selects = document.querySelectorAll("select");
+  for (var i = 0; i < selects.length; i++) selects[i].style.visibility = "";
 }
 
 function onQueueStopClick() {
   if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
   var task = _workQueue[_selectedQueueIdx];
   if (!task || task.status !== "running" || !task.runState) return;
-  task.runState.cancelRequested = true;
-  if (task.runState.abortController) {
-    try { task.runState.abortController.abort(); } catch (_) {}
+  var rs = task.runState;
+  rs.cancelRequested = true;
+  if (rs.abortController) {
+    // GPT Image 任务：通过 AbortController 中断 fetch
+    try { rs.abortController.abort(); } catch (_) {}
+  } else if (rs.taskId) {
+    // RunningHub 任务：通知 bridge 调用 RunningHub cancel API
+    var cancelUrl = loadSettings().bridgeUrl.replace(/\/+$/, "") + "/cancel";
+    try {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", cancelUrl, true);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.send(JSON.stringify({taskId: rs.taskId}));
+    } catch (_) {}
   }
   setStatus("正在停止任务…", "");
+  renderWorkQueue();
+}
+
+function onQueueDeleteClick() {
+  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
+  var task = _workQueue[_selectedQueueIdx];
+  if (!task || task.status === "running") return;
+  if (task.thumbUrl) { try { URL.revokeObjectURL(task.thumbUrl); } catch (_) {} }
+  _workQueue.splice(_selectedQueueIdx, 1);
+  if (_workQueue.length === 0) {
+    _selectedQueueIdx = -1;
+  } else {
+    _selectedQueueIdx = Math.min(_selectedQueueIdx, _workQueue.length - 1);
+  }
   renderWorkQueue();
 }
 
@@ -1596,7 +1631,7 @@ function getWorkflowDescription(wf) {
     var auth = gptSettings.gptImageAuth;
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
     var debugText = gptSettings.gptImageLocalValidation
-      ? " 当前已启用本地验证：不会调用模型。" : "";
+      ? " 当前已启用本地验证：不会调用桥或上传图片。" : "";
     return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
   }
   return wf.description || "";
@@ -1894,7 +1929,9 @@ async function onRunClick() {
     setStatus("没有打开的文档", "err");
     return;
   }
-  if (!canStartWorkflow(wf, settings)) {
+  var localValidationRequested = !!(wf.gptImage && settings.gptImageLocalValidation);
+  var localValidationCanStart = localValidationRequested && !_activeRuns.gptImage && !_activeRuns.other;
+  if (!localValidationCanStart && !canStartWorkflow(wf, settings)) {
     setStatus(wf.gptImage ? "GPT Image 正在生成中" : "已有 RunningHub 工作流正在运行", "err");
     refreshRunButton();
     return;
@@ -1904,6 +1941,10 @@ async function onRunClick() {
   var inputs = getWorkflowInputs();
   var prompt = inputs.wfPrompt || "";
   var gptMode = wf.gptImage ? (inputs.gptImageMode || "generate") : "";
+  if (localValidationRequested && gptMode !== "edit") {
+    setStatus("本地验证模式仅支持“图像编辑”", "err");
+    return;
+  }
   if (wf.gptImage && gptMode !== "edit") {
     inputs.gptAspectRatio = normalizeGptAspectRatio(inputs.gptAspectRatio);
   }
@@ -1912,22 +1953,27 @@ async function onRunClick() {
     cancelRequested: false,
     taskId: wf.gptImage ? makeGptTaskId() : "",
     bridgeRequestStarted: false,
-    localValidation: !!(wf.gptImage && settings.gptImageLocalValidation),
+    localValidation: localValidationRequested,
     localValidationInfo: "",
     abortController: null
   };
-  if (wf.gptImage && typeof AbortController !== "undefined") {
+  if (wf.gptImage && !runState.localValidation && typeof AbortController !== "undefined") {
     try { runState.abortController = new AbortController(); } catch (_) {}
   }
   _activeRuns[runSlot] = runState;
   refreshRunButton();
 
-  // 任务提交提示（短暂显示后自动清除）
-  setStatus("任务已提交 ✓", "ok");
-  setTimeout(function () {
-    var el = $("status");
-    if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
-  }, 2000);
+  // 本地验证不创建队列项，也不发送任何网络请求；只在 Photoshop 内
+  // 复制图层和创建蒙版。普通任务继续使用短暂的提交提示。
+  if (runState.localValidation) {
+    setStatus("正在进行本地验证…", "");
+  } else {
+    setStatus("任务已提交 ✓", "ok");
+    setTimeout(function () {
+      var el = $("status");
+      if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
+    }, 2000);
+  }
 
   // 立即入队（非本地验证模式）
   var queueItem = null;
@@ -1937,6 +1983,7 @@ async function onRunClick() {
     qTaskId = wf.gptImage
       ? runState.taskId
       : ("rh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6));
+    if (!wf.gptImage) runState.taskId = qTaskId;
     try { psDocName = app.activeDocument ? (app.activeDocument.name || "untitled") : "untitled"; } catch (_) {}
     queueItem = {
       id: qTaskId,
@@ -1983,10 +2030,13 @@ async function onRunClick() {
         if (mode !== "edit") {
           throw new Error("本地验证模式仅支持“图像编辑”；请切换到图像编辑模式后再运行");
         }
-        await runFastGptEditValidation("ComfyPSGPT - 本地验证 - 图像编辑");
-        if (progressFill) progressFill.style.width = "100%";
-        if (progressMsg) progressMsg.textContent = "本地验证完成";
-        setStatus("本地验证完成 ✓（已复制活动图层并创建选区蒙版）", "ok");
+        var validationBounds = await runFastGptEditValidation("ComfyPSGPT - 本地验证 - 图像编辑");
+        setStatus(
+          "本地验证完成 ✓（已复制图层并创建蒙版；外接矩形 " +
+          validationBounds.width + "×" + validationBounds.height +
+          "，位置 " + validationBounds.left + "," + validationBounds.top + "）",
+          "ok"
+        );
         return;
       }
       if (!prompt.trim() && !runState.localValidation) throw new Error("请输入关键词或编辑说明");
@@ -2061,7 +2111,7 @@ async function onRunClick() {
       }
       resultBuffer = await callBridge(
         settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
-        runState.onProgress
+        runState.taskId, runState.onProgress
       );
     }
 
@@ -2099,12 +2149,13 @@ async function onRunClick() {
 
     setStatus("任务已加入队列 ✓", "ok");
   } catch (e) {
+    var wasCancelled = isGptTaskCancelled(e) || !!(runState && runState.cancelRequested);
     if (queueItem) {
-      queueItem.status = isGptTaskCancelled(e) ? "cancelled" : "failed";
+      queueItem.status = wasCancelled ? "cancelled" : "failed";
       queueItem.runState = null;
       renderWorkQueue();
     }
-    if (isGptTaskCancelled(e)) {
+    if (wasCancelled) {
       setStatus("已停止任务", "");
     } else {
       setStatus("失败: " + (e && e.message ? e.message : String(e)), "err");
@@ -2366,6 +2417,8 @@ function saveAllSettings() {
   if (queuePreviewBtn) queuePreviewBtn.addEventListener("click", onQueuePreviewClick);
   var queueStopBtn = $("queueStopBtn");
   if (queueStopBtn) queueStopBtn.addEventListener("click", onQueueStopClick);
+  var queueDeleteBtn = $("queueDeleteBtn");
+  if (queueDeleteBtn) queueDeleteBtn.addEventListener("click", onQueueDeleteClick);
   var queuePreviewClose = $("queuePreviewClose");
   if (queuePreviewClose) queuePreviewClose.addEventListener("click", onQueuePreviewClose);
   var queuePreviewModal = $("queuePreviewModal");
