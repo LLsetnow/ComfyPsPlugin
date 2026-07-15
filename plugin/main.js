@@ -2077,8 +2077,12 @@ async function onRunClick() {
         revealSelection = true;
       }
       if (settings.rhLocalDebug && wf.needsMask) {
-        // 蒙版调试：直接把蒙版贴回，不发任何网络请求
+        // 蒙版调试：直接把蒙版贴回，不发任何网络请求。
+        // 不需要 revealSelection / selectionSnapshot，否则 placeImageBytesAsLayer
+        // 会对全尺寸蒙版做缩放+对齐+选区裁剪，导致位置错乱。
         resultBuffer = base64ToBytes(maskB64).buffer;
+        revealSelection = false;
+        selectionSnapshotChannel = "";
       } else {
         resultBuffer = await callBridge(
           settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
@@ -2101,6 +2105,7 @@ async function onRunClick() {
     throwIfGptTaskCancelled(runState);
 
     var saveMaskB64 = (wf.gptImage && gptMaskB64) ? gptMaskB64
+      : (settings.rhLocalDebug) ? ""
       : (!wf.gptImage && wf.needsMask && maskB64) ? maskB64 : "";
 
     var saveResult = await saveTaskResult(resultBuffer, saveMaskB64, qTaskId, psDocName);
