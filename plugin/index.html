@@ -5,24 +5,28 @@
   <title>ComfyPS</title>
   <style>
     :root {
-      --bg: #1e1e1e;
-      --bg-card: #282828;
-      --bg-input: #1a1a1a;
-      --text: #e0e0e0;
-      --text-dim: #999;
+      --bg: #17191d;
+      --bg-card: #22262d;
+      --bg-card-alt: #282e36;
+      --bg-input: #15181d;
+      --text: #f1f3f5;
+      --text-dim: #9299a5;
       --accent: #4a9eff;
-      --accent-hover: #5cb3ff;
-      --accent-glow: rgba(74,158,255,0.25);
+      --accent-hover: #6eafff;
+      --accent-glow: rgba(74,158,255,0.18);
+      --violet: #8b7cff;
       --danger: #ff6b6b;
       --success: #5cdb5c;
       --warn: #f0ad4e;
-      --border: #3a3a3a;
+      --border: #343a44;
+      --border-strong: #48515d;
       --radius: 6px;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     body.light {
       --bg: #f5f5f5;
       --bg-card: #fff;
+      --bg-card-alt: #f8fafc;
       --bg-input: #eee;
       --text: #222;
       --text-dim: #777;
@@ -33,6 +37,8 @@
       --success: #16a34a;
       --warn: #d97706;
       --border: #ddd;
+      --border-strong: #c7ced8;
+      --violet: #6557d8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
@@ -51,11 +57,7 @@
       height: 100%;
       overflow-y: auto;
     }
-    .page.active {
-      display: flex;
-      flex-direction: column;
-      min-height: 100%;
-    }
+    .app-shell { min-height: 100%; }
 
     /* ---- Pages ---- */
     .page {
@@ -63,64 +65,195 @@
       /* 留出可滚动的安全空间，避免 UXP 面板底部裁掉队列操作区。 */
       padding-bottom: 96px;
     }
-    .page.active { display: block; }
-
-    /* ---- Page 1: Home ---- */
-    .home-header {
-      text-align: center;
-      padding: 24px 0 16px;
-    }
-    .home-logo {
-      font-size: 28px;
-      font-weight: 800;
-      letter-spacing: 0.5px;
-      color: var(--text);
-    }
-    .home-sub {
-      font-size: 11px;
-      color: var(--text-dim);
-      margin-top: 4px;
-    }
-    .home-btns {
+    .page.active {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      padding: 0 4px;
+      min-height: calc(100% - 42px);
     }
-    .home-btn {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 16px;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .home-btn:hover { border-color: var(--accent); background: var(--bg-input); }
-    .home-btn .btn-icon { font-size: 24px; }
-    .home-btn .btn-title { font-size: 14px; font-weight: 600; color: var(--text); }
-    .home-btn .btn-desc { font-size: 10.5px; color: var(--text-dim); margin-top: 2px; }
 
-    /* ---- Top bar (Page 2 & 3) ---- */
+    /* ---- Global top bar ---- */
     .topbar {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       margin-bottom: 10px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--border);
+      padding: 0 0 8px;
     }
-    .btn-back {
-      background: none; border: none; color: var(--text-dim);
-      font-size: 16px; cursor: pointer; padding: 2px 4px;
+    .topbar-nav {
+      display: flex;
+      align-items: stretch;
+      flex: 1 1 0;
+      min-width: 0;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
     }
-    .btn-back:hover { color: var(--text); }
-    .topbar-title { font-size: 13px; font-weight: 600; color: var(--text); }
-    .topbar-spacer { flex: 1; }
+    .topbar-tab {
+      flex: 1 1 0;
+      min-width: 0;
+      min-height: 30px;
+      padding: 5px 8px;
+      background: var(--bg-card);
+      color: var(--text-dim);
+      border: none;
+      border-right: 1px solid var(--border);
+      font-family: var(--font);
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .topbar-nav .topbar-tab:last-child { border-right: none; }
+    .topbar-tab:hover { color: var(--text); background: var(--bg-card-alt); }
+    .topbar-tab.active {
+      color: #fff;
+      background: var(--accent);
+      font-weight: 600;
+    }
+    .topbar-tab-label-narrow { display: none; }
+    .topbar-utils {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 5px;
+    }
+    .topbar-utility {
+      flex: 0 0 30px;
+      width: 30px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      text-align: center;
+      overflow: visible;
+    }
+    .topbar-utility.active { border-color: var(--accent); }
+    .topbar-utility-icon { font-size: 14px; line-height: 1; }
+    .topbar-utility-label { display: none; }
+    .queue-tab-badge {
+      display: none;
+      min-width: 14px;
+      margin-left: 3px;
+      padding: 1px 4px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 9px;
+      line-height: 12px;
+      text-align: center;
+    }
+    .topbar-tab.active .queue-tab-badge { background: rgba(255,255,255,0.24); }
+    .page-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 2px 2px 10px;
+      color: var(--text);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.1px;
+    }
 
-    /* ---- Bridge status bar (Page 2) ---- */
+    /* ---- 日志页 ---- */
+    .log-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .log-count {
+      margin-right: 2px;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 400;
+    }
+    .log-help {
+      margin: -2px 2px 8px;
+    }
+    .log-terminal {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 160px);
+      min-height: 240px;
+      max-height: 440px;
+      flex-direction: column;
+      overflow: hidden;
+      background: #10151c;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+    }
+    .log-terminal-head {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px;
+      color: var(--text-dim);
+      border-bottom: 1px solid rgba(72,81,93,0.6);
+      font-size: 10px;
+    }
+    .log-terminal-dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(92,219,92,0.5);
+    }
+    .log-terminal-hint { margin-left: auto; }
+    .log-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 8px 10px;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .log-empty {
+      padding: 28px 10px;
+      color: var(--text-dim);
+      font-size: 11px;
+      text-align: center;
+    }
+    .log-entry {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 2px 0;
+      border-bottom: none;
+      font-size: 10px;
+      line-height: 1.55;
+    }
+    .log-time {
+      flex: 0 0 52px;
+      color: var(--text-dim);
+      font-variant-numeric: tabular-nums;
+    }
+    .log-source,
+    .log-level {
+      flex: 0 0 30px;
+      color: var(--text-dim);
+    }
+    .log-message {
+      flex: 1;
+      min-width: 0;
+      color: var(--text);
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .log-entry.level-warn .log-level,
+    .log-entry.level-warn .log-message { color: var(--warn); }
+    .log-entry.level-error .log-level,
+    .log-entry.level-error .log-message { color: var(--danger); }
+    .log-entry.level-success .log-level,
+    .log-entry.level-success .log-message { color: var(--success); }
+
+    /* ---- Bridge status (Settings) ---- */
     .bridge-bar {
       display: flex;
       align-items: center;
@@ -144,7 +277,8 @@
     .bridge-bar-text.on  { color: var(--success); }
     .bridge-bar-text.off { color: var(--danger); }
     .btn-bar-restart {
-      padding: 3px 8px; font-size: 10px; font-family: var(--font);
+      min-height: 28px;
+      padding: 3px 9px; font-size: 10px; font-family: var(--font);
       background: var(--bg-input); color: var(--text-dim);
       border: 1px solid var(--border); border-radius: 4px;
       cursor: pointer; white-space: nowrap;
@@ -156,25 +290,40 @@
     .wf-grid {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 10px;
+      gap: 8px;
+      margin-bottom: 12px;
     }
     .wf-card {
-      width: calc(50% - 3px);
-      padding: 14px 8px;
+      width: calc(50% - 4px);
+      min-height: 102px;
+      padding: 15px 8px 12px;
       text-align: center;
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
     }
-    .wf-card:hover { border-color: var(--accent); }
-    .wf-card.selected { border-color: var(--accent); background: rgba(74,158,255,0.1); }
+    .wf-card:hover { border-color: var(--border-strong); background: var(--bg-card-alt); }
+    .wf-card.selected {
+      border-color: var(--accent);
+      background: rgba(74,158,255,0.08);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
     .wf-card.disabled { opacity: 0.4; cursor: default; }
     .wf-card.disabled:hover { border-color: var(--border); }
-    .wf-card .wf-icon { font-size: 22px; margin-bottom: 4px; }
-    .wf-card .wf-name { font-size: 11px; color: var(--text); }
+    .wf-card .wf-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      margin-bottom: 8px;
+      color: var(--violet);
+      font-size: 24px;
+      line-height: 1;
+    }
+    .wf-card .wf-name { font-size: 11.5px; color: var(--text); font-weight: 600; }
     .wf-card .wf-tag {
       display: inline-block; font-size: 9px; padding: 1px 5px;
       border-radius: 3px; margin-top: 3px;
@@ -183,30 +332,39 @@
 
     /* ---- Workflow inputs ---- */
     #workflowInputs {
-      padding: 8px 10px;
+      padding: 11px 10px 10px;
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      margin-bottom: 8px;
+      margin-bottom: 10px;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.12);
     }
     #workflowInputs:empty { display: none; }
+
+    #workflowDesc {
+      padding: 0 2px 10px;
+      color: var(--text-dim);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
 
     label {
       display: block;
       font-size: 10.5px;
       color: var(--text-dim);
-      margin-bottom: 3px;
-      margin-top: 6px;
+      margin-bottom: 4px;
+      margin-top: 8px;
     }
     label:first-child { margin-top: 0; }
 
     input, textarea, select {
       width: 100%;
-      padding: 6px 8px;
+      min-height: 30px;
+      padding: 7px 9px;
       background: var(--bg-input);
       color: var(--text);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: 5px;
       font-family: var(--font);
       font-size: 11.5px;
       outline: none;
@@ -223,8 +381,7 @@
     input:focus-visible, textarea:focus-visible, select:focus-visible {
       outline: none;
     }
-    textarea { resize: vertical; min-height: 52px; line-height: 1.4; }
-    select { min-height: 30px; }
+    textarea { resize: vertical; min-height: 76px; line-height: 1.45; }
     input[type="password"] { -webkit-text-security: disc; }
     .input-note { font-size: 10.5px; color: var(--warn); line-height: 1.4; margin-top: 6px; }
     .gpt-edit-reference-toggle,
@@ -251,31 +408,36 @@
     .workflow-run-actions {
       display: flex;
       align-items: stretch;
-      gap: 6px;
+      gap: 8px;
+      margin-top: 2px;
     }
     .btn-run {
       width: 100%;
-      padding: 9px;
-      background: linear-gradient(135deg, var(--accent), #3b82f6);
+      min-height: 34px;
+      padding: 8px 10px;
+      background: var(--accent);
       color: #fff;
       border: none;
-      border-radius: var(--radius);
-      font-size: 13px;
+      border-radius: 5px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      transition: background 0.2s, opacity 0.2s;
+      transition: background 0.18s, opacity 0.18s, box-shadow 0.18s;
     }
     .workflow-run-actions .btn-run {
       flex: 1;
       width: auto;
     }
-    .btn-run:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent-hover), #60a5fa); }
+    .btn-run:hover:not(:disabled) {
+      background: var(--accent-hover);
+      box-shadow: 0 3px 10px rgba(74,158,255,0.22);
+    }
     .btn-run:disabled {
-      background: linear-gradient(135deg, #3b6fd4, #2d5fc0);
+      background: #356dbb;
       cursor: default;
       opacity: 0.9;
     }
@@ -310,18 +472,39 @@
     /* ---- Status ---- */
     #status {
       padding: 6px 10px;
-      min-height: 16px;
+      min-height: 0;
       font-size: 11px;
-      margin-top: 6px;
+      margin: -2px 0 6px;
       border-radius: var(--radius);
       transition: color 0.3s;
       white-space: pre-wrap;
       word-break: break-word;
     }
+    #status:empty { display: none; }
     #status.err { color: var(--danger); }
     #status.ok  { color: var(--success); }
 
     /* ---- Settings ---- */
+    .settings-stack { display: flex; flex-direction: column; gap: 8px; }
+    .settings-card {
+      padding: 11px 10px 2px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 3px 12px rgba(0,0,0,0.1);
+    }
+    .setting-card-title {
+      margin-bottom: 9px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .setting-card-note {
+      margin-left: 5px;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 400;
+    }
     .setting-row { margin-bottom: 10px; }
     .setting-label {
       font-size: 11px;
@@ -331,8 +514,15 @@
     .input-row {
       display: flex; align-items: center; gap: 6px;
     }
-    .input-row input, .input-row textarea { flex: 1; }
+    .input-row input, .input-row textarea { flex: 1; min-width: 0; }
     .setting-hint { font-size: 10px; color: var(--text-dim); line-height: 1.45; margin-top: 4px; }
+    .setting-path {
+      margin-top: 3px;
+      color: var(--text-dim);
+      font-size: 9.5px;
+      line-height: 1.4;
+      word-break: break-all;
+    }
     .input-row .setting-hint { flex: 1; margin-top: 0; }
 
     /* ---- Segmented control (two-state selector) ---- */
@@ -344,7 +534,8 @@
       font-size: 11px;
     }
     .segmented button {
-      padding: 5px 14px;
+      min-height: 29px;
+      padding: 5px 12px;
       background: var(--bg-input);
       color: var(--text-dim);
       border: none;
@@ -365,13 +556,14 @@
 
     /* ---- Buttons ---- */
     .btn-sm {
+      min-height: 28px;
       padding: 4px 10px;
       font-size: 10.5px;
       font-family: var(--font);
       background: var(--bg-input);
       color: var(--text-dim);
       border: 1px solid var(--border);
-      border-radius: var(--radius);
+      border-radius: 5px;
       cursor: pointer;
       white-space: nowrap;
       transition: all 0.2s;
@@ -432,17 +624,16 @@
     }
 
     .section-title {
-      font-size: 11px; font-weight: 600; color: var(--text-dim);
-      margin: 12px 0 6px; padding-top: 8px;
-      border-top: 1px solid var(--border);
+      font-size: 10.5px; font-weight: 600; color: var(--text-dim);
+      margin: 0 0 6px; padding: 0;
+      border-top: none;
     }
-    .section-title:first-child { border-top: none; margin-top: 0; padding-top: 0; }
 
     /* ---- 工作队列 ---- */
     #workQueueSection {
-      margin-top: 12px;
-      padding-top: 10px;
-      border-top: 1px solid var(--border);
+      display: none;
+      margin-top: 0;
+      padding-top: 0;
     }
     .queue-section-title {
       font-size: 11px;
@@ -450,63 +641,127 @@
       color: var(--text-dim);
       margin-bottom: 8px;
     }
+    .queue-empty {
+      padding: 28px 10px;
+      color: var(--text-dim);
+      text-align: center;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+    }
     .queue-cards-row {
       display: flex;
-      flex-direction: row;
+      flex-direction: column;
       gap: 8px;
-      overflow-x: auto;
-      padding-bottom: 4px;
+      overflow: visible;
       margin-bottom: 8px;
     }
     .queue-card {
-      flex-shrink: 0;
-      width: 80px;
+      display: flex;
+      align-items: stretch;
+      gap: 30px;
+      width: 100%;
+      min-height: 88px;
+      padding: 10px;
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       cursor: pointer;
       overflow: hidden;
-      transition: border-color 0.15s;
+      transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
     }
-    .queue-card:hover { border-color: var(--accent); }
-    .queue-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 100, 150, 255), 0.25); }
+    .queue-card:hover { border-color: var(--border-strong); background: var(--bg-card-alt); }
+    .queue-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
     .queue-card.queue-card-error { opacity: 0.65; }
     .queue-thumb {
-      width: 80px;
+      flex: 0 0 72px;
+      width: 72px;
       height: 72px;
       object-fit: cover;
       display: block;
+      border-radius: 4px;
     }
     .queue-thumb-running {
-      width: 80px;
+      flex: 0 0 72px;
+      width: 72px;
       height: 72px;
       display: flex;
       align-items: center;
       justify-content: center;
       background: var(--bg-input);
+      border-radius: 4px;
+    }
+    .queue-card-body {
+      display: flex;
+      flex: 1;
+      min-width: 0;
+      flex-direction: column;
+      justify-content: center;
     }
     .queue-card-label {
-      font-size: 9.5px;
-      color: var(--text-dim);
-      text-align: center;
-      padding: 3px 4px;
+      font-size: 11.5px;
+      color: var(--text);
+      text-align: left;
+      padding: 0;
+      font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .queue-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 10px;
+      margin-top: 5px;
+      color: var(--text-dim);
+      font-size: 9.5px;
+      line-height: 1.3;
+    }
     .queue-card-status-badge {
-      font-size: 9px;
-      color: var(--danger, #e05);
-      text-align: center;
-      padding: 2px 4px;
+      padding: 4px 0 0;
+      font-size: 10px;
+      text-align: left;
+      color: var(--text-dim);
+    }
+    .queue-card-status-badge.running { color: var(--accent); }
+    .queue-card-status-badge.completed { color: var(--success); }
+    .queue-card-status-badge.failed,
+    .queue-card-status-badge.cancelled { color: var(--danger); }
+    .queue-card-progress {
+      height: 3px;
+      margin-top: 7px;
+      overflow: hidden;
+      background: var(--border);
+      border-radius: 3px;
+    }
+    .queue-card-progress > div {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s;
     }
     .queue-actions {
       display: flex;
-      gap: 6px;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 10px;
     }
     .queue-actions button { flex: 1; }
     .btn-danger { color: var(--danger, #e05); border-color: var(--danger, #e05); }
     .btn-danger:not(:disabled):hover { background: var(--danger, #e05); color: #fff; }
+
+    @media (max-width: 330px) {
+      .topbar { gap: 4px; }
+      .topbar-tab { padding: 5px 4px; font-size: 10px; }
+      .topbar-tab-label-wide { display: none; }
+      .topbar-tab-label-narrow { display: inline; }
+      .topbar-utility { flex-basis: 28px; width: 28px; }
+      .queue-card { gap: 24px; padding: 9px; }
+      .queue-thumb,
+      .queue-thumb-running { flex-basis: 64px; width: 64px; height: 64px; }
+      .queue-card-label { font-size: 11px; }
+      .queue-card-meta { font-size: 9px; }
+      .queue-card-status-badge { font-size: 9.5px; }
+    }
 
     /* ---- 预览模态框 ---- */
     #queuePreviewModal {
@@ -541,205 +796,235 @@
 </head>
 <body>
 
-  <!-- ================================================================= -->
-  <!-- Page 1: 主页                                                       -->
-  <!-- ================================================================= -->
-  <div id="page1" class="page active">
-    <div class="home-header">
-      <div class="home-logo">ComfyPS</div>
-      <div class="home-sub">Photoshop AI 工作流面板</div>
-    </div>
-    <div class="home-btns">
-      <div class="home-btn" id="btnGoWorkflows">
-        <span class="btn-icon">⚡</span>
-        <div>
-          <div class="btn-title">工作流</div>
-          <div class="btn-desc">选择并运行 AI 图像处理工作流</div>
-        </div>
+  <div class="app-shell">
+    <!-- 全局顶部导航：主任务页 + 始终可用的日志/设置入口 -->
+    <div class="topbar app-topbar">
+      <div class="topbar-nav" role="navigation" aria-label="主导航">
+        <button class="topbar-tab active" data-page="workflow">
+          <span class="topbar-tab-label-wide">工作流</span><span class="topbar-tab-label-narrow">工作</span>
+        </button>
+        <button class="topbar-tab" data-page="queue">
+          <span class="topbar-tab-label-wide">任务队列</span><span class="topbar-tab-label-narrow">队列</span><span id="queueTabBadge" class="queue-tab-badge"></span>
+        </button>
       </div>
-      <div class="home-btn" id="btnGoSettings">
-        <span class="btn-icon">⚙</span>
-        <div>
-          <div class="btn-title">设置</div>
-          <div class="btn-desc">配置本地桥、后端连接与 API Key</div>
-        </div>
+      <div class="topbar-utils" role="navigation" aria-label="辅助导航">
+        <button class="topbar-tab topbar-utility" data-page="logs" title="日志" aria-label="日志">
+          <span class="topbar-utility-icon" aria-hidden="true">▤</span><span class="topbar-utility-label">日志</span>
+        </button>
+        <button class="topbar-tab topbar-utility" data-page="settings" title="设置" aria-label="设置">
+          <span class="topbar-utility-icon" aria-hidden="true">⚙</span><span class="topbar-utility-label">设置</span>
+        </button>
       </div>
     </div>
-  </div>
 
-  <!-- ================================================================= -->
-  <!-- Page 2: 工作流                                                     -->
-  <!-- ================================================================= -->
-  <div id="page2" class="page">
-    <div class="topbar">
-      <button class="btn-back" id="btnBackHome1" title="返回主页">←</button>
-      <span class="topbar-title">工作流</span>
-      <span class="topbar-spacer"></span>
-      <span id="bridgeDot" class="bridge-bar-dot chk" title="桥连接状态"></span>
-    </div>
-
-    <!-- 桥状态条 -->
-    <div class="bridge-bar">
-      <span id="bridgeBarDot" class="bridge-bar-dot chk"></span>
-      <span id="bridgeBarText" class="bridge-bar-text">检测中…</span>
-      <button id="restartBtn" class="btn-bar-restart" disabled>⟳ 重启桥</button>
-    </div>
-
-    <!-- 工作流卡片网格 -->
-    <div id="workflowGrid" class="wf-grid"></div>
-
-    <!-- 使用说明 -->
-    <div id="workflowDesc" style="display:none;font-size:11px;color:var(--text-dim);margin-bottom:8px;line-height:1.5;"></div>
-
-    <!-- 工作流输入区 (动态生成) -->
-    <div id="workflowInputs"></div>
-
-    <!-- 运行按钮 -->
-    <div id="runActions" class="workflow-run-actions" style="display:none;">
-      <button id="runBtn" class="btn-run">
-        <span id="btnLabel">运行</span>
-        <span id="btnSpinner" class="spinner" hidden></span>
-      </button>
-    </div>
-
-    <!-- 进度条（已整合到工作队列，保留元素供旧引用兼容） -->
-    <div id="progressBar" style="display:none;">
-      <div><div id="progressFill"></div></div>
-      <div id="progressMsg"></div>
-    </div>
-
-    <!-- 状态 -->
+    <!-- 跨页面共用的状态提示：运行、导入、重启桥等消息统一显示在这里 -->
     <div id="status"></div>
 
-    <!-- 工作队列 -->
-    <div id="workQueueSection" style="display:none;">
-      <div class="queue-section-title">工作队列</div>
-      <div id="workQueueCards" class="queue-cards-row"></div>
-      <div id="queueProgressBar" style="display:none;margin-bottom:6px;">
-        <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
-          <div id="queueProgressFill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.4s;"></div>
+    <!-- ================================================================= -->
+    <!-- 工作流页：选择工作流 → 填写参数 → 运行任务                         -->
+    <!-- ================================================================= -->
+    <div id="pageWorkflow" class="page active">
+      <div class="page-heading">选择工作流</div>
+      <div id="workflowGrid" class="wf-grid"></div>
+
+      <!-- 使用说明 -->
+      <div id="workflowDesc" style="display:none;font-size:11px;color:var(--text-dim);margin-bottom:8px;line-height:1.5;"></div>
+
+      <!-- 工作流输入区 (动态生成) -->
+      <div id="workflowInputs"></div>
+
+      <!-- 运行按钮 -->
+      <div id="runActions" class="workflow-run-actions" style="display:none;">
+        <button id="runBtn" class="btn-run">
+          <span id="btnLabel">运行</span>
+          <span id="btnSpinner" class="spinner" hidden></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- 任务队列页：进度、停止、预览、导入、删除                             -->
+    <!-- ================================================================= -->
+    <div id="pageQueue" class="page">
+      <div class="page-heading">任务队列</div>
+      <div id="queueEmptyState" class="queue-empty">还没有运行中的任务或历史结果</div>
+      <div id="workQueueSection">
+        <div class="queue-section-title">运行记录</div>
+        <div class="queue-actions">
+          <button id="queueImportBtn" class="btn-sm" disabled>导入</button>
+          <button id="queuePreviewBtn" class="btn-sm" disabled>预览</button>
+          <button id="queueStopBtn" class="btn-sm btn-danger" disabled>停止</button>
+          <button id="queueDeleteBtn" class="btn-sm btn-danger" disabled>删除</button>
         </div>
-        <div id="queueProgressMsg" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
-      </div>
-      <div class="queue-actions">
-        <button id="queueImportBtn" class="btn-sm" disabled>导入</button>
-        <button id="queuePreviewBtn" class="btn-sm" disabled>预览</button>
-        <button id="queueStopBtn" class="btn-sm btn-danger" disabled>停止</button>
-        <button id="queueDeleteBtn" class="btn-sm btn-danger" disabled>删除</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ================================================================= -->
-  <!-- Page 3: 设置                                                       -->
-  <!-- ================================================================= -->
-  <div id="page3" class="page">
-    <div class="topbar">
-      <button class="btn-back" id="btnBackHome2" title="返回主页">←</button>
-      <span class="topbar-title">设置</span>
-    </div>
-
-    <!-- 本地桥地址 -->
-    <div class="section-title">本地桥地址</div>
-    <div class="setting-row">
-      <input id="settingBridgeUrl" type="text" value="http://127.0.0.1:8765" />
-    </div>
-
-    <!-- GPT Image 认证 -->
-    <div class="section-title">GPT Image 认证</div>
-    <div class="setting-row">
-      <div class="segmented" id="segGptImageAuth">
-        <button data-value="codex" class="active">Codex 订阅</button>
-        <button data-value="api-key">OpenAI API Key</button>
-      </div>
-    </div>
-    <div id="gptImageCodexSettings" class="setting-row">
-      <div class="input-row">
-        <div class="setting-hint">使用本机已登录的 Codex<br>不需要 API Key<br>需要终端中的 Codex 已登录且启用图像生成。</div>
-        <button id="btnTestCodex" class="btn-sm">测试</button>
-      </div>
-    </div>
-    <div id="gptImageApiSettings" class="setting-row" style="display:none;">
-      <div class="setting-label">OpenAI API Key</div>
-      <div class="input-row">
-        <input id="settingGptImageApiKey" type="password" placeholder="sk-..." />
-        <button id="btnTestGptImageKey" class="btn-sm">测试</button>
-      </div>
-      <div class="setting-hint">密钥仅从插件传给本机桥，不写入 bridge/config.json；API 用量单独计费。</div>
-    </div>
-    <span id="gptImageAuthStatus" style="display:none;margin:0 0 8px;"></span>
-
-    <!-- GPT Image 本地验证 -->
-    <div class="section-title">GPT Image 调试</div>
-    <div class="setting-row">
-      <label class="setting-checkbox">
-        <input id="settingGptImageLocalValidation" type="checkbox" />
-        <span>启用本地验证模式</span>
-      </label>
-      <div class="setting-hint">不调用桥、Codex 或 OpenAI，也不会上传图片。仅在“图像编辑”中可用：裁切活动图层的选区外接矩形并按原坐标回贴，再创建图层蒙版，同时显示矩形坐标，用于快速检查本地回贴位置。</div>
-    </div>
-
-    <!-- 主题 -->
-    <div class="section-title">外观</div>
-    <div class="setting-row">
-      <div class="segmented" id="segTheme">
-        <button data-value="dark" class="active">深色</button>
-        <button data-value="light">浅色</button>
-      </div>
-    </div>
-
-    <!-- 后端选择 -->
-    <div class="section-title">后端</div>
-    <div class="setting-row">
-      <div class="segmented" id="segBackend">
-        <button data-value="runninghub" class="active">RunningHub</button>
-        <button data-value="comfyui">本地 ComfyUI</button>
-      </div>
-    </div>
-
-    <!-- RunningHub 专属设置 -->
-    <div id="rhSettings">
-      <div class="setting-row">
-        <div class="setting-label">RunningHub 站点</div>
-        <div class="segmented" id="segSite">
-          <button data-value="ai" class="active">ai</button>
-          <button data-value="cn">cn</button>
+        <div id="workQueueCards" class="queue-cards-row"></div>
+        <div id="queueProgressBar" style="display:none;margin-bottom:6px;">
+          <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">
+            <div id="queueProgressFill" style="height:100%;width:0;background:var(--accent);border-radius:2px;transition:width 0.4s;"></div>
+          </div>
+          <div id="queueProgressMsg" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
         </div>
       </div>
+    </div>
 
-      <div class="setting-row">
-        <div class="setting-label">API Key</div>
-        <div class="input-row">
-          <input id="settingApiKey" type="password" placeholder="rh-..." />
-          <button id="btnTestKey" class="btn-sm">测试</button>
+    <!-- ================================================================= -->
+    <!-- 日志页：显示当前会话中的插件与本地桥日志                         -->
+    <!-- ================================================================= -->
+    <div id="pageLogs" class="page">
+      <div class="page-heading">
+        <span>日志</span>
+        <div class="log-toolbar">
+          <span id="logCount" class="log-count">0 条</span>
+          <button id="logAutoScrollBtn" class="btn-sm">自动滚动：开</button>
+          <button id="logClearBtn" class="btn-sm">清空</button>
         </div>
-        <span id="balanceDisplay" style="display:none;margin-top:4px;"></span>
       </div>
-
-      <div class="setting-row">
-        <a id="linkGetKey" class="link-sm" href="https://www.runninghub.ai/enterprise-api/consumerApi" target="_blank">
-          如何获取 API Key? →
-        </a>
-      </div>
-    </div>
-
-    <!-- 本地 ComfyUI 专属设置 -->
-    <div id="comfyuiSettings" style="display:none;">
-      <div class="setting-row">
-        <div class="setting-label">ComfyUI 地址</div>
-        <input id="settingComfyuiUrl" type="text" value="http://127.0.0.1:8188" />
+      <div class="setting-hint log-help">实时显示插件与本地桥的当前会话日志，不会保存到磁盘。</div>
+      <div class="log-terminal">
+        <div class="log-terminal-head">
+          <span class="log-terminal-dot"></span><span>当前会话终端</span><span class="log-terminal-hint">拖动右侧滑条查看历史</span>
+        </div>
+        <div id="logList" class="log-list">
+          <div class="log-empty">暂无日志</div>
+        </div>
       </div>
     </div>
 
-    <!-- 结果缓存路径 -->
-    <div class="section-title">结果缓存路径</div>
-    <div class="setting-row">
-      <div class="setting-hint" id="cachePathDisplay">默认（插件数据目录）</div>
-      <div class="input-row" style="margin-top:4px;">
-        <button id="btnBrowseCachePath" class="btn-sm">浏览</button>
-        <button id="btnClearCachePath" class="btn-sm">重置</button>
+    <!-- ================================================================= -->
+    <!-- 设置页：连接、后端、认证、缓存、外观/调试                         -->
+    <!-- ================================================================= -->
+    <div id="pageSettings" class="page">
+      <div class="page-heading">设置</div>
+      <div class="settings-stack">
+        <!-- 本地桥连接 -->
+        <div class="settings-card">
+          <div class="setting-card-title">本地桥连接</div>
+          <div class="setting-row">
+            <div class="setting-label">桥服务地址</div>
+            <input id="settingBridgeUrl" type="text" value="http://127.0.0.1:8765" />
+          </div>
+          <div class="bridge-bar">
+            <span id="bridgeBarDot" class="bridge-bar-dot chk"></span>
+            <span id="bridgeBarText" class="bridge-bar-text">检测中…</span>
+            <button id="restartBtn" class="btn-bar-restart" disabled>⟳ 重启桥</button>
+          </div>
+        </div>
+
+        <!-- 后端与 RunningHub / ComfyUI 专属配置 -->
+        <div class="settings-card">
+          <div class="setting-card-title">后端</div>
+          <div class="setting-row">
+            <div class="segmented" id="segBackend">
+              <button data-value="runninghub" class="active">RunningHub</button>
+              <button data-value="comfyui">本地 ComfyUI</button>
+            </div>
+          </div>
+
+          <div id="rhSettings">
+            <div class="setting-row">
+              <div class="setting-label">RunningHub 站点</div>
+              <div class="segmented" id="segSite">
+                <button data-value="ai" class="active">ai</button>
+                <button data-value="cn">cn</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">API Key</div>
+              <div class="input-row">
+                <input id="settingApiKey" type="password" placeholder="rh-..." />
+                <button id="btnTestKey" class="btn-sm">测试</button>
+              </div>
+              <span id="balanceDisplay" style="display:none;margin-top:4px;"></span>
+            </div>
+            <a id="linkGetKey" class="link-sm" href="https://www.runninghub.ai/enterprise-api/consumerApi" target="_blank">
+              如何获取 API Key? →
+            </a>
+          </div>
+
+          <div id="comfyuiSettings" style="display:none;">
+            <div class="setting-row">
+              <div class="setting-label">ComfyUI 地址</div>
+              <input id="settingComfyuiUrl" type="text" value="http://127.0.0.1:8188" />
+            </div>
+          </div>
+        </div>
+
+        <!-- GPT Image 认证 -->
+        <div class="settings-card">
+          <div class="setting-card-title">GPT Image 认证</div>
+          <div class="setting-row">
+            <div class="segmented" id="segGptImageAuth">
+              <button data-value="codex" class="active">Codex 订阅</button>
+              <button data-value="api-key">OpenAI API Key</button>
+            </div>
+          </div>
+          <div id="gptImageCodexSettings" class="setting-row">
+            <div class="input-row">
+              <div class="setting-hint">使用本机已登录的 Codex<br>不需要 API Key<br>需要终端中的 Codex 已登录且启用图像生成。</div>
+              <button id="btnTestCodex" class="btn-sm">测试</button>
+            </div>
+          </div>
+          <div id="gptImageApiSettings" class="setting-row" style="display:none;">
+            <div class="setting-label">OpenAI API Key</div>
+            <div class="input-row">
+              <input id="settingGptImageApiKey" type="password" placeholder="sk-..." />
+              <button id="btnTestGptImageKey" class="btn-sm">测试</button>
+            </div>
+            <div class="setting-hint">密钥仅从插件传给本机桥，不写入 bridge/config.json；API 用量单独计费。</div>
+          </div>
+          <span id="gptImageAuthStatus" style="display:none;margin:0 0 8px;"></span>
+        </div>
+
+        <!-- 结果缓存路径 -->
+        <div class="settings-card">
+          <div class="setting-card-title">结果缓存路径</div>
+          <div class="setting-row">
+            <div class="segmented" id="segCachePath">
+              <button data-value="default" class="active">默认路径</button>
+              <button data-value="custom">自定义路径</button>
+            </div>
+          </div>
+          <div id="defaultCachePathSettings" class="setting-row">
+            <div class="setting-hint">使用插件数据目录保存结果</div>
+            <div id="defaultCachePathDisplay" class="setting-path">读取插件数据目录…</div>
+          </div>
+          <div id="customCachePathSettings" class="setting-row" style="display:none;">
+            <div class="setting-path" id="cachePathDisplay">尚未选择自定义文件夹</div>
+            <div class="input-row" style="margin-top:6px;">
+              <button id="btnBrowseCachePath" class="btn-sm">选择文件夹</button>
+              <button id="btnClearCachePath" class="btn-sm">重置</button>
+            </div>
+          </div>
+          <div class="setting-hint" style="margin-bottom:8px;">存储结构：&lt;根目录&gt;/&lt;文档名&gt;/&lt;任务ID&gt;/result.png</div>
+        </div>
+
+        <!-- 外观与高级调试 -->
+        <div class="settings-card">
+          <div class="setting-card-title">外观与高级</div>
+          <div class="setting-row">
+            <div class="setting-label">主题</div>
+            <div class="segmented" id="segTheme">
+              <button data-value="dark" class="active">深色</button>
+              <button data-value="light">浅色</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">GPT Image 调试</div>
+            <label class="setting-checkbox">
+              <input id="settingGptImageLocalValidation" type="checkbox" />
+              <span>启用本地验证模式</span>
+            </label>
+            <div class="setting-hint">不调用桥、Codex 或 OpenAI，也不会上传图片。仅在“图像编辑”中可用：裁切活动图层的选区外接矩形并按原坐标回贴，再创建图层蒙版，同时显示矩形坐标，用于快速检查本地回贴位置。</div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label">RunningHub 调试</div>
+            <label class="setting-checkbox">
+              <input id="settingRhLocalDebug" type="checkbox" />
+              <span>启用蒙版调试模式</span>
+            </label>
+            <div class="setting-hint">不调用桥或 RunningHub。将生成的蒙版图直接贴回为新图层，用于检查选区蒙版是否正确（白=编辑区，黑=保留区）。</div>
+          </div>
+        </div>
       </div>
-      <div class="setting-hint" style="margin-top:4px;">存储结构：&lt;根目录&gt;/&lt;文档名&gt;/&lt;任务ID&gt;/result.png</div>
     </div>
   </div>
 

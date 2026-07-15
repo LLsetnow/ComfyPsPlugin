@@ -64,6 +64,10 @@ DEFAULT_RH_SITE = "ai"
 
 # 任务进度 (task_id → {percent, status})
 _task_progress: dict[str, dict] = {}
+# 当前桥进程的内存日志，供插件日志页按序号增量读取。
+_BRIDGE_LOG_MAX_ENTRIES = 300
+_bridge_log_entries: list[dict] = []
+_bridge_log_sequence = 0
 # 正在执行的 GPT Image HTTP 任务。取消时会终止对应的协程，进而关闭
 # OpenAI 请求或停止本地 Codex app-server 进程。
 _gpt_image_tasks: dict[str, asyncio.Task] = {}
@@ -83,6 +87,22 @@ GPT_IMAGE_REQUEST_MAX_BYTES = 256 * 1024 * 1024
 CODEX_APP_SERVER_LINE_LIMIT = 64 * 1024 * 1024
 OPENAI_GPT_IMAGE_MODEL = "gpt-image-2"
 OPENAI_IMAGE_API_URL = "https://api.openai.com/v1/images"
+
+
+def bridge_log(message: str, level: str = "info"):
+    """记录一条不含密钥/图片内容的桥日志，并保留原有终端输出。"""
+    global _bridge_log_sequence
+    _bridge_log_sequence += 1
+    _bridge_log_entries.append({
+        "id": _bridge_log_sequence,
+        "ts": int(time.time() * 1000),
+        "level": level,
+        "source": "桥",
+        "message": str(message),
+    })
+    if len(_bridge_log_entries) > _BRIDGE_LOG_MAX_ENTRIES:
+        del _bridge_log_entries[:-_BRIDGE_LOG_MAX_ENTRIES]
+    print(str(message), flush=True)
 
 
 class CodexImageError(RuntimeError):
@@ -821,15 +841,15 @@ def run_inpaint_blocking(
         if target:
             node_id, field = target
             set_args.append(f"{node_id}:{field}={prompt}")
-            print(f"# 提示词注入 → [{node_id}].{field}")
+            bridge_log(f"# 提示词注入 → [{node_id}].{field}")
         else:
-            print("# ⚠️ 未能自动判断 positive 提示词节点,已跳过注入(可在 config 填 promptNodeId)")
+            bridge_log("# ⚠️ 未能自动判断 positive 提示词节点,已跳过注入(可在 config 填 promptNodeId)", "warn")
 
     # 插件传入的额外参数 (如 denoise 等)
     if extra_set_args:
         for arg in extra_set_args:
             set_args.append(str(arg))
-            print(f"# 额外参数注入 → {arg}")
+            bridge_log(f"# 额外参数注入 → {arg}")
 
     img_node = str(image_node_id or cfg["imageNodeId"])
 
@@ -982,7 +1002,7 @@ def _inject_image_input(workflow: dict, node_id: str, image_b64: str):
             inputs[field] = image_b64
             return
     # 不支持的节点类型, 跳过
-    print(f"# ⚠️ 节点 {node_id} 没有可写入的图片字段, 跳过注入")
+    bridge_log(f"# ⚠️ 节点 {node_id} 没有可写入的图片字段, 跳过注入", "warn")
 
 
 # ---------------------------------------------------------------------------
@@ -1009,6 +1029,19 @@ async def handle_progress(request):
     if not task_id or task_id not in _task_progress:
         return cors(web.json_response({"percent": 0, "message": "未知任务"}, status=404))
     return cors(web.json_response(_task_progress[task_id]))
+
+
+async def handle_logs(request):
+    """返回桥进程内存日志；since 用于插件增量轮询。"""
+    try:
+        since = max(0, int(request.query.get("since", "0")))
+    except (TypeError, ValueError):
+        since = 0
+    entries = [entry for entry in _bridge_log_entries if entry["id"] > since]
+    return cors(web.json_response({
+        "entries": entries,
+        "latest": _bridge_log_sequence,
+    }))
 
 
 async def handle_restart(request):
@@ -1165,6 +1198,10 @@ async def handle_codex_image_body(body):
     task_id = get_gpt_image_task_id(body)
     register_gpt_image_task(task_id)
     _task_progress[task_id] = {"percent": 5, "message": "准备 Codex 图像任务…"}
+    bridge_log(
+        "# GPT Image 开始 → task=" + task_id + " provider=codex mode=" + mode
+        + " refs=" + str(len(images)) + " mask=" + ("yes" if mask else "no")
+    )
 
     def on_progress(percent: int, message: str):
         _task_progress[task_id] = {"percent": percent, "message": message}
@@ -1190,16 +1227,19 @@ async def handle_codex_image_body(body):
             timeout=CODEX_IMAGE_TIMEOUT_SECONDS + 15,
         )
         _task_progress[task_id] = {"percent": 100, "message": "完成"}
+        bridge_log("# GPT Image 完成 ← task=" + task_id)
 
         resp = web.Response(body=result_bytes, content_type="image/png")
         resp.headers["X-Task-Id"] = task_id
         return cors(resp)
     except CodexImageError as e:
         _task_progress[task_id] = {"percent": 0, "message": str(e)}
+        bridge_log("# GPT Image 失败 ← task=" + task_id + " " + str(e), "error")
         return cors(web.json_response(
             {"error": "CODEX_IMAGE_ERROR", "message": str(e)}, status=502))
     except asyncio.TimeoutError:
         _task_progress[task_id] = {"percent": 0, "message": "Codex 图像生成超时"}
+        bridge_log("# GPT Image 超时 ← task=" + task_id, "error")
         return cors(web.json_response(
             {"error": "CODEX_TIMEOUT", "message": "Codex 图像生成超时"}, status=504))
     except asyncio.CancelledError:
@@ -1207,6 +1247,7 @@ async def handle_codex_image_body(body):
         raise
     except Exception as e:
         _task_progress[task_id] = {"percent": 0, "message": "Codex 图像任务失败"}
+        bridge_log("# GPT Image 失败 ← task=" + task_id + " " + str(e), "error")
         return cors(web.json_response(
             {"error": "CODEX_BRIDGE_ERROR", "message": f"Codex 图像任务失败: {e}"}, status=500))
     finally:
@@ -1311,6 +1352,10 @@ async def handle_gpt_image(request):
     task_id = get_gpt_image_task_id(body)
     register_gpt_image_task(task_id)
     _task_progress[task_id] = {"percent": 10, "message": "准备 OpenAI GPT Image 请求…"}
+    bridge_log(
+        "# GPT Image 开始 → task=" + task_id + " provider=openai mode=" + mode
+        + " refs=" + str(len(images)) + " mask=" + ("yes" if mask else "no")
+    )
     tmp = Path(tempfile.mkdtemp(prefix="comfyps_openai_image_"))
     try:
         image_paths = []
@@ -1335,18 +1380,22 @@ async def handle_gpt_image(request):
             api_key, mode, prompt, aspect_ratio, resolution, image_paths, mask_path
         )
         _task_progress[task_id] = {"percent": 100, "message": "完成"}
+        bridge_log("# GPT Image 完成 ← task=" + task_id)
         response = web.Response(body=result_bytes, content_type="image/png")
         response.headers["X-Task-Id"] = task_id
         return cors(response)
     except GptImageRequestError as e:
         _task_progress[task_id] = {"percent": 0, "message": e.message}
+        bridge_log("# GPT Image 失败 ← task=" + task_id + " " + e.message, "error")
         return cors(web.json_response({"error": e.code, "message": e.message}, status=400))
     except OpenAIImageError as e:
         _task_progress[task_id] = {"percent": 0, "message": str(e)}
+        bridge_log("# GPT Image 失败 ← task=" + task_id + " " + str(e), "error")
         return cors(web.json_response(
             {"error": "OPENAI_IMAGE_ERROR", "message": str(e)}, status=502))
     except asyncio.TimeoutError:
         _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 生成超时"}
+        bridge_log("# GPT Image 超时 ← task=" + task_id, "error")
         return cors(web.json_response(
             {"error": "OPENAI_TIMEOUT", "message": "OpenAI GPT Image 生成超时"}, status=504))
     except asyncio.CancelledError:
@@ -1354,6 +1403,7 @@ async def handle_gpt_image(request):
         raise
     except Exception as e:
         _task_progress[task_id] = {"percent": 0, "message": "OpenAI GPT Image 任务失败"}
+        bridge_log("# GPT Image 失败 ← task=" + task_id + " " + str(e), "error")
         return cors(web.json_response(
             {"error": "OPENAI_BRIDGE_ERROR", "message": f"OpenAI GPT Image 任务失败: {e}"}, status=500))
     finally:
@@ -1456,6 +1506,11 @@ async def handle_run(request):
         return cors(web.json_response(
             {"error": "MISSING", "message": "此工作流需要 mask (选区蒙版)"}, status=400))
 
+    bridge_log(
+        "# 工作流提交 → task=" + str(task_id) + " backend=" + backend
+        + " mask=" + ("yes" if needs_mask else "no")
+    )
+
     tmp = Path(tempfile.mkdtemp(prefix="comfyps_"))
     try:
         img_path = tmp / "image.png"
@@ -1466,6 +1521,9 @@ async def handle_run(request):
         mask_path = tmp / "mask.png"
         if needs_mask and mask_b64:
             write_b64_png(mask_b64, mask_path)
+            # debug: 保留一份供检查，下次运行时覆盖
+            import shutil as _sh
+            _sh.copy2(mask_path, BRIDGE_DIR / "debug_last_mask.png")
 
         loop = asyncio.get_event_loop()
 
@@ -1491,14 +1549,17 @@ async def handle_run(request):
 
         resp = web.Response(body=result_bytes, content_type="image/png")
         resp.headers["X-Task-Id"] = task_id
+        bridge_log("# 工作流完成 ← task=" + str(task_id))
         return cors(resp)
     except RhCliError as e:
         code = getattr(e, "code", "RH_ERROR")
+        bridge_log("# 工作流失败 ← task=" + str(task_id) + " " + str(getattr(e, "message", e)), "error")
         http_status = 499 if code == "TASK_CANCELLED" else 500
         return cors(web.json_response(
             {"error": code, "message": getattr(e, "message", str(e))},
             status=http_status))
     except Exception as e:
+        bridge_log("# 工作流失败 ← task=" + str(task_id) + " " + str(e), "error")
         return cors(web.json_response({"error": "BRIDGE_ERROR", "message": str(e)}, status=500))
     finally:
         _rh_cancel_events.pop(task_id, None)
@@ -1529,6 +1590,7 @@ def main():
     app.router.add_post("/run", handle_run)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/progress", handle_progress)
+    app.router.add_get("/logs", handle_logs)
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_get("/codex/status", handle_codex_status)
@@ -1540,9 +1602,9 @@ def main():
     app.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
 
     port = int(CONFIG["port"])
-    print(f"# ComfyPS 桥启动: http://127.0.0.1:{port}")
-    print(f"#   workflowId={CONFIG['workflowId']}  image={CONFIG['imageNodeId']}  mask={CONFIG['maskNodeId']}")
-    print(f"#   workflow={CONFIG['workflowFile']}")
+    bridge_log(f"# ComfyPS 桥启动: http://127.0.0.1:{port}")
+    bridge_log(f"#   workflowId={CONFIG['workflowId']}  image={CONFIG['imageNodeId']}  mask={CONFIG['maskNodeId']}")
+    bridge_log(f"#   workflow={CONFIG['workflowFile']}")
     web.run_app(app, host="127.0.0.1", port=port, print=None)
 
 

@@ -41,7 +41,7 @@ var WORKFLOWS = [
   {
     id: "inpaint",
     name: "局部编辑",
-    icon: "🖌",
+    icon: "⌗",
     active: true,
     needsMask: true,
     workflowId: "2075283500294565890",
@@ -56,7 +56,7 @@ var WORKFLOWS = [
   {
     id: "cleanup",
     name: "背景去杂物",
-    icon: "🧹",
+    icon: "✧",
     active: true,
     needsMask: false,
     workflowId: "2075237897401360385",
@@ -70,7 +70,7 @@ var WORKFLOWS = [
   {
     id: "face",
     name: "面部重绘",
-    icon: "👤",
+    icon: "◎",
     active: true,
     needsMask: false,
     workflowId: "2075255153690759170",
@@ -91,12 +91,11 @@ var WORKFLOWS = [
     icon: "✦",
     active: true,
     gptImage: true,
-    description: "使用本机 Codex 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。",
+    description: "使用本机 Codex 的图像生成功能。可文生图，或裁切活动图层的选区外接矩形进行编辑。",
     inputs: [
       {
         id: "gptImageMode", type: "select", label: "生成模式", default: "generate", options: [
           { value: "generate", label: "文生图" },
-          { value: "reference", label: "添加参考图" },
           { value: "edit", label: "图像编辑（活动图层选区）" },
         ],
       },
@@ -114,7 +113,7 @@ var WORKFLOWS = [
       },
     ],
   },
-  { id: "blend", name: "物体溶图", icon: "🖼", active: false },
+  { id: "blend", name: "物体溶图", icon: "▧", active: false },
 ];
 
 // =========================================================================
@@ -131,6 +130,8 @@ var SETTINGS_KEYS = {
   gptImageAuth: "comfyps.gptImageAuth",
   gptImageApiKey: "comfyps.gptImageApiKey",
   gptImageLocalValidation: "comfyps.gptImageLocalValidation",
+  rhLocalDebug: "comfyps.rhLocalDebug",
+  cacheMode: "comfyps.cacheMode",
 };
 
 // =========================================================================
@@ -138,6 +139,235 @@ var SETTINGS_KEYS = {
 // =========================================================================
 var _workQueue = [];
 var _selectedQueueIdx = -1;
+
+// =========================================================================
+// 当前会话日志
+// =========================================================================
+var _logEntries = [];
+var _logMaxEntries = 300;
+var _logSequence = 0;
+var _lastBridgeLogId = 0;
+var _bridgeLogLatestId = 0;
+var _logPollTimer = 0;
+var _logPollInFlight = false;
+var _logAutoScroll = true;
+var _logBatching = false;
+var _consoleCaptureInstalled = false;
+var _logRenderedFirstId = 0;
+var _logRenderedCount = 0;
+var _bridgeLogFailureReported = false;
+
+function _logValueToText(value) {
+  if (value === null) return "null";
+  if (typeof value === "undefined") return "undefined";
+  if (value instanceof Error) return value.message || String(value);
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    try {
+      var json = JSON.stringify(value);
+      if (typeof json === "string") return json;
+    } catch (_) {}
+  }
+  return String(value);
+}
+
+function _logLevelClass(level) {
+  if (level === "warn" || level === "warning") return "warn";
+  if (level === "error" || level === "err") return "error";
+  if (level === "success" || level === "ok") return "success";
+  return "info";
+}
+
+function _logLevelLabel(level) {
+  var normalized = _logLevelClass(level);
+  if (normalized === "warn") return "警告";
+  if (normalized === "error") return "错误";
+  if (normalized === "success") return "成功";
+  return "信息";
+}
+
+function _logPadTime(value) {
+  return value < 10 ? "0" + value : String(value);
+}
+
+function formatLogTime(timestamp) {
+  var date = new Date(timestamp || Date.now());
+  if (isNaN(date.getTime())) date = new Date();
+  return _logPadTime(date.getHours()) + ":"
+    + _logPadTime(date.getMinutes()) + ":"
+    + _logPadTime(date.getSeconds());
+}
+
+function _isLogListAtBottom(list) {
+  if (!list) return true;
+  return list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
+}
+
+function updateLogAutoScrollButton() {
+  var btn = $("logAutoScrollBtn");
+  if (btn) btn.textContent = "自动跟随：" + (_logAutoScroll ? "开" : "关");
+}
+
+function _createLogRow(entry) {
+  var level = _logLevelClass(entry.level);
+  var row = document.createElement("div");
+  row.className = "log-entry level-" + level;
+
+  var time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = formatLogTime(entry.ts);
+  row.appendChild(time);
+
+  var source = document.createElement("span");
+  source.className = "log-source";
+  source.textContent = entry.source || "插件";
+  row.appendChild(source);
+
+  var levelLabel = document.createElement("span");
+  levelLabel.className = "log-level";
+  levelLabel.textContent = _logLevelLabel(level);
+  row.appendChild(levelLabel);
+
+  var message = document.createElement("span");
+  message.className = "log-message";
+  message.textContent = entry.message || "";
+  row.appendChild(message);
+  return row;
+}
+
+function renderLogPanel(force) {
+  var list = $("logList");
+  var count = $("logCount");
+  if (count) count.textContent = _logEntries.length + " 条";
+  if (!list) return;
+
+  if (_logEntries.length === 0) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var empty = document.createElement("div");
+    empty.className = "log-empty";
+    empty.textContent = "暂无日志";
+    list.appendChild(empty);
+    _logRenderedFirstId = 0;
+    _logRenderedCount = 0;
+    return;
+  }
+
+  var shouldFollow = _logAutoScroll && _isLogListAtBottom(list);
+  var firstId = _logEntries[0].id;
+  var needsReset = !!force || _logRenderedFirstId !== firstId
+    || _logRenderedCount > _logEntries.length;
+  if (needsReset) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+    _logRenderedCount = 0;
+  }
+  for (var i = _logRenderedCount; i < _logEntries.length; i++) {
+    list.appendChild(_createLogRow(_logEntries[i]));
+  }
+  _logRenderedFirstId = firstId;
+  _logRenderedCount = _logEntries.length;
+
+  if (shouldFollow) list.scrollTop = list.scrollHeight;
+}
+
+function addLogEntry(level, message, source, timestamp) {
+  var text = _logValueToText(message);
+  _logEntries.push({
+    id: ++_logSequence,
+    ts: timestamp || Date.now(),
+    level: _logLevelClass(level),
+    source: source || "插件",
+    message: text,
+  });
+  var trimmed = false;
+  if (_logEntries.length > _logMaxEntries) {
+    _logEntries.splice(0, _logEntries.length - _logMaxEntries);
+    trimmed = true;
+  }
+  if (_currentPage === "logs" && !_logBatching) renderLogPanel(trimmed);
+}
+
+function clearLogPanel() {
+  _logEntries = [];
+  _lastBridgeLogId = Math.max(_lastBridgeLogId, _bridgeLogLatestId);
+  renderLogPanel(true);
+}
+
+function installLogCapture() {
+  if (_consoleCaptureInstalled || typeof console === "undefined") return;
+  _consoleCaptureInstalled = true;
+  var levels = ["log", "info", "warn", "error"];
+  for (var i = 0; i < levels.length; i++) {
+    var level = levels[i];
+    var original = console[level];
+    if (typeof original !== "function") continue;
+    (function (capturedLevel, capturedOriginal) {
+      console[capturedLevel] = function () {
+        var values = [];
+        for (var valueIndex = 0; valueIndex < arguments.length; valueIndex++) {
+          values.push(_logValueToText(arguments[valueIndex]));
+        }
+        addLogEntry(capturedLevel, values.join(" "), "插件");
+        try {
+          return capturedOriginal.apply(console, arguments);
+        } catch (_) {
+          return undefined;
+        }
+      };
+    })(level, original);
+  }
+}
+
+async function pollBridgeLogs() {
+  if (_logPollInFlight) return;
+  var settings = loadSettings();
+  var bridgeUrl = (settings.bridgeUrl || "").replace(/\/+$/, "");
+  if (!bridgeUrl) return;
+
+  _logPollInFlight = true;
+  try {
+    var url = bridgeUrl + "/logs?since=" + encodeURIComponent(String(_lastBridgeLogId));
+    var response = await fetchWithTimeout(url, null, 3000);
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    var data = await response.json();
+    var entries = data.entries || [];
+    _logBatching = true;
+    try {
+      for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i] || {};
+        addLogEntry(entry.level || "info", entry.message || "", entry.source || "桥", entry.ts);
+      }
+    } finally {
+      _logBatching = false;
+    }
+    if (entries.length > 0 && _currentPage === "logs") renderLogPanel();
+    if (data.latest !== undefined && data.latest !== null) {
+      _bridgeLogLatestId = Number(data.latest) || _bridgeLogLatestId;
+      _lastBridgeLogId = Math.max(_lastBridgeLogId, _bridgeLogLatestId);
+    } else if (entries.length > 0) {
+      _lastBridgeLogId = Math.max(_lastBridgeLogId, Number(entries[entries.length - 1].id) || 0);
+    }
+    _bridgeLogFailureReported = false;
+  } catch (_) {
+    if (!_bridgeLogFailureReported) {
+      _bridgeLogFailureReported = true;
+      addLogEntry("warn", "无法读取本地桥日志，稍后会自动重试", "插件");
+    }
+  } finally {
+    _logPollInFlight = false;
+  }
+}
+
+function startLogPolling() {
+  if (_logPollTimer) return;
+  updateLogAutoScrollButton();
+  pollBridgeLogs();
+  _logPollTimer = setInterval(pollBridgeLogs, 1000);
+}
+
+function stopLogPolling() {
+  if (_logPollTimer) clearInterval(_logPollTimer);
+  _logPollTimer = 0;
+}
 
 function loadSettings() {
   return {
@@ -151,12 +381,16 @@ function loadSettings() {
     gptImageAuth: localStorage.getItem(SETTINGS_KEYS.gptImageAuth) || "codex",
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
     gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
+    rhLocalDebug: localStorage.getItem(SETTINGS_KEYS.rhLocalDebug) === "true",
+    cacheMode: localStorage.getItem(SETTINGS_KEYS.cacheMode)
+      || (localStorage.getItem("comfyps.cacheBasePath") ? "custom" : "default"),
   };
 }
 
-function isEnterprise() {
-  var at = loadSettings().apiType.toLowerCase();
-  return at.indexOf("enterprise") !== -1;
+function supportsRunningHubParallel(settings) {
+  var source = settings || loadSettings();
+  var apiType = String(source.apiType || "").toLowerCase();
+  return apiType.indexOf("enterprise") !== -1 || apiType.indexOf("shared") !== -1;
 }
 
 function applyTheme(theme) {
@@ -231,6 +465,9 @@ function fetchWithTimeout(url, options, timeoutMs) {
 // 状态显示
 // =========================================================================
 function setStatus(msg, kind) {
+  if (msg) {
+    addLogEntry(kind === "err" ? "error" : (kind === "ok" ? "success" : "info"), msg, "插件");
+  }
   var el = $("status");
   if (!el) return;
   el.textContent = msg;
@@ -241,18 +478,50 @@ function setStatus(msg, kind) {
 // 页面导航
 // =========================================================================
 var _currentWorkflowId = null;
+var _currentPage = "workflow";
+var _workflowPageInitialized = false;
+
+function normalizePageName(page) {
+  // 保留数字参数兼容性，新的页面逻辑统一使用语义化名称。
+  if (page === 2) return "workflow";
+  if (page === 3) return "settings";
+  return page === "queue" || page === "logs" || page === "settings" ? page : "workflow";
+}
 
 function navigateTo(page) {
+  var pageName = normalizePageName(page);
+  var pageIds = {
+    workflow: "pageWorkflow",
+    queue: "pageQueue",
+    logs: "pageLogs",
+    settings: "pageSettings",
+  };
+  if (pageName !== "logs") stopLogPolling();
   var pages = document.querySelectorAll(".page");
   for (var i = 0; i < pages.length; i++) { pages[i].classList.remove("active"); }
-  var target = $("page" + page);
+  var target = $(pageIds[pageName]);
   if (target) target.classList.add("active");
 
-  if (page === 2) {
-    renderWorkflowGrid();
-    checkBridgeHealth();
+  var tabs = document.querySelectorAll(".topbar-tab");
+  for (var ti = 0; ti < tabs.length; ti++) {
+    if (tabs[ti].dataset.page === pageName) tabs[ti].classList.add("active");
+    else tabs[ti].classList.remove("active");
   }
-  if (page === 3) {
+  _currentPage = pageName;
+
+  if (pageName === "workflow") {
+    renderWorkflowGrid();
+    if (!_workflowPageInitialized) {
+      selectWorkflow(_selectedWorkflowId || "inpaint");
+      _workflowPageInitialized = true;
+    }
+    checkBridgeHealth();
+  } else if (pageName === "queue") {
+    renderWorkQueue();
+  } else if (pageName === "logs") {
+    renderLogPanel();
+    startLogPolling();
+  } else if (pageName === "settings") {
     renderSettings();
   }
 }
@@ -763,7 +1032,7 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
 // =========================================================================
 var _activeRuns = {
   gptImage: null,
-  runningHub: null,
+  runningHub: [],
   other: null
 };
 
@@ -772,11 +1041,43 @@ function getRunSlot(workflow, settings) {
   return settings && settings.backend === "runninghub" ? "runningHub" : "other";
 }
 
+function activeRunCount(slot) {
+  var active = _activeRuns[slot];
+  if (slot === "runningHub" && active && typeof active.length === "number") return active.length;
+  return active ? 1 : 0;
+}
+
+function registerActiveRun(slot, runState, settings) {
+  if (slot === "runningHub" && supportsRunningHubParallel(settings)) {
+    if (!_activeRuns.runningHub || typeof _activeRuns.runningHub.length !== "number") {
+      _activeRuns.runningHub = [];
+    }
+    _activeRuns.runningHub.push(runState);
+    return;
+  }
+  _activeRuns[slot] = runState;
+}
+
+function unregisterActiveRun(slot, runState) {
+  if (slot === "runningHub" && _activeRuns.runningHub
+    && typeof _activeRuns.runningHub.length === "number") {
+    for (var i = _activeRuns.runningHub.length - 1; i >= 0; i--) {
+      if (_activeRuns.runningHub[i] === runState) _activeRuns.runningHub.splice(i, 1);
+    }
+    return;
+  }
+  if (_activeRuns[slot] === runState) _activeRuns[slot] = null;
+}
+
 function canStartWorkflow(workflow, settings) {
   var slot = getRunSlot(workflow, settings);
-  if (_activeRuns[slot]) return false;
+  if (slot === "runningHub" && supportsRunningHubParallel(settings)) {
+    return activeRunCount("other") === 0;
+  }
+  if (activeRunCount(slot) > 0) return false;
   if (slot === "gptImage" || slot === "runningHub") return !_activeRuns.other;
-  return !_activeRuns.gptImage && !_activeRuns.runningHub && !_activeRuns.other;
+  return activeRunCount("gptImage") === 0 && activeRunCount("runningHub") === 0
+    && activeRunCount("other") === 0;
 }
 
 function refreshRunButton() {
@@ -787,14 +1088,14 @@ function refreshRunButton() {
   if (!runBtn || !workflow) return;
 
   var slot = getRunSlot(workflow, loadSettings());
-  var activeRun = _activeRuns[slot];
+  var hasActiveRun = activeRunCount(slot) > 0;
   var canStart = canStartWorkflow(workflow, loadSettings());
   runBtn.disabled = !canStart;
   if (label) {
     label.hidden = false;
     label.textContent = "生成";
   }
-  if (spinner) spinner.hidden = !activeRun;
+  if (spinner) spinner.hidden = !hasActiveRun;
 }
 
 // =========================================================================
@@ -1037,7 +1338,10 @@ async function removeSelectionSnapshotChannel(channelName) {
 // =========================================================================
 async function _getOrCreateCacheFolder(psDocName, taskId) {
   var base;
-  var token = localStorage.getItem("comfyps.cacheBasePath");
+  var storedCacheMode = localStorage.getItem(SETTINGS_KEYS.cacheMode);
+  var cacheMode = storedCacheMode
+    || (localStorage.getItem("comfyps.cacheBasePath") ? "custom" : "default");
+  var token = cacheMode === "custom" ? localStorage.getItem("comfyps.cacheBasePath") : "";
   if (token) {
     try {
       base = await localFileSystem.getEntryForPersistentToken(token);
@@ -1121,13 +1425,174 @@ function renderQueueProgress() {
   }
 }
 
-function renderWorkQueue() {
-  var container = $("workQueueCards");
+function renderQueueTabBadge() {
+  var badge = $("queueTabBadge");
+  if (!badge) return;
+  if (_workQueue.length > 0) {
+    badge.textContent = String(_workQueue.length);
+    badge.style.display = "inline-block";
+  } else {
+    badge.textContent = "";
+    badge.style.display = "none";
+  }
+}
+
+function sortWorkQueue(selectedTaskId) {
+  var selectedId = selectedTaskId || "";
+  if (!selectedId && _selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length) {
+    selectedId = _workQueue[_selectedQueueIdx].id;
+  }
+  _workQueue.sort(function (a, b) {
+    var aCreatedAt = Number(a && a.createdAt) || 0;
+    var bCreatedAt = Number(b && b.createdAt) || 0;
+    return bCreatedAt - aCreatedAt;
+  });
+  _selectedQueueIdx = -1;
+  for (var i = 0; i < _workQueue.length; i++) {
+    if (selectedId && _workQueue[i].id === selectedId) {
+      _selectedQueueIdx = i;
+      break;
+    }
+  }
+  if (_selectedQueueIdx === -1 && _workQueue.length > 0) _selectedQueueIdx = 0;
+}
+
+function updateQueueControls() {
   var importBtn = $("queueImportBtn");
   var previewBtn = $("queuePreviewBtn");
   var stopBtn = $("queueStopBtn");
   var deleteBtn = $("queueDeleteBtn");
   var section = $("workQueueSection");
+  var emptyState = $("queueEmptyState");
+  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
+  var selectedTask = hasSelection ? _workQueue[_selectedQueueIdx] : null;
+  var isCompleted = selectedTask && selectedTask.status === "completed";
+  var isRunning = selectedTask && selectedTask.status === "running";
+
+  if (importBtn) importBtn.disabled = !(isCompleted && selectedTask.resultFile);
+  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
+  if (stopBtn) stopBtn.disabled = !isRunning;
+  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
+  if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
+  if (emptyState) emptyState.style.display = _workQueue.length > 0 ? "none" : "block";
+  renderQueueProgress();
+}
+
+function selectWorkQueueTask(index) {
+  if (index < 0 || index >= _workQueue.length) return;
+  if (_selectedQueueIdx !== index) {
+    _selectedQueueIdx = index;
+    var cards = document.querySelectorAll("#workQueueCards .queue-card");
+    for (var i = 0; i < cards.length; i++) {
+      if (i === index) cards[i].classList.add("selected");
+      else cards[i].classList.remove("selected");
+    }
+  }
+  updateQueueControls();
+}
+
+function _queuePadTime(value) {
+  return value < 10 ? "0" + value : String(value);
+}
+
+function formatQueueCreatedAt(timestamp) {
+  if (!timestamp || !isFinite(timestamp)) return "创建时间 --";
+  var date = new Date(timestamp);
+  if (isNaN(date.getTime())) return "创建时间 --";
+  return "创建时间 " + _queuePadTime(date.getMonth() + 1) + "-"
+    + _queuePadTime(date.getDate()) + " "
+    + _queuePadTime(date.getHours()) + ":" + _queuePadTime(date.getMinutes());
+}
+
+function formatQueueDuration(durationMs) {
+  if (!isFinite(durationMs) || durationMs < 0) return "";
+  var seconds = durationMs / 1000;
+  if (seconds < 60) {
+    var shortSeconds = seconds < 10 ? seconds.toFixed(1) : String(Math.round(seconds));
+    return "完成耗时 " + shortSeconds + " 秒";
+  }
+  var totalSeconds = Math.round(seconds);
+  var minutes = Math.floor(totalSeconds / 60);
+  var remainingSeconds = totalSeconds % 60;
+  if (minutes < 60) {
+    return "完成耗时 " + minutes + " 分 " + remainingSeconds + " 秒";
+  }
+  var hours = Math.floor(minutes / 60);
+  var remainingMinutes = minutes % 60;
+  return "完成耗时 " + hours + " 小时 " + remainingMinutes + " 分";
+}
+
+function seedDevWorkQueue() {
+  if (!IS_DEV || _workQueue.length > 0) return;
+  var demoThumb = "/demo-image.png";
+  var demoNow = Date.now();
+  _workQueue = [
+    {
+      id: "demo-running",
+      wfName: "局部编辑",
+      wfId: "inpaint",
+      layerName: "ComfyPS - 局部编辑",
+      status: "running",
+      runState: null,
+      resultFile: null,
+      maskFile: null,
+      hasMask: false,
+      revealSelection: false,
+      selectionSnapshotChannel: "",
+      placement: null,
+      thumbUrl: demoThumb,
+      savedOk: false,
+      percent: 65,
+      progressMsg: "正在生成结果…",
+      createdAt: demoNow - 38000
+    },
+    {
+      id: "demo-completed",
+      wfName: "背景去杂物",
+      wfId: "cleanup",
+      layerName: "ComfyPS - 背景去杂物",
+      status: "completed",
+      runState: null,
+      resultFile: null,
+      maskFile: null,
+      hasMask: false,
+      revealSelection: false,
+      selectionSnapshotChannel: "",
+      placement: null,
+      thumbUrl: demoThumb,
+      savedOk: true,
+      percent: 100,
+      progressMsg: "处理完成",
+      createdAt: demoNow - 12400,
+      durationMs: 8400
+    },
+    {
+      id: "demo-failed",
+      wfName: "面部重绘",
+      wfId: "face",
+      layerName: "ComfyPS - 面部重绘",
+      status: "failed",
+      runState: null,
+      resultFile: null,
+      maskFile: null,
+      hasMask: false,
+      revealSelection: false,
+      selectionSnapshotChannel: "",
+      placement: null,
+      thumbUrl: demoThumb,
+      savedOk: false,
+      percent: 0,
+      progressMsg: "演示任务失败",
+      createdAt: demoNow - 76000
+    }
+  ];
+  sortWorkQueue("demo-completed");
+  renderQueueTabBadge();
+}
+
+function renderWorkQueue() {
+  var container = $("workQueueCards");
+  renderQueueTabBadge();
   if (!container) return;
 
   container.innerHTML = "";
@@ -1135,6 +1600,7 @@ function renderWorkQueue() {
     (function (task, idx) {
       var card = document.createElement("div");
       card.className = "queue-card" + (idx === _selectedQueueIdx ? " selected" : "");
+      card.dataset.taskId = task.id;
       if (task.status === "failed" || task.status === "cancelled") card.className += " queue-card-error";
 
       if (task.status === "running") {
@@ -1152,47 +1618,67 @@ function renderWorkQueue() {
         card.appendChild(img);
       }
 
+      var cardBody = document.createElement("div");
+      cardBody.className = "queue-card-body";
+
       var label = document.createElement("div");
       label.className = "queue-card-label";
       label.textContent = task.wfName;
-      card.appendChild(label);
+      cardBody.appendChild(label);
 
-      if (task.status === "failed") {
-        var badge = document.createElement("div");
-        badge.className = "queue-card-status-badge";
-        badge.textContent = "失败";
-        card.appendChild(badge);
-      } else if (task.status === "cancelled") {
-        var badge2 = document.createElement("div");
-        badge2.className = "queue-card-status-badge";
-        badge2.textContent = "已停止";
-        card.appendChild(badge2);
-      } else if (!task.savedOk && task.status === "completed") {
-        var badge3 = document.createElement("div");
-        badge3.className = "queue-card-status-badge";
-        badge3.textContent = "保存失败";
-        card.appendChild(badge3);
+      var meta = document.createElement("div");
+      meta.className = "queue-card-meta";
+      var createdAt = document.createElement("span");
+      createdAt.textContent = formatQueueCreatedAt(task.createdAt);
+      meta.appendChild(createdAt);
+      if (task.status === "completed"
+        && task.durationMs !== null
+        && typeof task.durationMs !== "undefined"
+        && isFinite(task.durationMs)) {
+        var duration = document.createElement("span");
+        duration.textContent = formatQueueDuration(task.durationMs);
+        meta.appendChild(duration);
       }
+      cardBody.appendChild(meta);
+
+      var badge = document.createElement("div");
+      badge.className = "queue-card-status-badge";
+      if (task.status === "running") {
+        badge.className += " running";
+        badge.textContent = "运行中" + (task.percent ? " · " + task.percent + "%" : "");
+        var cardProgress = document.createElement("div");
+        cardProgress.className = "queue-card-progress";
+        var cardProgressFill = document.createElement("div");
+        cardProgressFill.style.width = (task.percent || 0) + "%";
+        cardProgress.appendChild(cardProgressFill);
+        cardBody.appendChild(badge);
+        cardBody.appendChild(cardProgress);
+      } else if (task.status === "failed") {
+        badge.className += " failed";
+        badge.textContent = "失败";
+        cardBody.appendChild(badge);
+      } else if (task.status === "cancelled") {
+        badge.className += " cancelled";
+        badge.textContent = "已停止";
+        cardBody.appendChild(badge);
+      } else if (!task.savedOk && task.status === "completed") {
+        badge.className += " failed";
+        badge.textContent = "保存失败";
+        cardBody.appendChild(badge);
+      } else {
+        badge.className += " completed";
+        badge.textContent = "已完成";
+        cardBody.appendChild(badge);
+      }
+      card.appendChild(cardBody);
 
       card.addEventListener("click", function () {
-        _selectedQueueIdx = idx;
-        renderWorkQueue();
+        selectWorkQueueTask(idx);
       });
       container.appendChild(card);
     })(_workQueue[i], i);
   }
-
-  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
-  var selectedTask = hasSelection ? _workQueue[_selectedQueueIdx] : null;
-  var isCompleted = selectedTask && selectedTask.status === "completed";
-  var isRunning = selectedTask && selectedTask.status === "running";
-
-  if (importBtn) importBtn.disabled = !isCompleted;
-  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
-  if (stopBtn) stopBtn.disabled = !isRunning;
-  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
-  if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
-  renderQueueProgress();
+  updateQueueControls();
 }
 
 async function onQueueImportClick() {
@@ -1296,11 +1782,76 @@ async function browseCachePath() {
     if (!folder) return;
     var token = localFileSystem.createPersistentToken(folder);
     localStorage.setItem("comfyps.cacheBasePath", token);
-    if (display) display.textContent = "已设置（自定义路径）";
+    saveSetting("cacheMode", "custom");
+    _segSelect("segCachePath", "custom");
+    _applyCachePathVisibility();
+    await _refreshCachePathDisplay();
   } catch (e) {
     console.error("ComfyPS: 选择缓存路径失败", e);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "浏览"; }
+    if (btn) { btn.disabled = false; btn.textContent = "选择文件夹"; }
+  }
+}
+
+function _getCacheEntryNativePath(entry) {
+  if (!entry) return "";
+  try {
+    if (entry.nativePath) return entry.nativePath;
+  } catch (_) {}
+  try {
+    if (localFileSystem && typeof localFileSystem.getNativePath === "function") {
+      return localFileSystem.getNativePath(entry) || "";
+    }
+  } catch (_) {}
+  return "";
+}
+
+async function _refreshCachePathDisplay() {
+  var mode = _segGet("segCachePath") || loadSettings().cacheMode || "default";
+  var defaultDisplay = $("defaultCachePathDisplay");
+  var customDisplay = $("cachePathDisplay");
+  if (mode === "custom") {
+    if (customDisplay) customDisplay.textContent = "读取自定义路径…";
+  } else if (defaultDisplay) {
+    defaultDisplay.textContent = "读取插件数据目录…";
+  }
+
+  try {
+    var entry;
+    if (mode === "custom") {
+      var token = localStorage.getItem("comfyps.cacheBasePath");
+      if (!token) {
+        if (customDisplay) customDisplay.textContent = "尚未选择自定义文件夹";
+        return;
+      }
+      try {
+        entry = await localFileSystem.getEntryForPersistentToken(token);
+      } catch (e) {
+        if (customDisplay) customDisplay.textContent = "自定义路径不可用，请重新选择文件夹";
+        console.warn("ComfyPS: 自定义缓存路径已失效", e);
+        return;
+      }
+    } else {
+      entry = await localFileSystem.getDataFolder();
+    }
+
+    var nativePath = _getCacheEntryNativePath(entry);
+    if (mode === "custom") {
+      if (customDisplay) customDisplay.textContent = nativePath
+        ? "路径：" + nativePath
+        : "已设置自定义路径（无法读取绝对路径）";
+    } else if (defaultDisplay) {
+      defaultDisplay.textContent = nativePath
+        ? "路径：" + nativePath
+        : "插件数据目录（无法读取绝对路径）";
+    }
+  } catch (e) {
+    if (mode === "custom") {
+      if (customDisplay) customDisplay.textContent = "无法读取自定义路径，请重新选择文件夹";
+    } else if (defaultDisplay) {
+      defaultDisplay.textContent = "无法读取插件数据目录";
+    }
+    console.warn("ComfyPS: 读取缓存路径失败", e);
   }
 }
 
@@ -1482,6 +2033,7 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
 var _bridgeOnline = false;
 var _healthPollTimer = 0;
 var _restarting = false;
+var _lastBridgeUiLog = "";
 
 async function checkBridgeHealth() {
   var settings = loadSettings();
@@ -1511,11 +2063,17 @@ async function checkBridgeHealth() {
 function _setBridgeBarUI(state, text, restartEnabled) {
   var dot = $("bridgeBarDot");
   var label = $("bridgeBarText");
-  var topDot = $("bridgeDot");
   var btn = $("restartBtn");
 
+  if (state !== "chk") {
+    var bridgeLogKey = state + "|" + text;
+    if (bridgeLogKey !== _lastBridgeUiLog) {
+      addLogEntry(state === "off" ? "warn" : "info", "桥状态: " + text, "插件");
+      _lastBridgeUiLog = bridgeLogKey;
+    }
+  }
+
   if (dot) dot.className = "bridge-bar-dot " + state;
-  if (topDot) topDot.className = "bridge-bar-dot " + state;
   if (label) {
     label.textContent = text;
     label.className = "bridge-bar-text " + (state === "on" ? "on" : state === "off" ? "off" : "");
@@ -1597,7 +2155,7 @@ function getWorkflowDescription(wf) {
     var provider = auth === "api-key" ? "GPT API" : "本机 Codex";
     var debugText = gptSettings.gptImageLocalValidation
       ? " 当前已启用本地验证：不会调用桥或上传图片。" : "";
-    return "使用 " + provider + " 的图像生成功能。可文生图、使用图层作为参考图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
+    return "使用 " + provider + " 的图像生成功能。可文生图，或裁切活动图层的选区外接矩形进行编辑。" + debugText;
   }
   return wf.description || "";
 }
@@ -1629,8 +2187,6 @@ function renderWorkflowGrid() {
     grid.appendChild(card);
   });
 }
-
-var _gptLayerRenderVersion = 0;
 
 function _appendGptLayerSelect(container, inputId, labelText, records) {
   var label = document.createElement("label");
@@ -1703,7 +2259,6 @@ function renderGptImageLayerInputs() {
   var modeSelect = $("gptImageMode");
   if (!container || !modeSelect) return;
   updateGptAspectRatioVisibility();
-  var renderVersion = ++_gptLayerRenderVersion;
   container.innerHTML = "";
   if (modeSelect.value === "edit") {
     var editHint = document.createElement("div");
@@ -1713,49 +2268,6 @@ function renderGptImageLayerInputs() {
     renderGptEditReferenceInput(container);
     return;
   }
-  if (modeSelect.value !== "reference") return;
-
-  var records;
-  try {
-    records = getDocumentLayerRecords();
-  } catch (e) {
-    var empty = document.createElement("div");
-    empty.className = "input-note";
-    empty.textContent = e && e.message ? e.message : "无法读取图层";
-    container.appendChild(empty);
-    return;
-  }
-  if (renderVersion !== _gptLayerRenderVersion) return;
-
-  var countLabel = document.createElement("label");
-  countLabel.textContent = "参考图数量";
-  countLabel.htmlFor = "gptReferenceCount";
-  container.appendChild(countLabel);
-  var count = document.createElement("select");
-  count.id = "gptReferenceCount";
-  var one = document.createElement("option");
-  one.value = "1";
-  one.textContent = "1 个图层";
-  count.appendChild(one);
-  var two = document.createElement("option");
-  two.value = "2";
-  two.textContent = "2 个图层";
-  count.appendChild(two);
-  count.value = "1";
-  container.appendChild(count);
-
-  var layerSelects = document.createElement("div");
-  layerSelects.id = "gptReferenceLayerSelects";
-  container.appendChild(layerSelects);
-  var renderSelects = function () {
-    layerSelects.innerHTML = "";
-    _appendGptLayerSelect(layerSelects, "gptReferenceLayer1", "参考图层 1", records);
-    if (count.value === "2") {
-      _appendGptLayerSelect(layerSelects, "gptReferenceLayer2", "参考图层 2", records);
-    }
-  };
-  count.addEventListener("change", renderSelects);
-  renderSelects();
 }
 
 function selectWorkflow(wfId) {
@@ -1865,12 +2377,6 @@ function getWorkflowInputs() {
     var el = $(inp.id);
     values[inp.id] = el ? el.value : (inp.default || "");
   });
-  var refCount = $("gptReferenceCount");
-  if (refCount) values.gptReferenceCount = refCount.value;
-  var ref1 = $("gptReferenceLayer1");
-  if (ref1) values.gptReferenceLayer1 = ref1.value;
-  var ref2 = $("gptReferenceLayer2");
-  if (ref2) values.gptReferenceLayer2 = ref2.value;
   var editUseReference = $("gptEditUseReference");
   if (editUseReference) values.gptEditUseReference = editUseReference.checked;
   var editReferenceLayer = $("gptEditReferenceLayer");
@@ -1925,7 +2431,7 @@ async function onRunClick() {
   if (wf.gptImage && !runState.localValidation && typeof AbortController !== "undefined") {
     try { runState.abortController = new AbortController(); } catch (_) {}
   }
-  _activeRuns[runSlot] = runState;
+  registerActiveRun(runSlot, runState, settings);
   refreshRunButton();
 
   // 本地验证不创建队列项，也不发送任何网络请求；只在 Photoshop 内
@@ -1956,6 +2462,8 @@ async function onRunClick() {
       wfId: wf.id,
       layerName: "",
       status: "running",
+      createdAt: Date.now(),
+      durationMs: null,
       runState: runState,
       runSlot: runSlot,
       resultFile: null,
@@ -1974,11 +2482,15 @@ async function onRunClick() {
       runState.onProgress = function (pct, msg) {
         item.percent = pct;
         item.progressMsg = msg;
+        if (msg && msg !== item._lastLogProgress) {
+          addLogEntry("info", "任务「" + item.wfName + "」: " + msg, "插件");
+          item._lastLogProgress = msg;
+        }
         renderQueueProgress();
       };
     })(queueItem);
-    _workQueue.push(queueItem);
-    _selectedQueueIdx = _workQueue.length - 1;
+    _workQueue.unshift(queueItem);
+    sortWorkQueue(queueItem.id);
     renderWorkQueue();
   }
 
@@ -2006,20 +2518,7 @@ async function onRunClick() {
       }
       if (!prompt.trim() && !runState.localValidation) throw new Error("请输入关键词或编辑说明");
 
-      if (mode === "reference") {
-        var referenceIds = [inputs.gptReferenceLayer1];
-        if (inputs.gptReferenceCount === "2") referenceIds.push(inputs.gptReferenceLayer2);
-        if (!referenceIds[0] || (referenceIds.length === 2 && !referenceIds[1])) {
-          throw new Error("请选择参考图层");
-        }
-        if (referenceIds.length === 2 && referenceIds[0] === referenceIds[1]) {
-          throw new Error("两张参考图请选择不同的图层");
-        }
-        for (var ri = 0; ri < referenceIds.length; ri++) {
-          images.push(await exportLayerPNG(referenceIds[ri]));
-          throwIfGptTaskCancelled(runState);
-        }
-      } else if (mode === "edit") {
+      if (mode === "edit") {
         // Send only the active layer's selection bounding rectangle. The mask
         // is cropped to the exact same rectangle below, which keeps the model
         // input small while preserving the original document coordinates for
@@ -2074,17 +2573,27 @@ async function onRunClick() {
         selectionSnapshotChannel = runningHubMaskExport.selectionChannelName;
         revealSelection = true;
       }
-      resultBuffer = await callBridge(
-        settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
-        runState.taskId, runState.onProgress
-      );
+      if (settings.rhLocalDebug && wf.needsMask) {
+        // 蒙版调试：直接把蒙版贴回，不发任何网络请求。
+        // 不需要 revealSelection / selectionSnapshot，否则 placeImageBytesAsLayer
+        // 会对全尺寸蒙版做缩放+对齐+选区裁剪，导致位置错乱。
+        resultBuffer = base64ToBytes(maskB64).buffer;
+        revealSelection = false;
+        selectionSnapshotChannel = "";
+      } else {
+        resultBuffer = await callBridge(
+          settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
+          runState.taskId, runState.onProgress
+        );
+      }
     }
 
-    var layerName = "ComfyPS - " + wf.name;
+    var layerName = (settings.rhLocalDebug && wf.needsMask && !wf.gptImage)
+      ? "ComfyPS - 调试蒙版 - " + wf.name
+      : "ComfyPS - " + wf.name;
     if (wf.gptImage) {
       var gptModeNames = {
         generate: "文生图",
-        reference: "添加参考图",
         edit: "图像编辑"
       };
       layerName = "ComfyPSGPT - " + (runState.localValidation ? "本地验证 - " : "") + (gptModeNames[mode] || mode);
@@ -2092,6 +2601,7 @@ async function onRunClick() {
     throwIfGptTaskCancelled(runState);
 
     var saveMaskB64 = (wf.gptImage && gptMaskB64) ? gptMaskB64
+      : (settings.rhLocalDebug) ? ""
       : (!wf.gptImage && wf.needsMask && maskB64) ? maskB64 : "";
 
     var saveResult = await saveTaskResult(resultBuffer, saveMaskB64, qTaskId, psDocName);
@@ -2107,6 +2617,8 @@ async function onRunClick() {
       queueItem.placement = placement;
       queueItem.thumbUrl = saveResult.thumbUrl;
       queueItem.savedOk = saveResult.savedOk;
+      queueItem.completedAt = Date.now();
+      queueItem.durationMs = queueItem.completedAt - queueItem.createdAt;
       queueItem.runState = null;
     }
     selectionSnapshotChannel = "";
@@ -2130,7 +2642,7 @@ async function onRunClick() {
     if (typeof selectionSnapshotChannel !== "undefined" && selectionSnapshotChannel) {
       await removeSelectionSnapshotChannel(selectionSnapshotChannel);
     }
-    if (_activeRuns[runSlot] === runState) _activeRuns[runSlot] = null;
+    unregisterActiveRun(runSlot, runState);
     if (queueItem && queueItem.runState) queueItem.runState = null;
     refreshRunButton();
   }
@@ -2171,10 +2683,13 @@ function renderSettings() {
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
   if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
+  var rhLocalDebugInput = $("settingRhLocalDebug");
+  if (rhLocalDebugInput) rhLocalDebugInput.checked = s.rhLocalDebug;
   _segSelect("segBackend", s.backend);
   _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
   _segSelect("segGptImageAuth", s.gptImageAuth);
+  _segSelect("segCachePath", s.cacheMode);
 
   // 显示已保存的 API 类型标签
   _showApiTypeBadge(s.apiType);
@@ -2182,22 +2697,18 @@ function renderSettings() {
   _applyBackendVisibility();
   _applySiteLink();
   _applyGptImageAuthVisibility();
-
-  var cachePathDisplay = $("cachePathDisplay");
-  if (cachePathDisplay) {
-    cachePathDisplay.textContent = localStorage.getItem("comfyps.cacheBasePath")
-      ? "已设置（自定义路径）" : "默认（插件数据目录）";
-  }
+  _applyCachePathVisibility();
+  _refreshCachePathDisplay();
 }
 
 function _showApiTypeBadge(apiType) {
   var balanceDisplay = $("balanceDisplay");
   if (!balanceDisplay) return;
   if (!apiType) { balanceDisplay.style.display = "none"; return; }
-  var isEnt = apiType.toLowerCase().indexOf("enterprise") !== -1;
+  var supportsParallel = supportsRunningHubParallel({ apiType: apiType });
   balanceDisplay.style.display = "inline-block";
-  balanceDisplay.innerHTML = '<span class="balance-badge ' + (isEnt ? 'ok' : 'err') + '">'
-    + (isEnt ? '企业级 · 支持并发' : '消费级 · RunningHub 单任务，可与 GPT Image 并行')
+  balanceDisplay.innerHTML = '<span class="balance-badge ' + (supportsParallel ? 'ok' : 'err') + '">'
+    + (supportsParallel ? '共享/企业级 · 支持并发' : '消费级 · RunningHub 单任务，可与 GPT Image 并行')
     + '</span>';
 }
 
@@ -2217,6 +2728,19 @@ function _applyGptImageAuthVisibility() {
   var apiSettings = $("gptImageApiSettings");
   if (codexSettings) codexSettings.style.display = auth === "codex" ? "block" : "none";
   if (apiSettings) apiSettings.style.display = auth === "api-key" ? "block" : "none";
+}
+
+function _applyCachePathVisibility() {
+  var mode = _segGet("segCachePath") || "default";
+  var defaultSettings = $("defaultCachePathSettings");
+  var customSettings = $("customCachePathSettings");
+  var hasCustomPath = !!localStorage.getItem("comfyps.cacheBasePath");
+  if (defaultSettings) defaultSettings.style.display = mode === "custom" ? "none" : "block";
+  if (customSettings) customSettings.style.display = mode === "custom" ? "block" : "none";
+  var display = $("cachePathDisplay");
+  if (display && mode === "custom") {
+    if (!hasCustomPath) display.textContent = "尚未选择自定义文件夹";
+  }
 }
 
 function _applySiteLink() {
@@ -2262,13 +2786,13 @@ async function testApiKey() {
     if (balanceDisplay) {
       balanceDisplay.style.display = "block";
       if (data.ok) {
-        // 保存 API 类型: enterprise 可并发，SHARED 不行
+        // 共享/企业级密钥支持并发提交；不在插件侧限制并发数量。
         var apiType = data.api_type || "";
         saveSetting("apiType", apiType);
-        var isEnt = apiType.toLowerCase().indexOf("enterprise") !== -1;
+        var supportsParallel = supportsRunningHubParallel({ apiType: apiType });
         var html = '<span class="balance-badge ok">' + data.message + '</span>';
-        if (isEnt) {
-          html += ' <span style="font-size:10px;color:var(--accent);">(企业版 · 支持并发)</span>';
+        if (supportsParallel) {
+          html += ' <span style="font-size:10px;color:var(--accent);">(共享/企业级 · 支持并发)</span>';
         }
         balanceDisplay.innerHTML = html;
       } else {
@@ -2337,9 +2861,11 @@ function saveAllSettings() {
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
+  var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
   var backend = _segGet("segBackend") || "runninghub";
   var site = _segGet("segSite") || "ai";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
+  var cacheMode = _segGet("segCachePath") || "default";
 
   var theme = _segGet("segTheme") || "dark";
   applyTheme(theme);
@@ -2352,7 +2878,9 @@ function saveAllSettings() {
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
+  saveSetting("rhLocalDebug", rhLocalDebug ? "true" : "false");
   saveSetting("theme", theme);
+  saveSetting("cacheMode", cacheMode);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }
 
@@ -2360,16 +2888,16 @@ function saveAllSettings() {
 // 初始化
 // =========================================================================
 (function init() {
-  // ---- 页面导航 ----
-  var btnGoWorkflows = $("btnGoWorkflows");
-  var btnGoSettings = $("btnGoSettings");
-  var btnBackHome1 = $("btnBackHome1");
-  var btnBackHome2 = $("btnBackHome2");
+  // 尽早捕获 UXP 控制台输出，确保初始化和后续运行日志都能显示。
+  installLogCapture();
 
-  if (btnGoWorkflows) btnGoWorkflows.addEventListener("click", function () { navigateTo(2); });
-  if (btnGoSettings) btnGoSettings.addEventListener("click", function () { navigateTo(3); });
-  if (btnBackHome1) btnBackHome1.addEventListener("click", function () { navigateTo(1); });
-  if (btnBackHome2) btnBackHome2.addEventListener("click", function () { navigateTo(1); });
+  // ---- 全局 Top Bar 导航 ----
+  var topTabs = document.querySelectorAll(".topbar-tab");
+  for (var topTabIndex = 0; topTabIndex < topTabs.length; topTabIndex++) {
+    topTabs[topTabIndex].addEventListener("click", function (e) {
+      navigateTo(e.currentTarget.dataset.page);
+    });
+  }
 
   // ---- 运行按钮 ----
   var runBtn = $("runBtn");
@@ -2390,6 +2918,34 @@ function saveAllSettings() {
   if (queuePreviewModal) {
     queuePreviewModal.addEventListener("click", function (e) {
       if (e.target === queuePreviewModal) onQueuePreviewClose();
+    });
+  }
+
+  // ---- 日志页按钮 ----
+  var logClearBtn = $("logClearBtn");
+  if (logClearBtn) logClearBtn.addEventListener("click", clearLogPanel);
+  var logAutoScrollBtn = $("logAutoScrollBtn");
+  if (logAutoScrollBtn) {
+    logAutoScrollBtn.addEventListener("click", function () {
+      _logAutoScroll = !_logAutoScroll;
+      updateLogAutoScrollButton();
+      if (_logAutoScroll) {
+        var logList = $("logList");
+        if (logList) logList.scrollTop = logList.scrollHeight;
+      }
+    });
+  }
+  var logList = $("logList");
+  if (logList) {
+    logList.addEventListener("scroll", function () {
+      var isAtBottom = _isLogListAtBottom(logList);
+      if (_logAutoScroll && !isAtBottom) {
+        _logAutoScroll = false;
+        updateLogAutoScrollButton();
+      } else if (!_logAutoScroll && isAtBottom) {
+        _logAutoScroll = true;
+        updateLogAutoScrollButton();
+      }
     });
   }
 
@@ -2450,8 +3006,24 @@ function saveAllSettings() {
     });
   }
 
+  // ---- 设置页: 结果缓存路径 ----
+  var segCachePath = $("segCachePath");
+  if (segCachePath) {
+    segCachePath.addEventListener("click", function (e) {
+      if (e.target.tagName === "BUTTON") {
+        _segSelect("segCachePath", e.target.dataset.value);
+        _applyCachePathVisibility();
+        saveAllSettings();
+        _refreshCachePathDisplay();
+      }
+    });
+  }
+
   // ---- 加载时应用主题 ----
   applyTheme(loadSettings().theme);
+
+  // ---- 开发预览：注入任务队列演示数据，生产模式不执行 ----
+  seedDevWorkQueue();
 
   // ---- 设置页: 输入自动保存 ----
   ["settingBridgeUrl", "settingApiKey", "settingComfyuiUrl", "settingGptImageApiKey"].forEach(function (id) {
@@ -2460,6 +3032,8 @@ function saveAllSettings() {
   });
   var gptImageLocalValidation = $("settingGptImageLocalValidation");
   if (gptImageLocalValidation) gptImageLocalValidation.addEventListener("change", saveAllSettings);
+  var rhLocalDebugChk = $("settingRhLocalDebug");
+  if (rhLocalDebugChk) rhLocalDebugChk.addEventListener("change", saveAllSettings);
 
   // ---- 设置页: 测试 Key ----
   var btnTestKey = $("btnTestKey");
@@ -2475,13 +3049,15 @@ function saveAllSettings() {
   var btnClearCachePath = $("btnClearCachePath");
   if (btnClearCachePath) btnClearCachePath.addEventListener("click", function () {
     localStorage.removeItem("comfyps.cacheBasePath");
-    var d = $("cachePathDisplay");
-    if (d) d.textContent = "默认（插件数据目录）";
+    saveSetting("cacheMode", "default");
+    _segSelect("segCachePath", "default");
+    _applyCachePathVisibility();
+    _refreshCachePathDisplay();
   });
 
   // ---- 桥健康轮询 ----
   startHealthPolling();
 
-  // ---- 首页 ----
-  navigateTo(1);
+  // ---- 默认进入工作流页 ----
+  navigateTo("workflow");
 })();
