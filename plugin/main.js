@@ -156,6 +156,7 @@ var _consoleCaptureInstalled = false;
 var _logRenderedFirstId = 0;
 var _logRenderedCount = 0;
 var _bridgeLogFailureReported = false;
+var _nativeConsole = {};
 
 function _logValueToText(value) {
   if (value === null) return "null";
@@ -300,6 +301,7 @@ function installLogCapture() {
     var level = levels[i];
     var original = console[level];
     if (typeof original !== "function") continue;
+    if (typeof _nativeConsole[level] !== "function") _nativeConsole[level] = original;
     (function (capturedLevel, capturedOriginal) {
       console[capturedLevel] = function () {
         var values = [];
@@ -480,6 +482,117 @@ function setStatus(msg, kind) {
 var _currentWorkflowId = null;
 var _currentPage = "workflow";
 var _workflowPageInitialized = false;
+
+// =========================================================================
+// 浏览器 / UXP UI 诊断（开发者按需调用，不改变页面状态）
+// =========================================================================
+function _roundUiDiagnosticValue(value) {
+  var number = Number(value);
+  if (!isFinite(number)) return 0;
+  return Math.round(number * 100) / 100;
+}
+
+function _getUiDiagnosticRect(element) {
+  var rect = element.getBoundingClientRect();
+  return {
+    left: _roundUiDiagnosticValue(rect.left),
+    top: _roundUiDiagnosticValue(rect.top),
+    right: _roundUiDiagnosticValue(rect.right),
+    bottom: _roundUiDiagnosticValue(rect.bottom),
+    width: _roundUiDiagnosticValue(rect.width),
+    height: _roundUiDiagnosticValue(rect.height)
+  };
+}
+
+function _getUiDiagnosticMetrics(element) {
+  return {
+    clientWidth: element.clientWidth,
+    clientHeight: element.clientHeight,
+    offsetWidth: element.offsetWidth,
+    offsetHeight: element.offsetHeight,
+    scrollWidth: element.scrollWidth,
+    scrollHeight: element.scrollHeight,
+    scrollLeft: element.scrollLeft,
+    scrollTop: element.scrollTop
+  };
+}
+
+function _getUiDiagnosticStyles(element) {
+  var view = element.ownerDocument && element.ownerDocument.defaultView;
+  var computed = view && typeof view.getComputedStyle === "function"
+    ? view.getComputedStyle(element) : null;
+  var names = [
+    "display", "position", "box-sizing", "width", "height", "min-height",
+    "margin", "padding", "overflow", "overflow-y", "font-family",
+    "font-size", "line-height", "visibility"
+  ];
+  var styles = {};
+  for (var i = 0; i < names.length; i++) {
+    styles[names[i]] = computed ? (computed.getPropertyValue(names[i]) || "") : "";
+  }
+  return styles;
+}
+
+function _getUiDiagnosticElement(selector) {
+  var element = document.querySelector(selector);
+  if (!element) return null;
+  return {
+    rect: _getUiDiagnosticRect(element),
+    metrics: _getUiDiagnosticMetrics(element),
+    styles: _getUiDiagnosticStyles(element)
+  };
+}
+
+function _writeUiDiagnosticsToConsole(snapshot) {
+  var output = JSON.stringify(snapshot, null, 2);
+  // 使用日志捕获安装前保存的原生 console，避免污染插件的日志页。
+  if (typeof _nativeConsole.log === "function") {
+    try { _nativeConsole.log.call(console, output); } catch (_) {}
+  }
+}
+
+function dumpUiDiagnostics() {
+  var activePage = document.querySelector(".page.active");
+  var root = document.documentElement;
+  var body = document.body;
+  var snapshot = {
+    runtime: {
+      userAgent: typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "",
+      viewportWidth: window.innerWidth || 0,
+      viewportHeight: window.innerHeight || 0,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      isDevPreview: !!IS_DEV
+    },
+    document: {
+      root: root ? _getUiDiagnosticMetrics(root) : null,
+      body: body ? _getUiDiagnosticMetrics(body) : null,
+      pageXOffset: window.pageXOffset || 0,
+      pageYOffset: window.pageYOffset || 0
+    },
+    activePage: activePage ? {
+      id: activePage.id || null,
+      snapshot: {
+        rect: _getUiDiagnosticRect(activePage),
+        metrics: _getUiDiagnosticMetrics(activePage),
+        styles: _getUiDiagnosticStyles(activePage)
+      }
+    } : null,
+    elements: {
+      appShell: _getUiDiagnosticElement(".app-shell"),
+      topbar: _getUiDiagnosticElement(".app-topbar"),
+      workflowGrid: _getUiDiagnosticElement("#workflowGrid"),
+      workflowInputs: _getUiDiagnosticElement("#workflowInputs"),
+      runActions: _getUiDiagnosticElement("#runActions"),
+      queueCards: _getUiDiagnosticElement("#workQueueCards"),
+      logTerminal: _getUiDiagnosticElement(".log-terminal"),
+      logList: _getUiDiagnosticElement("#logList")
+    }
+  };
+  _writeUiDiagnosticsToConsole(snapshot);
+  return snapshot;
+}
+
+if (typeof window !== "undefined") window.dumpUiDiagnostics = dumpUiDiagnostics;
 
 function normalizePageName(page) {
   // 保留数字参数兼容性，新的页面逻辑统一使用语义化名称。
