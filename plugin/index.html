@@ -679,6 +679,16 @@
       <div class="setting-hint">不调用桥、Codex 或 OpenAI，也不会上传图片。仅在“图像编辑”中可用：裁切活动图层的选区外接矩形并按原坐标回贴，再创建图层蒙版，同时显示矩形坐标，用于快速检查本地回贴位置。</div>
     </div>
 
+    <!-- RunningHub 调试 -->
+    <div class="section-title">RunningHub 调试</div>
+    <div class="setting-row">
+      <label class="setting-checkbox">
+        <input id="settingRhLocalDebug" type="checkbox" />
+        <span>启用蒙版调试模式</span>
+      </label>
+      <div class="setting-hint">不调用桥或 RunningHub。将生成的蒙版图直接贴回为新图层，用于检查选区蒙版是否正确（白=编辑区，黑=保留区）。</div>
+    </div>
+
     <!-- 主题 -->
     <div class="section-title">外观</div>
     <div class="setting-row">

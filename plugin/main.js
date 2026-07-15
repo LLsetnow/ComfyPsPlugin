@@ -131,6 +131,7 @@ var SETTINGS_KEYS = {
   gptImageAuth: "comfyps.gptImageAuth",
   gptImageApiKey: "comfyps.gptImageApiKey",
   gptImageLocalValidation: "comfyps.gptImageLocalValidation",
+  rhLocalDebug: "comfyps.rhLocalDebug",
 };
 
 // =========================================================================
@@ -151,6 +152,7 @@ function loadSettings() {
     gptImageAuth: localStorage.getItem(SETTINGS_KEYS.gptImageAuth) || "codex",
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
     gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
+    rhLocalDebug: localStorage.getItem(SETTINGS_KEYS.rhLocalDebug) === "true",
   };
 }
 
@@ -2074,13 +2076,20 @@ async function onRunClick() {
         selectionSnapshotChannel = runningHubMaskExport.selectionChannelName;
         revealSelection = true;
       }
-      resultBuffer = await callBridge(
-        settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
-        runState.taskId, runState.onProgress
-      );
+      if (settings.rhLocalDebug && wf.needsMask) {
+        // 蒙版调试：直接把蒙版贴回，不发任何网络请求
+        resultBuffer = base64ToBytes(maskB64).buffer;
+      } else {
+        resultBuffer = await callBridge(
+          settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
+          runState.taskId, runState.onProgress
+        );
+      }
     }
 
-    var layerName = "ComfyPS - " + wf.name;
+    var layerName = (settings.rhLocalDebug && wf.needsMask && !wf.gptImage)
+      ? "ComfyPS - 调试蒙版 - " + wf.name
+      : "ComfyPS - " + wf.name;
     if (wf.gptImage) {
       var gptModeNames = {
         generate: "文生图",
@@ -2171,6 +2180,8 @@ function renderSettings() {
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
   if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
+  var rhLocalDebugInput = $("settingRhLocalDebug");
+  if (rhLocalDebugInput) rhLocalDebugInput.checked = s.rhLocalDebug;
   _segSelect("segBackend", s.backend);
   _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
@@ -2337,6 +2348,7 @@ function saveAllSettings() {
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
+  var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
   var backend = _segGet("segBackend") || "runninghub";
   var site = _segGet("segSite") || "ai";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
@@ -2352,6 +2364,7 @@ function saveAllSettings() {
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
+  saveSetting("rhLocalDebug", rhLocalDebug ? "true" : "false");
   saveSetting("theme", theme);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }
@@ -2460,6 +2473,8 @@ function saveAllSettings() {
   });
   var gptImageLocalValidation = $("settingGptImageLocalValidation");
   if (gptImageLocalValidation) gptImageLocalValidation.addEventListener("change", saveAllSettings);
+  var rhLocalDebugChk = $("settingRhLocalDebug");
+  if (rhLocalDebugChk) rhLocalDebugChk.addEventListener("change", saveAllSettings);
 
   // ---- 设置页: 测试 Key ----
   var btnTestKey = $("btnTestKey");
