@@ -856,7 +856,33 @@ def run_inpaint_blocking(
     )
     if _RUN_WORKFLOW_SUPPORTS_CANCEL and cancel_event is not None:
         rw_kwargs["cancel_event"] = cancel_event
-    result = run_workflow(**rw_kwargs)
+
+    _SSL_ERRS = ("SSL", "EOF", "ConnectionReset", "RemoteDisconnected", "BrokenPipe")
+    _MAX_RETRIES = 3
+    last_exc = None
+    for _attempt in range(_MAX_RETRIES):
+        if cancel_event and cancel_event.is_set():
+            raise RhCliError("TASK_CANCELLED", "任务已取消")
+        try:
+            result = run_workflow(**rw_kwargs)
+            break
+        except Exception as _e:
+            _emsg = str(_e)
+            if any(k in _emsg for k in _SSL_ERRS):
+                last_exc = _e
+                _wait = 2 ** _attempt  # 1s, 2s, 4s
+                if task_id:
+                    _task_progress[task_id] = {
+                        "elapsed": 0,
+                        "message": "网络错误，{}s 后重试({}/{})…".format(_wait, _attempt + 1, _MAX_RETRIES),
+                        "percent": 0,
+                    }
+                import time as _time
+                _time.sleep(_wait)
+            else:
+                raise
+    else:
+        raise RuntimeError("网络连接失败（已重试 {} 次）: {}".format(_MAX_RETRIES, last_exc))
 
     if task_id:
         _task_progress[task_id] = {"elapsed": -1, "message": "完成", "percent": 100}
