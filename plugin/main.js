@@ -2135,8 +2135,8 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
       if (revealSelection) {
         // GPT Image and RunningHub inpaint may return a different resolution,
         // so scale the result to its intended Photoshop canvas before applying
-        // the selection mask. GPT edit uses the cropped selection rectangle;
-        // RunningHub still uses the full document canvas.
+        // the selection mask. Cropped workflows provide placement; full-canvas
+        // workflows continue to target the document dimensions.
         var targetDoc = app.activeDocument;
         var targetLayer = targetDoc && targetDoc.activeLayers && targetDoc.activeLayers[0];
         var targetWidth = _asPixels(targetDoc && targetDoc.width);
@@ -2737,17 +2737,27 @@ async function onRunClick() {
         runState.localValidation
       );
     } else {
-      var imageB64 = await exportActiveDocPNG();
+      var imageB64;
       var maskB64 = "";
-      if (wf.needsMask) {
-        // RunningHub receives the same white=selected mask that is used to
-        // create the returned layer mask. Keep the selection channel snapshot
-        // until the result has been placed so the input and output masks are
-        // guaranteed to use identical document coordinates.
-        var runningHubMaskExport = await exportSelectionMaskPNG(false, true);
+      if (wf.needsMask && !settings.rhLocalDebug) {
+        // 局部编辑只上传活动图层的选区外接矩形。蒙版使用同一矩形裁切，
+        // 返图通过 placement 回贴到原文档坐标，避免上传整张画布。
+        var runningHubInput = await exportActiveLayerSelectionPNG();
+        imageB64 = runningHubInput.image;
+        var runningHubMaskExport = await exportSelectionMaskPNG(
+          false, true, runningHubInput.bounds
+        );
         maskB64 = runningHubMaskExport.mask;
         selectionSnapshotChannel = runningHubMaskExport.selectionChannelName;
+        placement = runningHubInput.bounds;
         revealSelection = true;
+      } else {
+        // 本地蒙版调试保留整画布导出，确保调试图层和原有行为不变。
+        imageB64 = await exportActiveDocPNG();
+        if (wf.needsMask) {
+          var debugMaskExport = await exportSelectionMaskPNG(false, false);
+          maskB64 = debugMaskExport.mask;
+        }
       }
       if (settings.rhLocalDebug && wf.needsMask) {
         // 蒙版调试：直接把蒙版贴回，不发任何网络请求。
