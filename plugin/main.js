@@ -1406,7 +1406,12 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
     "comfyps_result_" + Date.now() + "_" + _resultFileSequence + ".png",
     { overwrite: true }
   );
-  await file.write(arrayBuffer);
+  // UXP may treat a bare ArrayBuffer as text unless the binary format is
+  // explicit. placeEvent then reports "not a png file" even when the source
+  // buffer itself is a valid PNG. Always write the exact PNG bytes.
+  var resultBytes = arrayBuffer instanceof Uint8Array
+    ? arrayBuffer : new Uint8Array(arrayBuffer);
+  await file.write(resultBytes, { format: formats.binary });
   var token = await localFileSystem.createSessionToken(file);
   var offsetX = 0;
   var offsetY = 0;
