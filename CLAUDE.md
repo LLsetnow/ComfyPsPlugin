@@ -26,18 +26,20 @@ git checkout -b docs/xxx       # 文档
 
 ### Staying in Sync
 
-Push 或开 PR 前，rebase 到最新的 main：
+**提交 PR/MR 前必须先 rebase 到最新的 `main`，并确认 rebase 过程没有冲突后，才能提交 PR/MR。**
 
 ```bash
 git fetch origin
 git rebase origin/main
 ```
 
+如发生冲突，必须先解决冲突并完成 rebase；未完成或仍有冲突时不得提交 PR/MR。
+
 ### Pull Requests
 
 - Target branch: `main`
 - **使用 merge commit，禁止 squash merge**
-- Push 前 rebase 到最新 main 避免冲突
+- 提交 PR/MR 前先 `git rebase origin/main`，确认无冲突后再 push 和提交
 
 ### Why No Squash Merge
 
