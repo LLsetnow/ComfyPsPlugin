@@ -27,6 +27,7 @@
   class MockFolder {
     constructor(path) {
       this._path = path;
+      this.nativePath = path;
     }
     async createFile(name, opts) {
       const fullPath = this._path + "/" + name;
@@ -38,6 +39,18 @@
   const localFileSystem = {
     async getDataFolder() {
       return new MockFolder("/mock-data/comfyps");
+    },
+    async getFolder() {
+      return new MockFolder("/mock-custom/comfyps-results");
+    },
+    createPersistentToken(folder) {
+      return folder.nativePath;
+    },
+    async getEntryForPersistentToken(token) {
+      return new MockFolder(token);
+    },
+    getNativePath(entry) {
+      return entry.nativePath;
     },
     async createSessionToken(file) {
       return file.nativePath;
