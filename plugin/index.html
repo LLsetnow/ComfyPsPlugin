@@ -57,8 +57,13 @@
       height: 100%;
       overflow-y: auto;
     }
-    /* 保留全局页面滚动，但不显示面板右侧的原生滚动条。 */
-    body::-webkit-scrollbar { width: 0; height: 0; }
+    /* 保留滚动能力，但不显示任何浏览器 / UXP 原生滚动条。 */
+    html, body, * { scrollbar-width: none; -ms-overflow-style: none; }
+    html::-webkit-scrollbar,
+    body::-webkit-scrollbar,
+    *::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    *::-webkit-scrollbar-track,
+    *::-webkit-scrollbar-thumb { display: none; background: transparent; }
     .app-shell { min-height: 100%; }
 
     /* ---- Pages ---- */
@@ -76,27 +81,21 @@
     /* ---- Global top bar ---- */
     .topbar {
       display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 10px;
-      padding: 0 0 8px;
-    }
-    .topbar-nav {
-      display: flex;
       align-items: stretch;
-      flex: 1 1 0;
-      min-width: 0;
       gap: 0;
+      margin-bottom: 10px;
+      padding: 0;
       border: 1px solid var(--border);
       border-radius: var(--radius);
+      background: var(--bg-card);
       overflow: hidden;
     }
     .topbar-tab {
       flex: 1 1 0;
       min-width: 0;
-      min-height: 30px;
+      min-height: 36px;
       padding: 5px 8px;
-      background: var(--bg-card);
+      background: transparent;
       color: var(--text-dim);
       border: none;
       border-right: 1px solid var(--border);
@@ -106,8 +105,11 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .topbar-nav .topbar-tab:last-child { border-right: none; }
+    .topbar-tab:last-child { border-right: none; }
     .topbar-tab:hover { color: var(--text); background: var(--bg-card-alt); }
     .topbar-tab.active {
       color: #fff;
@@ -115,22 +117,12 @@
       font-weight: 600;
     }
     .topbar-tab-label-narrow { display: none; }
-    .topbar-utils {
-      display: flex;
-      flex: 0 0 auto;
-      align-items: center;
-      gap: 5px;
-    }
     .topbar-utility {
-      flex: 0 0 30px;
-      width: 30px;
+      flex: 0 0 38px;
+      width: 38px;
       padding: 0;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      text-align: center;
-      overflow: visible;
+      border-radius: 0;
     }
-    .topbar-utility.active { border-color: var(--accent); }
     .topbar-utility-icon { font-size: 14px; line-height: 1; }
     .topbar-utility-label { display: none; }
     .queue-tab-badge {
@@ -752,11 +744,11 @@
     .btn-danger:not(:disabled):hover { background: var(--danger, #e05); color: #fff; }
 
     @media (max-width: 330px) {
-      .topbar { gap: 4px; }
+      .topbar { gap: 0; }
       .topbar-tab { padding: 5px 4px; font-size: 10px; }
       .topbar-tab-label-wide { display: none; }
       .topbar-tab-label-narrow { display: inline; }
-      .topbar-utility { flex-basis: 28px; width: 28px; }
+      .topbar-utility { flex-basis: 30px; width: 30px; }
       .queue-card { gap: 24px; padding: 9px; }
       .queue-thumb,
       .queue-thumb-running { flex-basis: 64px; width: 64px; height: 64px; }
@@ -799,24 +791,20 @@
 <body>
 
   <div class="app-shell">
-    <!-- 全局顶部导航：主任务页 + 始终可用的日志/设置入口 -->
-    <div class="topbar app-topbar">
-      <div class="topbar-nav" role="navigation" aria-label="主导航">
-        <button class="topbar-tab active" data-page="workflow">
-          <span class="topbar-tab-label-wide">工作流</span><span class="topbar-tab-label-narrow">工作</span>
-        </button>
-        <button class="topbar-tab" data-page="queue">
-          <span class="topbar-tab-label-wide">任务队列</span><span class="topbar-tab-label-narrow">队列</span><span id="queueTabBadge" class="queue-tab-badge"></span>
-        </button>
-      </div>
-      <div class="topbar-utils" role="navigation" aria-label="辅助导航">
-        <button class="topbar-tab topbar-utility" data-page="logs" title="日志" aria-label="日志">
-          <span class="topbar-utility-icon" aria-hidden="true">▤</span><span class="topbar-utility-label">日志</span>
-        </button>
-        <button class="topbar-tab topbar-utility" data-page="settings" title="设置" aria-label="设置">
-          <span class="topbar-utility-icon" aria-hidden="true">⚙</span><span class="topbar-utility-label">设置</span>
-        </button>
-      </div>
+    <!-- 全局顶部导航：四个入口共享同一个连续容器 -->
+    <div class="topbar app-topbar" role="navigation" aria-label="全局导航">
+      <button class="topbar-tab active" data-page="workflow">
+        <span class="topbar-tab-label-wide">工作流</span><span class="topbar-tab-label-narrow">工作</span>
+      </button>
+      <button class="topbar-tab" data-page="queue">
+        <span class="topbar-tab-label-wide">任务队列</span><span class="topbar-tab-label-narrow">队列</span><span id="queueTabBadge" class="queue-tab-badge"></span>
+      </button>
+      <button class="topbar-tab topbar-utility" data-page="logs" title="日志" aria-label="日志">
+        <span class="topbar-utility-icon" aria-hidden="true">▤</span><span class="topbar-utility-label">日志</span>
+      </button>
+      <button class="topbar-tab topbar-utility" data-page="settings" title="设置" aria-label="设置">
+        <span class="topbar-utility-icon" aria-hidden="true">⚙</span><span class="topbar-utility-label">设置</span>
+      </button>
     </div>
 
     <!-- 跨页面共用的状态提示：运行、导入、重启桥等消息统一显示在这里 -->
@@ -883,7 +871,7 @@
       <div class="setting-hint log-help">实时显示插件与本地桥的当前会话日志，不会保存到磁盘。</div>
       <div class="log-terminal">
         <div class="log-terminal-head">
-          <span class="log-terminal-dot"></span><span>当前会话终端</span><span class="log-terminal-hint">拖动右侧滑条查看历史</span>
+          <span class="log-terminal-dot"></span><span>当前会话终端</span><span class="log-terminal-hint">滚动查看历史</span>
         </div>
         <div id="logList" class="log-list">
           <div class="log-empty">暂无日志</div>
