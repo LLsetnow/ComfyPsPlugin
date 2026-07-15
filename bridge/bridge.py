@@ -814,6 +814,7 @@ def run_inpaint_blocking(
     workflow_file: str | None = None,
     extra_set_args: list[str] | None = None,
     image_node_id: str | None = None,
+    mask_node_id: str | None = None,
     task_id: str | None = None,
     cancel_event: threading.Event | None = None,
 ) -> bytes:
@@ -826,13 +827,14 @@ def run_inpaint_blocking(
     else:
         wf_file = cfg["workflowFile"]
     set_args = []
+    mask_node = str(mask_node_id or cfg["maskNodeId"])
 
     # 蒙版上传 (仅需要蒙版的工作流)
     if needs_mask and mask_path:
         mask_file_name = upload_mask(mask_path, api_key=api_key, site=site)
-        set_args.append(f"{cfg['maskNodeId']}:{cfg['maskField']}={mask_file_name}")
+        set_args.append(f"{mask_node}:{cfg['maskField']}={mask_file_name}")
         if cfg.get("maskChannel"):
-            set_args.append(f"{cfg['maskNodeId']}:channel={cfg['maskChannel']}")
+            set_args.append(f"{mask_node}:channel={cfg['maskChannel']}")
 
     # 提示词注入
     if prompt and prompt.strip():
@@ -1496,6 +1498,7 @@ async def handle_run(request):
     workflow_file = body.get("workflowFile") or None
     extra_set_args = body.get("extraSetArgs") or []
     image_node_id = body.get("imageNodeId") or None
+    mask_node_id = body.get("maskNodeId") or None
 
     task_id = body.get("taskId") or str(uuid.uuid4())[:8]
 
@@ -1541,7 +1544,7 @@ async def handle_run(request):
                     lambda: run_inpaint_blocking(
                         img_path, mask_path if needs_mask else None, out_dir,
                         prompt, api_key, site, needs_mask, workflow_id, workflow_file,
-                        extra_set_args, image_node_id, task_id, cancel_event,
+                        extra_set_args, image_node_id, mask_node_id, task_id, cancel_event,
                     ),
                 )
             finally:
