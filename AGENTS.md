@@ -2,6 +2,24 @@
 
 Photoshop (UXP) 插件，通过本地 Python 桥将图层/选区发送到 RunningHub 或本地 ComfyUI 执行 AI 工作流，结果贴回新图层。
 
+## 会话开始流程（CRITICAL）
+
+**每次新建会话，必须先执行以下步骤，然后再做任何改动：**
+
+```bash
+# 1. 切换到 main 并拉取最新代码
+git checkout main && git pull origin main
+
+# 2. 新建 worktree（在 .claude/worktrees/ 下，分支命名按任务类型）
+git worktree add .claude/worktrees/feat-xxx feat/xxx
+# 或
+git worktree add .claude/worktrees/fix-xxx fix/xxx
+```
+
+不要在 main 分支上直接修改，不要跳过 worktree 步骤。
+
+---
+
 ## Git Workflow
 
 ### CRITICAL: Never commit directly to `main`
