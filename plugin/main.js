@@ -701,6 +701,9 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
 
         if (typeof doc.duplicate === "function") {
           duplicateDoc = await doc.duplicate("ComfyPS Mask Input");
+          // DOM duplicate does not automatically make the new doc the batchPlay
+          // active document — set it explicitly so fill/save target the copy.
+          try { app.activeDocument = duplicateDoc; } catch (_) {}
           // Document.duplicate normally copies custom channels. Explicitly
           // duplicate it as well when the DOM channel API is available.
           if (sourceChannel && typeof sourceChannel.duplicate === "function") {
