@@ -21,6 +21,7 @@
       --border: #343a44;
       --border-strong: #48515d;
       --radius: 6px;
+      --scrollbar-clip: 40px;
       --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     body.light {
@@ -55,16 +56,23 @@
       user-select: none;
       -webkit-user-select: none;
       height: 100%;
-      overflow-y: auto;
+      overflow: hidden;
     }
     /* 保留滚动能力，但不显示任何浏览器 / UXP 原生滚动条。 */
     html, body, * { scrollbar-width: none; -ms-overflow-style: none; }
     html::-webkit-scrollbar,
     body::-webkit-scrollbar,
-    *::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
     *::-webkit-scrollbar-track,
-    *::-webkit-scrollbar-thumb { display: none; background: transparent; }
-    .app-shell { min-height: 100%; }
+    *::-webkit-scrollbar-thumb { display: none !important; background: transparent !important; }
+    /* UXP 可能忽略 scrollbar 伪元素；把轨道推到 body 裁切区以外作为兜底。 */
+    .app-shell {
+      width: calc(100% + var(--scrollbar-clip));
+      height: 100%;
+      min-height: 100%;
+      padding-right: var(--scrollbar-clip);
+      overflow-y: scroll;
+    }
 
     /* ---- Pages ---- */
     .page {
@@ -85,10 +93,10 @@
       gap: 0;
       margin-bottom: 10px;
       padding: 0;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      background: var(--bg-card);
-      overflow: hidden;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      overflow: visible;
     }
     .topbar-tab {
       flex: 1 1 0;
@@ -98,7 +106,6 @@
       background: transparent;
       color: var(--text-dim);
       border: none;
-      border-right: 1px solid var(--border);
       font-family: var(--font);
       font-size: 11px;
       cursor: pointer;
@@ -109,19 +116,18 @@
       align-items: center;
       justify-content: center;
     }
-    .topbar-tab:last-child { border-right: none; }
-    .topbar-tab:hover { color: var(--text); background: var(--bg-card-alt); }
+    .topbar-tab:hover { color: var(--accent-hover); background: transparent; }
     .topbar-tab.active {
-      color: #fff;
-      background: var(--accent);
+      color: var(--accent);
+      background: transparent;
       font-weight: 600;
+      box-shadow: inset 0 -3px 0 var(--accent);
     }
     .topbar-tab-label-narrow { display: none; }
     .topbar-utility {
       flex: 0 0 38px;
       width: 38px;
       padding: 0;
-      border-radius: 0;
     }
     .topbar-utility-icon { font-size: 14px; line-height: 1; }
     .topbar-utility-label { display: none; }
@@ -137,7 +143,7 @@
       line-height: 12px;
       text-align: center;
     }
-    .topbar-tab.active .queue-tab-badge { background: rgba(255,255,255,0.24); }
+    .topbar-tab.active .queue-tab-badge { background: var(--accent); }
     .page-heading {
       display: flex;
       align-items: center;
@@ -199,8 +205,9 @@
     .log-list {
       flex: 1;
       min-height: 0;
-      overflow-y: auto;
-      padding: 8px 10px;
+      width: calc(100% + var(--scrollbar-clip));
+      overflow-y: scroll;
+      padding: 8px calc(10px + var(--scrollbar-clip)) 8px 10px;
       background: transparent;
       border: none;
       border-radius: 0;
