@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ComfyPS · RunningHub 凭据方案参考</title>
+  <style>
+    :root {
+      --bg: #17191d;
+      --card: #22262d;
+      --card-alt: #282e36;
+      --input: #15181d;
+      --text: #f1f3f5;
+      --dim: #9299a5;
+      --accent: #4a9eff;
+      --accent-glow: rgba(74, 158, 255, .18);
+      --success: #5cdb5c;
+      --danger: #ff6b6b;
+      --warning: #f0ad4e;
+      --border: #343a44;
+      --strong-border: #48515d;
+      --radius: 6px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 28px 16px;
+      color: var(--text);
+      background: #0e1013;
+      font-family: var(--font);
+      font-size: 12px;
+    }
+
+    .reference-wrap { max-width: 980px; margin: 0 auto; }
+    .reference-heading { margin: 0 0 8px; font-size: 18px; letter-spacing: -.2px; }
+    .reference-note { max-width: 650px; margin: 0 0 20px; color: var(--dim); line-height: 1.55; }
+    .reference-note strong { color: var(--text); font-weight: 600; }
+
+    .panel-shell {
+      width: min(100%, 396px);
+      margin: 0 auto;
+      padding: 10px;
+      overflow: hidden;
+      border: 1px solid #2d333d;
+      border-radius: 12px;
+      background: var(--bg);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, .42);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 32px;
+      margin: 0 0 10px;
+      padding: 0 3px 7px;
+      border-bottom: 1px solid var(--border);
+    }
+    .product-name { color: var(--dim); font-size: 11px; }
+    .page-name { color: var(--accent); font-size: 12px; font-weight: 700; }
+    .connection-dot { display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px rgba(92, 219, 92, .12); }
+    .connection { color: var(--dim); font-size: 10px; }
+
+    .settings-card {
+      margin-bottom: 8px;
+      padding: 11px 10px 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--card);
+    }
+    .settings-card:last-child { margin-bottom: 0; }
+    .section-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+    .section-title { color: var(--text); font-size: 12px; font-weight: 700; }
+    .section-subtitle { color: var(--dim); font-size: 10px; line-height: 1.45; }
+
+    .layout-switcher { display: flex; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--input); }
+    .layout-switcher button,
+    .small-button,
+    .profile-action {
+      border: 0;
+      color: var(--dim);
+      background: transparent;
+      font-family: var(--font);
+      cursor: pointer;
+    }
+    .layout-switcher button { min-height: 28px; padding: 4px 8px; border-right: 1px solid var(--border); font-size: 10px; }
+    .layout-switcher button:last-child { border-right: 0; }
+    .layout-switcher button.active { color: #fff; background: var(--accent); font-weight: 700; }
+    .small-button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; font-size: 10px; }
+    .small-button:hover { border-color: var(--accent); color: var(--accent); }
+
+    .profile-list { display: flex; flex-direction: column; gap: 6px; }
+    .profile-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .profile-grid .profile { width: calc(50% - 3px); }
+    .site-groups { display: flex; flex-direction: column; gap: 9px; }
+    .site-group-label { display: flex; align-items: center; gap: 6px; margin: 1px 1px 0; color: var(--dim); font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; }
+    .site-marker { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+    .site-marker.cn { background: var(--warning); }
+
+    .profile {
+      position: relative;
+      min-height: 76px;
+      padding: 9px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--input);
+      cursor: pointer;
+      transition: border-color .16s ease, background .16s ease, transform .16s ease;
+    }
+    .profile:hover { border-color: var(--strong-border); background: var(--card-alt); }
+    .profile:focus { outline: none; border-color: var(--accent); }
+    .profile.active { border-color: var(--accent); background: linear-gradient(135deg, var(--accent-glow), rgba(74, 158, 255, .04)); box-shadow: 0 0 0 1px var(--accent); }
+    .profile.empty { display: flex; align-items: center; justify-content: center; min-height: 56px; border-style: dashed; color: var(--dim); }
+    .profile.empty:hover { color: var(--accent); }
+    .profile.empty strong { margin-right: 4px; font-size: 15px; font-weight: 400; line-height: 1; }
+
+    .profile-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .profile-name { min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .site-chip,
+    .active-chip,
+    .state-chip,
+    .parallel-chip { display: inline-block; flex: 0 0 auto; padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 700; line-height: 1.2; }
+    .site-chip.ai { color: #b9d9ff; background: rgba(74, 158, 255, .16); }
+    .site-chip.cn { color: #ffd699; background: rgba(240, 173, 78, .15); }
+    .active-chip { color: #d6eaff; background: rgba(74, 158, 255, .2); }
+    .state-chip { color: var(--success); background: rgba(92, 219, 92, .12); }
+    .parallel-chip.yes { color: var(--success); background: rgba(92, 219, 92, .12); }
+    .parallel-chip.no { color: #ffd699; background: rgba(240, 173, 78, .15); }
+    .profile-key { margin: 4px 0 7px; color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; letter-spacing: .25px; }
+    .profile-balance { display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
+    .coin-value { color: var(--text); font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .money-value { overflow: hidden; color: var(--dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .profile-actions { position: absolute; right: 7px; bottom: 6px; display: flex; gap: 3px; opacity: 0; transition: opacity .16s ease; }
+    .profile:hover .profile-actions, .profile.active .profile-actions { opacity: 1; }
+    .profile-action { padding: 2px 4px; border-radius: 3px; font-size: 9px; }
+    .profile-action:hover { color: var(--accent); background: rgba(74, 158, 255, .12); }
+
+    .current-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; }
+    .current-copy { min-width: 0; color: var(--dim); font-size: 10px; line-height: 1.4; }
+    .current-copy strong { color: var(--text); font-size: 11px; }
+    .current-status { flex: 0 0 auto; font-size: 10px; font-weight: 700; white-space: nowrap; }
+    .current-status.parallel { color: var(--success); }
+    .current-status.serial { color: var(--warning); }
+
+    .toast { position: fixed; left: 50%; bottom: 18px; z-index: 10; max-width: calc(100vw - 32px); padding: 8px 10px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 5px; color: var(--text); background: var(--card); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); font-size: 11px; opacity: 0; pointer-events: none; transform: translate(-50%, 10px); transition: opacity .18s ease, transform .18s ease; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    .selection-hint { margin: 14px auto 0; color: var(--dim); font-size: 11px; line-height: 1.5; text-align: center; }
+    .selection-hint strong { color: var(--accent); }
+    @media (max-width: 520px) { body { padding: 16px 10px; } .reference-heading { font-size: 16px; } }
+  </style>
+</head>
+<body>
+  <main class="reference-wrap">
+    <h1 class="reference-heading">RunningHub 凭据管理 · 交互参考</h1>
+    <p class="reference-note">这是无真实凭据的交互稿。请切换上方三种布局，并点击任意卡片观察即时激活反馈；最终功能会固定每个 Key 的 <strong>ai/cn</strong> 站点，并可保存任意数量的凭据。</p>
+
+    <section class="panel-shell" aria-label="ComfyPS 设置面板参考">
+      <div class="topbar">
+        <span class="product-name">ComfyPS</span>
+        <span class="page-name">设置</span>
+        <span class="connection"><i class="connection-dot"></i>桥已连接</span>
+      </div>
+
+      <section class="settings-card">
+        <div class="section-top">
+          <div>
+            <div class="section-title">RunningHub 凭据</div>
+            <div class="section-subtitle">点击卡片即切换后续任务使用的站点、Key 与余额；凭据数量不限。</div>
+          </div>
+          <button class="small-button" id="refreshButton" type="button">刷新余额</button>
+        </div>
+        <div class="layout-switcher" role="tablist" aria-label="布局方案">
+          <button data-layout="list" type="button">方案 A · 列表</button>
+          <button data-layout="grid" type="button">方案 B · 网格</button>
+          <button class="active" data-layout="grouped" type="button">方案 C · 分组</button>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <div class="profile-list" id="profiles"></div>
+        <div class="current-summary">
+          <div class="current-copy">当前使用：<strong id="currentProfile">AI 主账户 · ai</strong><br><span id="currentKey">rh-ai-••••9A2K</span></div>
+          <span class="current-status parallel" id="currentStatus">支持并发</span>
+        </div>
+      </section>
+    </section>
+
+    <p class="selection-hint">请告诉我你选择 <strong>方案 A</strong>、<strong>方案 B</strong> 或 <strong>方案 C</strong>；也可以说明要混合哪些细节。</p>
+  </main>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (function () {
+      var profiles = [
+        { id: "ai-main", name: "AI 主账户", site: "ai", key: "rh-ai-••••9A2K", coins: "628 RH币", money: "余额 $3.42", parallel: true, active: true },
+        { id: "cn-design", name: "CN 设计账户", site: "cn", key: "rh-cn-••••8F6M", coins: "2,180 RH币", money: "余额 ¥0.00", parallel: false, active: false },
+        { id: "ai-team", name: "AI 团队账户", site: "ai", key: "rh-ai-••••K8W1", coins: "94 RH币", money: "余额 $0.86", parallel: true, active: false }
+      ];
+      var layout = "grouped";
+      var profilesNode = document.getElementById("profiles");
+      var currentProfile = document.getElementById("currentProfile");
+      var currentKey = document.getElementById("currentKey");
+      var currentStatus = document.getElementById("currentStatus");
+      var toast = document.getElementById("toast");
+      var toastTimer = 0;
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.className = "toast show";
+        if (toastTimer) window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(function () { toast.className = "toast"; }, 1800);
+      }
+
+      function profileMarkup(profile) {
+        var active = profile.active ? " active" : "";
+        var activeChip = profile.active ? '<span class="active-chip">当前使用</span>' : '<span class="state-chip">可用</span>';
+        var parallelChip = profile.parallel ? '<span class="parallel-chip yes">支持并发</span>' : '<span class="parallel-chip no">单任务</span>';
+        return '<article class="profile' + active + '" tabindex="0" data-id="' + profile.id + '">'
+          + '<div class="profile-top"><span class="profile-name">' + profile.name + '</span><span><span class="site-chip ' + profile.site + '">' + profile.site + '</span> ' + activeChip + '</span></div>'
+          + '<div class="profile-key">' + profile.key + '</div>'
+          + '<div class="profile-balance"><span class="coin-value">' + profile.coins + '</span><span class="money-value">' + profile.money + '</span> ' + parallelChip + '</div>'
+          + '<div class="profile-actions"><button class="profile-action" type="button">编辑</button><button class="profile-action" type="button">移除</button></div>'
+          + '</article>';
+      }
+
+      function emptyMarkup() {
+        return '<button class="profile empty" type="button"><strong>+</strong> 添加凭据</button>';
+      }
+
+      function renderProfiles() {
+        var html = "";
+        if (layout === "grouped") {
+          html += '<div class="site-groups">';
+          html += '<div class="site-group-label"><i class="site-marker"></i>ai 站点</div>';
+          for (var a = 0; a < profiles.length; a++) if (profiles[a].site === "ai") html += profileMarkup(profiles[a]);
+          html += '<div class="site-group-label"><i class="site-marker cn"></i>cn 站点</div>';
+          for (var c = 0; c < profiles.length; c++) if (profiles[c].site === "cn") html += profileMarkup(profiles[c]);
+          html += emptyMarkup();
+          html += '</div>';
+          profilesNode.className = "profile-list";
+        } else {
+          profilesNode.className = layout === "grid" ? "profile-grid" : "profile-list";
+          for (var i = 0; i < profiles.length; i++) html += profileMarkup(profiles[i]);
+          html += emptyMarkup();
+        }
+        profilesNode.innerHTML = html;
+
+        var cards = profilesNode.querySelectorAll(".profile[data-id]");
+        for (var j = 0; j < cards.length; j++) {
+          cards[j].addEventListener("click", function (event) {
+            if (event.target && event.target.className === "profile-action") return;
+            activateProfile(this.getAttribute("data-id"));
+          });
+          cards[j].addEventListener("keydown", function (event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              activateProfile(this.getAttribute("data-id"));
+            }
+          });
+        }
+        var empty = profilesNode.querySelector(".profile.empty");
+        if (empty) empty.addEventListener("click", function () { showToast("这里会打开新增凭据表单"); });
+      }
+
+      function activateProfile(id) {
+        for (var i = 0; i < profiles.length; i++) profiles[i].active = profiles[i].id === id;
+        var selected = null;
+        for (var j = 0; j < profiles.length; j++) if (profiles[j].active) selected = profiles[j];
+        if (!selected) return;
+        currentProfile.textContent = selected.name + " · " + selected.site;
+        currentKey.textContent = selected.key;
+        currentStatus.textContent = selected.parallel ? "支持并发" : "单任务";
+        currentStatus.className = "current-status " + (selected.parallel ? "parallel" : "serial");
+        renderProfiles();
+        showToast("已切换到「" + selected.name + "」；后续任务将使用 " + selected.site + " 站点");
+      }
+
+      var switches = document.querySelectorAll("[data-layout]");
+      for (var k = 0; k < switches.length; k++) {
+        switches[k].addEventListener("click", function () {
+          layout = this.getAttribute("data-layout");
+          for (var n = 0; n < switches.length; n++) switches[n].className = "";
+          this.className = "active";
+          renderProfiles();
+        });
+      }
+
+      document.getElementById("refreshButton").addEventListener("click", function () {
+        showToast("演示：正在刷新 3 个已保存凭据的余额…");
+      });
+      renderProfiles();
+    })();
+  </script>
+</body>
+</html>
