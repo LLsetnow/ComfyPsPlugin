@@ -564,6 +564,51 @@ async def handle_gpt_image_status(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "message": "OpenAI GPT Image API Key 可用（开发模拟）"})
 
 
+_mock_aigate_instances = [
+    {
+        "instanceId": "mock-running",
+        "instanceName": "Boogu ComfyUI（开发模拟）",
+        "operationStatus": "2",
+        "hasComfyui": True,
+    },
+    {
+        "instanceId": "mock-stopped",
+        "instanceName": "已关闭实例（开发模拟）",
+        "operationStatus": "7",
+        "hasComfyui": False,
+    },
+]
+
+
+async def handle_aigate_instances(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("aigateToken") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    return web.json_response({"ok": True, "instances": _mock_aigate_instances})
+
+
+async def handle_aigate_instance_action(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("aigateToken") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    instance_id = str(body.get("instanceId") or "")
+    action = str(body.get("action") or "").lower()
+    if action not in ("open", "close"):
+        return web.json_response({"ok": False, "message": "云扉实例操作无效"}, status=400)
+    for instance in _mock_aigate_instances:
+        if instance["instanceId"] == instance_id:
+            instance["operationStatus"] = "2" if action == "open" else "7"
+            dev_log("  [mock 云扉] 实例=" + instance_id + " action=" + action)
+            return web.json_response({"ok": True, "instanceId": instance_id, "action": action})
+    return web.json_response({"ok": False, "message": "未找到云扉实例"}, status=404)
+
+
 async def handle_run(request: web.Request) -> web.Response:
     """Mock bridge /run 端点 — 模拟延迟后返回 demo 图。"""
     try:
@@ -580,11 +625,16 @@ async def handle_run(request: web.Request) -> web.Response:
     site = body.get("site", "")
     api_key = body.get("apiKey", "")
     comfyui_url = body.get("comfyuiUrl", "")
+    aigate_token = body.get("aigateToken", "")
     extra_set_args = body.get("extraSetArgs") or []
 
     if not image_b64 or not mask_b64:
         return web.json_response(
             {"error": "MISSING", "message": "缺少 image 或 mask 字段"}, status=400
+        )
+    if str(backend).lower() == "aigate" and not str(aigate_token).strip():
+        return web.json_response(
+            {"error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"}, status=400
         )
 
     # 记录请求信息
@@ -664,6 +714,8 @@ def main():
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_post("/test-comfyui", handle_test_comfyui)
+    app.router.add_post("/aigate/instances", handle_aigate_instances)
+    app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)

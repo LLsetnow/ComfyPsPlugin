@@ -17,11 +17,11 @@ jobs:
       - name: 安装桥测试依赖
         run: python -m pip install -r bridge/requirements.txt
       - name: 语法检查 bridge.py
-        run: python -m py_compile bridge/bridge.py
+        run: python -m py_compile bridge/bridge.py bridge/aigate_native.py
       - name: 语法检查 dev_server.py
         run: python -m py_compile dev/dev_server.py
-      - name: 运行 ComfyUI 连通性测试
-        run: python -m unittest bridge.test_comfyui_connectivity dev.test_comfyui_connectivity -v
+      - name: 运行桥接测试
+        run: python -m unittest bridge.test_comfyui_connectivity dev.test_comfyui_connectivity bridge.test_aigate_native bridge.test_aigate_bridge dev.test_aigate_native -v
 
   workflow-json-validate:
     runs-on: ubuntu-latest
@@ -66,5 +66,5 @@ jobs:
             exit 1
           fi
           echo "✓ 通过"
-      - name: RunningHub 凭据逻辑测试
-        run: node --test plugin/test_rh_credentials.js
+      - name: 运行 UXP 逻辑测试
+        run: node --test plugin/test_rh_credentials.js plugin/test_aigate_native.js

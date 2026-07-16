@@ -1014,6 +1014,7 @@
             <div class="segmented" id="segBackend">
               <button data-value="runninghub" class="active">RunningHub</button>
               <button data-value="comfyui">本地 ComfyUI</button>
+              <button data-value="aigate">云扉 ComfyUI</button>
             </div>
           </div>
 
@@ -1064,6 +1065,21 @@
                 <button id="btnTestComfyui" class="btn-sm" type="button">测试连接</button>
               </div>
               <div id="comfyuiConnectionStatus" class="setting-hint" style="display:none;"></div>
+            </div>
+          </div>
+
+          <div id="aigateSettings" style="display:none;">
+            <div class="setting-row">
+              <div class="setting-label">云扉 Bearer Token</div>
+              <div class="input-row">
+                <input id="settingAigateToken" type="password" placeholder="粘贴云扉 Access Token" />
+                <button id="btnRefreshAigateInstances" class="btn-sm">刷新实例</button>
+              </div>
+              <div class="setting-hint">仅用于读取、启动和关闭云扉实例；原生 ComfyUI 工作流请求不会携带该凭证。</div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-label">云扉实例</div>
+              <div id="aigateInstanceList" class="setting-hint">输入 Token 后刷新实例列表</div>
             </div>
           </div>
         </div>

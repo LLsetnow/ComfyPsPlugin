@@ -162,6 +162,7 @@ var SETTINGS_KEYS = {
   rhCredentials: "comfyps.rhCredentials",
   activeRhCredentialId: "comfyps.activeRhCredentialId",
   comfyuiUrl: "comfyps.comfyuiUrl",
+  aigateToken: "comfyps.aigateToken",
   theme: "comfyps.theme",
   apiType: "comfyps.apiType",
   gptImageAuth: "comfyps.gptImageAuth",
@@ -526,6 +527,7 @@ function loadSettings() {
     rhCredential: activeRhCredential,
     rhCredentialId: activeRhCredential ? activeRhCredential.id : "",
     comfyuiUrl: localStorage.getItem(SETTINGS_KEYS.comfyuiUrl) || "http://127.0.0.1:8188",
+    aigateToken: localStorage.getItem(SETTINGS_KEYS.aigateToken) || "",
     theme: localStorage.getItem(SETTINGS_KEYS.theme) || "dark",
     apiType: activeRhCredential ? activeRhCredential.apiType : "",
     gptImageAuth: localStorage.getItem(SETTINGS_KEYS.gptImageAuth) || "codex",
@@ -1856,7 +1858,7 @@ function getInpaintResolution(value) {
   return resolution;
 }
 
-function getWorkflowRunConfig(workflow, inputs) {
+function getWorkflowRunConfig(workflow, inputs, backend) {
   var runConfig = {
     workflowId: workflow.workflowId,
     workflowFile: workflow.workflowFile || "",
@@ -1866,7 +1868,8 @@ function getWorkflowRunConfig(workflow, inputs) {
     inpaintVariant: "",
   };
   if (workflow.id === "inpaint" && workflow.inpaintVariants) {
-    var variantId = inputs && inputs.wfInpaintVariant === "boogu" ? "boogu" : "qwen";
+    var variantId = backend === "aigate" || (inputs && inputs.wfInpaintVariant === "boogu")
+      ? "boogu" : "qwen";
     var variant = workflow.inpaintVariants[variantId] || workflow.inpaintVariants.qwen;
     runConfig.workflowId = variant.workflowId;
     runConfig.workflowFile = variant.workflowFile;
@@ -1878,10 +1881,17 @@ function getWorkflowRunConfig(workflow, inputs) {
   return runConfig;
 }
 
+function isWorkflowAvailableForBackend(workflow, backend) {
+  if (!workflow || workflow.active === false) return false;
+  if (backend !== "aigate") return true;
+  if (workflow.gptImage) return true;
+  return workflow.id === "inpaint";
+}
+
 async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, taskId, onProgress) {
   var pollTimer = 0;
   var url = bridgeUrl.replace(/\/+$/, "") + "/run";
-  var runConfig = getWorkflowRunConfig(workflow, inputs);
+  var runConfig = getWorkflowRunConfig(workflow, inputs, settings.backend);
   var body = {
     image: imageB64,
     prompt: prompt || "",
@@ -1897,10 +1907,12 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
     body.mask = maskB64;
   }
   // 工作流自定义参数注入 (如 denoise 等)
-  if (typeof workflow.setArgs === "function") {
+  if (settings.backend !== "aigate" && typeof workflow.setArgs === "function") {
     body.extraSetArgs = workflow.setArgs(inputs, runConfig);
   }
-  if (settings.backend === "comfyui") {
+  if (settings.backend === "aigate") {
+    body.aigateToken = _getAigateToken();
+  } else if (settings.backend === "comfyui") {
     body.comfyuiUrl = settings.comfyuiUrl;
   } else {
     body.site = settings.rhSite;
@@ -3302,16 +3314,18 @@ function renderWorkflowGrid() {
   var grid = $("workflowGrid");
   if (!grid) return;
   grid.innerHTML = "";
+  var settings = loadSettings();
   WORKFLOWS.forEach(function (wf) {
+    var available = isWorkflowAvailableForBackend(wf, settings.backend);
     var card = document.createElement("div");
-    card.className = "wf-card" + (wf.active ? "" : " disabled") + (_selectedWorkflowId === wf.id ? " selected" : "");
+    card.className = "wf-card" + (available ? "" : " disabled") + (_selectedWorkflowId === wf.id ? " selected" : "");
     card.dataset.wfId = wf.id;
     card.innerHTML =
       '<div class="wf-icon">' + wf.icon + '</div>' +
       '<div class="wf-name">' + wf.name + '</div>' +
-      (wf.active ? "" : '<span class="wf-tag soon">即将推出</span>');
+      (available ? "" : '<span class="wf-tag soon">' + (settings.backend === "aigate" && wf.active ? "暂未支持云扉原生工作流" : "即将推出") + "</span>");
 
-    if (wf.active) {
+    if (available) {
       card.addEventListener("click", function () { selectWorkflow(wf.id); });
     }
     grid.appendChild(card);
@@ -3401,9 +3415,9 @@ function renderGptImageLayerInputs() {
 }
 
 function selectWorkflow(wfId) {
-  _selectedWorkflowId = wfId;
   var wf = findWorkflow(wfId);
-  if (!wf || !wf.active) return;
+  if (!wf || !isWorkflowAvailableForBackend(wf, loadSettings().backend)) return;
+  _selectedWorkflowId = wfId;
 
   // 更新卡片选中状态
   var cards = document.querySelectorAll(".wf-card");
@@ -3424,7 +3438,9 @@ function selectWorkflow(wfId) {
   // 使用说明 — 渲染在输入区外面 (workflow grid 下方)
   renderWorkflowDescription(wf);
 
+  var isAigateInpaint = loadSettings().backend === "aigate" && wf.id === "inpaint";
   (wf.inputs || []).forEach(function (inp) {
+    if (isAigateInpaint && inp.id === "wfResolution") return;
     var label = document.createElement("label");
     label.textContent = inp.label;
     label.htmlFor = inp.id;
@@ -3466,13 +3482,18 @@ function selectWorkflow(wfId) {
       var select = document.createElement("select");
       select.id = inp.id;
       var options = inp.options || [];
+      if (isAigateInpaint && inp.id === "wfInpaintVariant") {
+        options = [{ value: "boogu", label: "Boogu" }];
+      }
       for (var oi = 0; oi < options.length; oi++) {
         var option = document.createElement("option");
         option.value = options[oi].value;
         option.textContent = options[oi].label;
         select.appendChild(option);
       }
-      if (inp.default !== undefined) select.value = inp.default;
+      if (inp.default !== undefined) {
+        select.value = isAigateInpaint && inp.id === "wfInpaintVariant" ? "boogu" : inp.default;
+      }
       if (inp.id === "gptImageMode") {
         select.addEventListener("change", renderGptImageLayerInputs);
       }
@@ -3524,6 +3545,14 @@ async function onRunClick() {
   var wf = findWorkflow(_selectedWorkflowId);
   if (!wf) {
     setStatus("请先选择一个工作流", "err");
+    return;
+  }
+  if (!isWorkflowAvailableForBackend(wf, settings.backend)) {
+    setStatus("该工作流暂未支持云扉原生后端", "err");
+    return;
+  }
+  if (settings.backend === "aigate" && !_getAigateToken()) {
+    setStatus("请先在设置中填写云扉 Bearer Token", "err");
     return;
   }
   if (!app.activeDocument) {
@@ -3841,11 +3870,13 @@ function renderSettings() {
   var s = loadSettings();
   var bridgeInput = $("settingBridgeUrl");
   var comfyuiInput = $("settingComfyuiUrl");
+  var aigateTokenInput = $("settingAigateToken");
   var gptImageApiKeyInput = $("settingGptImageApiKey");
   var gptImageLocalValidationInput = $("settingGptImageLocalValidation");
 
   if (bridgeInput) bridgeInput.value = s.bridgeUrl;
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
+  if (aigateTokenInput) aigateTokenInput.value = s.aigateToken;
   if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
   var rhLocalDebugInput = $("settingRhLocalDebug");
@@ -3868,10 +3899,100 @@ function _applyBackendVisibility() {
   var backend = _segGet("segBackend");
   var rhSettings = $("rhSettings");
   var comfyuiSettings = $("comfyuiSettings");
+  var aigateSettings = $("aigateSettings");
   var isComfyui = backend === "comfyui";
+  var isAigate = backend === "aigate";
 
-  if (rhSettings) rhSettings.style.display = isComfyui ? "none" : "block";
+  if (rhSettings) rhSettings.style.display = isComfyui || isAigate ? "none" : "block";
   if (comfyuiSettings) comfyuiSettings.style.display = isComfyui ? "block" : "none";
+  if (aigateSettings) aigateSettings.style.display = isAigate ? "block" : "none";
+}
+
+function _getAigateToken() {
+  var input = $("settingAigateToken");
+  return (input ? input.value : loadSettings().aigateToken).trim();
+}
+
+function _renderAigateInstances(instances) {
+  var container = $("aigateInstanceList");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!instances || !instances.length) {
+    container.textContent = "未找到可显示的云扉实例";
+    return;
+  }
+  for (var i = 0; i < instances.length; i++) {
+    (function (instance) {
+      var row = document.createElement("div");
+      row.className = "input-row";
+      row.style.marginBottom = "6px";
+      var label = document.createElement("div");
+      label.className = "setting-hint";
+      label.style.flex = "1";
+      var status = instance.operationStatus === "2" ? "运行中" : "状态 " + (instance.operationStatus || "未知");
+      label.textContent = (instance.instanceName || "未命名实例") + " · " + instance.instanceId + " · "
+        + status + (instance.hasComfyui ? " · 已发现 ComfyUI" : " · 未发现 ComfyUI");
+      row.appendChild(label);
+      var action = instance.operationStatus === "2" ? "close"
+        : (instance.operationStatus === "7" || instance.operationStatus === "22" ? "open" : "");
+      if (action) {
+        var button = document.createElement("button");
+        button.className = action === "close" ? "btn-sm btn-danger" : "btn-sm";
+        button.textContent = action === "close" ? "关闭" : "启动";
+        button.addEventListener("click", function () {
+          controlAigateInstance(instance.instanceId, action);
+        });
+        row.appendChild(button);
+      }
+      container.appendChild(row);
+    })(instances[i]);
+  }
+}
+
+async function refreshAigateInstances() {
+  var token = _getAigateToken();
+  var container = $("aigateInstanceList");
+  if (!token) {
+    if (container) container.textContent = "请输入云扉 Bearer Token";
+    return;
+  }
+  var settings = loadSettings();
+  try {
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/instances",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aigateToken: token }) },
+      15000
+    );
+    var data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || "读取云扉实例失败");
+    _renderAigateInstances(data.instances || []);
+  } catch (e) {
+    if (container) container.textContent = "读取云扉实例失败：" + (e && e.message ? e.message : e);
+  }
+}
+
+async function controlAigateInstance(instanceId, action) {
+  if (action === "close" && typeof confirm === "function" && !confirm("确定关闭此云扉实例吗？")) return;
+  var token = _getAigateToken();
+  if (!token) { showToast("请输入云扉 Bearer Token"); return; }
+  var settings = loadSettings();
+  try {
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/instance-action",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aigateToken: token, instanceId: instanceId, action: action }),
+      },
+      15000
+    );
+    var data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || "云扉实例操作失败");
+    showToast(action === "close" ? "云扉实例正在关闭" : "云扉实例正在启动");
+    await refreshAigateInstances();
+  } catch (e) {
+    showToast("云扉实例操作失败：" + (e && e.message ? e.message : e));
+  }
 }
 
 function _applyGptImageAuthVisibility() {
@@ -4386,6 +4507,7 @@ async function testGptImageAuth() {
 function saveAllSettings() {
   var bridgeUrl = ($("settingBridgeUrl") ? $("settingBridgeUrl").value : "").trim();
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
+  var aigateToken = _getAigateToken();
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
@@ -4400,6 +4522,7 @@ function saveAllSettings() {
   saveSetting("bridgeUrl", bridgeUrl);
   saveSetting("backend", backend);
   saveSetting("comfyuiUrl", comfyuiUrl);
+  saveSetting("aigateToken", aigateToken);
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
@@ -4500,6 +4623,13 @@ function saveAllSettings() {
         _segSelect("segBackend", e.target.dataset.value);
         _applyBackendVisibility();
         saveAllSettings();
+        renderWorkflowGrid();
+        var currentWorkflow = findWorkflow(_selectedWorkflowId);
+        if (!isWorkflowAvailableForBackend(currentWorkflow, _segGet("segBackend"))) {
+          selectWorkflow("inpaint");
+        } else if (currentWorkflow) {
+          selectWorkflow(currentWorkflow.id);
+        }
       }
     });
   }
@@ -4568,7 +4698,7 @@ function saveAllSettings() {
   seedDevWorkQueue();
 
   // ---- 设置页: 输入自动保存 ----
-  ["settingBridgeUrl", "settingComfyuiUrl", "settingGptImageApiKey"].forEach(function (id) {
+  ["settingBridgeUrl", "settingComfyuiUrl", "settingAigateToken", "settingGptImageApiKey"].forEach(function (id) {
     var el = $(id);
     if (el) el.addEventListener("blur", saveAllSettings);
   });
@@ -4585,6 +4715,8 @@ function saveAllSettings() {
   if (btnTestGptImageKey) btnTestGptImageKey.addEventListener("click", testGptImageAuth);
   var btnTestComfyui = $("btnTestComfyui");
   if (btnTestComfyui) btnTestComfyui.addEventListener("click", testComfyuiConnection);
+  var btnRefreshAigateInstances = $("btnRefreshAigateInstances");
+  if (btnRefreshAigateInstances) btnRefreshAigateInstances.addEventListener("click", refreshAigateInstances);
 
   // ---- 设置页: 缓存路径 ----
   var btnBrowseCachePath = $("btnBrowseCachePath");
