@@ -35,6 +35,15 @@ git rebase origin/main
 
 如发生冲突，必须先解决冲突并完成 rebase；未完成或仍有冲突时不得提交 PR/MR。
 
+#### Rebase 安全规则（并行 / 多 agent 开发）
+
+并行开发时 rebase 是「新内容被静默覆盖」的高发环节，必须遵守：
+
+- **rebase / force-push 只用于你独占的短分支。** 别人或别的 agent（Claude Code / Codex）正在使用的分支，**绝不 rebase、绝不 `push --force`**——rebase 重写历史 + 强推会静默抹掉对方已提交的工作。
+- **共享分支要同步 `main`，用 merge 而非 rebase。** 即 GitHub 的「Update branch」或 `git merge origin/main`；宁可历史多出 merge 节点，也不丢提交。
+- **解决冲突必须两边整合，禁止整边 `accept ours` / `accept theirs`。** 尤其 agent 自动解冲突时，要逐块确认，绝不图省事丢掉一侧的改动。
+- 冲突范围过大时，优先**拆小 PR、缩短分支寿命**，从源头减少重叠。
+
 ### Pull Requests
 
 - Target branch: `main`
