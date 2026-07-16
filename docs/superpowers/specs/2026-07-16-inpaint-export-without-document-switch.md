@@ -49,3 +49,40 @@ RunningHub 局部编辑目前会导出活动图层的选区外接矩形，以减
 - 上传图片与蒙版的像素尺寸完全相同。
 - 上传数据仍仅覆盖选区外接矩形。
 - QwenImage、Boogu、队列导入和即时贴回均保持原位对齐。
+
+## 验证结果 (2026-07-16)
+
+### API 能力核实（官方 UXP 文档）
+
+- **UXP Canvas 不可行**：`HTMLCanvasElement` 仅支持 `2d` 上下文的基础路径绘制
+  (`moveTo`/`lineTo`/`stroke`)，无 `putImageData`、无 `toDataURL`/`toBlob`，无法解码/
+  裁切/编码 PNG。因此 spec 原“推荐”的 Canvas 裁切路径在真实宿主上不成立。
+- **`imaging.encodeImageData` 仅输出 JPEG**（有损、无 alpha），不能用于图片/蒙版 PNG。
+- **`imaging.getPixels({ layerID, sourceBounds })` 可行**：直接按外接矩形读取活动
+  图层像素，无需复制文档、无需切换图层可见性 → 无闪切。
+- **`imaging.getSelection({ sourceBounds })` 可行**：直接读取选区蒙版像素，替代
+  “复制文档 + 建临时图层 + 填充”整套流程。
+
+### 落地方案
+
+采用 **imaging 读取 + 插件内置纯 JS PNG 编码器**（固定 Huffman + 贪心 LZ77，
+无损，支持 RGBA/灰度）。旧的“复制文档 + 裁切”路径保留为回退，宿主缺少 imaging
+能力或 imaging 调用异常时自动降级，行为不变。无论走哪条路径，图片与蒙版都补齐到
+同一个 `_normalizeSelectionCropBounds` 外接矩形，尺寸严格一致。
+
+### 已验证
+
+- PNG 编码器：Node(zlib inflate) + macOS(sips/ImageIO) 双解码器逐字节校验——
+  尺寸、CRC、像素往返、alpha、采样数全部正确；真实图像内容压缩率约 0.01–0.04。
+- 尺寸不变量：即便 imaging 返回被裁切/偏移的 sourceBounds，图片与 RH 蒙版、GPT
+  蒙版仍全部等于选区外接矩形（已覆盖满矩形/内缩/1px/3 通道等场景）。
+- 真实 main.js 代码在浏览器 JS 引擎 + imaging mock 下端到端运行：图片=RGBA、
+  RH 蒙版=灰度、GPT 蒙版=RGBA(选区透明)，三者同尺寸；亚像素选区向外取整正确；
+  选区极性 选中=255(白)/未选=0(黑)；控制台零错误。
+
+### 仍需在真实 Photoshop 确认（无法在 CLI 侧验证）
+
+- **无闪切**：真实宿主中不再瞬间切到临时副本文档。
+- **`getSelection` 极性**：本实现假设“选中=255=白”。首次真实运行时用返图/蒙版调试
+  肉眼确认 RH 蒙版未反相；若某宿主版本相反，只需翻转极性。
+- 贴回 placement 与图层蒙版在真实文档坐标下的对齐。

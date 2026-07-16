@@ -30,7 +30,11 @@
   ],
   "requiredPermissions": {
     "localFileSystem": "fullAccess",
-    "network": { "domains": "all" }
+    "network": { "domains": "all" },
+    "launchProcess": {
+      "schemes": ["https"],
+      "extensions": [".command"]
+    }
   },
   "icons": [
     {
