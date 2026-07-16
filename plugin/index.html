@@ -845,8 +845,8 @@
     <div id="pageQueue" class="page">
       <div class="page-heading">任务队列</div>
       <div class="queue-doc-header" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-size:12px;color:var(--text-dim);">当前文档：<span id="queueDocName">未打开文档</span></span>
-        <button id="queueRefreshBtn" class="btn-sm" style="margin-left:auto;">刷新</button>
+        <span style="flex-grow:1;flex-shrink:1;flex-basis:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-dim);">当前文档：<span id="queueDocName">未打开文档</span></span>
+        <button id="queueRefreshBtn" class="btn-sm" style="flex-grow:0;flex-shrink:0;">刷新</button>
       </div>
       <div id="queueEmptyState" class="queue-empty">还没有运行中的任务或历史结果</div>
       <div id="workQueueSection">
