@@ -167,6 +167,7 @@ var SETTINGS_KEYS = {
   gptImageLocalValidation: "comfyps.gptImageLocalValidation",
   rhLocalDebug: "comfyps.rhLocalDebug",
   cacheMode: "comfyps.cacheMode",
+  autoStartBridge: "comfyps.autoStartBridge",
 };
 
 // =========================================================================
@@ -419,6 +420,8 @@ function loadSettings() {
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
     gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
     rhLocalDebug: localStorage.getItem(SETTINGS_KEYS.rhLocalDebug) === "true",
+    // 默认开启：打开插件时若桥离线，自动尝试启动一次。
+    autoStartBridge: localStorage.getItem(SETTINGS_KEYS.autoStartBridge) !== "false",
     cacheMode: localStorage.getItem(SETTINGS_KEYS.cacheMode)
       || (localStorage.getItem("comfyps.cacheBasePath") ? "custom" : "default"),
   };
@@ -2922,6 +2925,7 @@ var _bridgeOnline = false;
 var _healthPollTimer = 0;
 var _restarting = false;
 var _launchingBridge = false;
+var _bridgeAutoStartTried = false; // 本会话仅自动启动桥一次
 var _bridgeBtnMode = "restart"; // "restart"=桥在线时重启; "start"=桥离线时启动
 var _lastBridgeUiLog = "";
 
@@ -2947,7 +2951,19 @@ async function checkBridgeHealth() {
   } catch (_) {
     _setBridgeBarUI("off", "桥未运行", true);
     _bridgeOnline = false;
+    _maybeAutoStartBridge();
   }
+}
+
+// 打开插件时若桥离线，自动尝试启动一次(需设置开启且宿主支持 shell.openPath)。
+function _maybeAutoStartBridge() {
+  if (_bridgeAutoStartTried || _launchingBridge || _restarting) return;
+  var s = loadSettings();
+  if (!s.autoStartBridge || !s.bridgeUrl) return;
+  if (!uxpShell || typeof uxpShell.openPath !== "function") return;
+  _bridgeAutoStartTried = true;
+  addLogEntry("info", "检测到桥离线，正在自动启动桥…", "插件");
+  startBridgeViaShell();
 }
 
 function _setBridgeBarUI(state, text, restartEnabled) {
@@ -3666,6 +3682,8 @@ function renderSettings() {
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
   var rhLocalDebugInput = $("settingRhLocalDebug");
   if (rhLocalDebugInput) rhLocalDebugInput.checked = s.rhLocalDebug;
+  var autoStartBridgeInput = $("settingAutoStartBridge");
+  if (autoStartBridgeInput) autoStartBridgeInput.checked = s.autoStartBridge;
   _segSelect("segBackend", s.backend);
   _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
@@ -3843,6 +3861,7 @@ function saveAllSettings() {
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
+  var autoStartBridge = !($("settingAutoStartBridge")) || !!$("settingAutoStartBridge").checked;
   var backend = _segGet("segBackend") || "runninghub";
   var site = _segGet("segSite") || "ai";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
@@ -3860,6 +3879,7 @@ function saveAllSettings() {
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
   saveSetting("rhLocalDebug", rhLocalDebug ? "true" : "false");
+  saveSetting("autoStartBridge", autoStartBridge ? "true" : "false");
   saveSetting("theme", theme);
   saveSetting("cacheMode", cacheMode);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
@@ -4022,6 +4042,8 @@ function saveAllSettings() {
   if (gptImageLocalValidation) gptImageLocalValidation.addEventListener("change", saveAllSettings);
   var rhLocalDebugChk = $("settingRhLocalDebug");
   if (rhLocalDebugChk) rhLocalDebugChk.addEventListener("change", saveAllSettings);
+  var autoStartBridgeChk = $("settingAutoStartBridge");
+  if (autoStartBridgeChk) autoStartBridgeChk.addEventListener("change", saveAllSettings);
 
   // ---- 设置页: 测试 Key ----
   var btnTestKey = $("btnTestKey");
