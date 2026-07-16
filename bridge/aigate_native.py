@@ -1,5 +1,6 @@
 """云扉实例发现与原生 ComfyUI 调用的适配层。"""
 
+import asyncio
 import copy
 import json
 import re
@@ -52,6 +53,10 @@ async def _aigate_json(session, method, url, token, payload=None):
         return body.get("data")
     except AigateNativeError:
         raise
+    except asyncio.TimeoutError as exc:
+        raise AigateNativeError(
+            "AIGATE_TIMEOUT", "云扉实例服务请求超时", 504
+        ) from exc
     except ClientError as exc:
         raise AigateNativeError("AIGATE_NETWORK_ERROR", "无法连接云扉实例服务") from exc
 
@@ -177,6 +182,8 @@ async def _native_json(session, method, url, payload=None, form=None):
         return body
     except AigateNativeError:
         raise
+    except asyncio.TimeoutError as exc:
+        raise AigateNativeError("COMFYUI_TIMEOUT", "ComfyUI 请求超时", 504) from exc
     except ClientError as exc:
         raise AigateNativeError("COMFYUI_NETWORK_ERROR", "无法连接云扉 ComfyUI 服务") from exc
 
@@ -211,6 +218,8 @@ async def _download_native_result(session, base_url, image):
         async with session.get(url, headers={}, allow_redirects=False) as response:
             data = await response.read()
             status = response.status
+    except asyncio.TimeoutError as exc:
+        raise AigateNativeError("COMFYUI_TIMEOUT", "ComfyUI 下载结果超时", 504) from exc
     except ClientError as exc:
         raise AigateNativeError("COMFYUI_NETWORK_ERROR", "无法下载 ComfyUI 结果") from exc
     if status < 200 or status >= 300:
@@ -253,6 +262,12 @@ async def run_native_inpaint_on_instance(
         on_progress("正在生成…")
         history = await _native_json(session, "GET", history_url)
         task = history.get(prompt_id) if isinstance(history, dict) else None
+        status = task.get("status") if isinstance(task, dict) else None
+        status_name = status.get("status_str") if isinstance(status, dict) else ""
+        if str(status_name or "").lower() in ("error", "failed"):
+            raise AigateNativeError(
+                "COMFYUI_WORKFLOW_FAILED", "ComfyUI 工作流执行失败", 502
+            )
         outputs = task.get("outputs") if isinstance(task, dict) else None
         node_output = outputs.get("224") if isinstance(outputs, dict) else None
         images = node_output.get("images") if isinstance(node_output, dict) else None
@@ -261,7 +276,6 @@ async def run_native_inpaint_on_instance(
             on_progress("完成")
             return result
         if attempt + 1 < max_attempts:
-            import asyncio
             await asyncio.sleep(poll_interval)
     raise AigateNativeError("AIGATE_TIMEOUT", "ComfyUI 工作流超时", 504)
 

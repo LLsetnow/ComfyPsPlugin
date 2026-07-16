@@ -116,6 +116,25 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[5].name, "inpaint_boogu_api.json")
         self.assertEqual(len(args), 8)
 
+    async def test_uses_repository_boogu_workflow_not_client_path(self):
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
+        with patch.object(
+            bridge, "run_native_inpaint", new=AsyncMock(return_value=b"\x89PNG\r\n\x1a\nresult")
+        ) as native_run, patch("shutil.copy2"):
+            await bridge.handle_run(JsonRequest({
+                "backend": "aigate",
+                "aigateToken": "demo-token",
+                "image": png_b64,
+                "mask": png_b64,
+                "needsMask": True,
+                "workflowFile": "../../untrusted/inpaint_boogu_api.json",
+                "taskId": "job43",
+            }))
+        self.assertEqual(
+            native_run.await_args.args[5],
+            (bridge.BRIDGE_DIR / "../workflows/inpaint_boogu_api.json").resolve(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

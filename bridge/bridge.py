@@ -1636,7 +1636,7 @@ async def handle_run(request):
         if not str(aigate_token).strip():
             return cors(web.json_response(
                 {"error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"}, status=400))
-        if not needs_mask or Path(str(workflow_file or "")).name != "inpaint_boogu_api.json":
+        if not needs_mask:
             return cors(web.json_response(
                 {"error": "AIGATE_WORKFLOW_UNSUPPORTED", "message": "云扉原生后端目前仅支持 Boogu 局部编辑"},
                 status=400))
@@ -1665,7 +1665,7 @@ async def handle_run(request):
         task_cost = None
 
         if backend == "aigate":
-            workflow_path = (BRIDGE_DIR / str(workflow_file)).resolve()
+            workflow_path = (BRIDGE_DIR / "../workflows/inpaint_boogu_api.json").resolve()
 
             def aigate_progress(message):
                 _task_progress[task_id] = {"percent": 50, "message": str(message)}

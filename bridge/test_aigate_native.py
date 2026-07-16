@@ -1,9 +1,10 @@
+import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession, ClientTimeout, web
 
 
 class AigateNativeUrlTests(unittest.TestCase):
@@ -76,13 +77,20 @@ class AigateNativeInstanceTests(unittest.TestCase):
 class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.requests = []
+        self.failed_history = False
+        self.slow_instance_list = False
+        self.redirect_prompt = False
+        self.redirect_target_hits = 0
         app = web.Application()
 
         async def list_instances(request):
+            body = await request.json()
             self.requests.append({
                 "headers": dict(request.headers),
-                "body": await request.json(),
+                "body": body,
             })
+            if self.slow_instance_list:
+                await asyncio.sleep(0.05)
             return web.json_response({
                 "code": 0,
                 "data": {"records": [
@@ -128,10 +136,20 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "headers": dict(request.headers),
                 "body": await request.json(),
             })
+            if self.redirect_prompt:
+                raise web.HTTPFound("/redirected")
+            return web.json_response({"prompt_id": "native-prompt"})
+
+        async def redirected(request):
+            self.redirect_target_hits += 1
             return web.json_response({"prompt_id": "native-prompt"})
 
         async def history(request):
             self.requests.append({"kind": "history", "headers": dict(request.headers)})
+            if self.failed_history:
+                return web.json_response({
+                    "native-prompt": {"status": {"status_str": "error"}, "outputs": {}},
+                })
             return web.json_response({
                 "native-prompt": {
                     "outputs": {
@@ -156,6 +174,7 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
 
         app.router.add_post("/upload/image", upload_image)
         app.router.add_post("/prompt", submit_prompt)
+        app.router.add_get("/redirected", redirected)
         app.router.add_get("/history/{prompt_id}", history)
         app.router.add_get("/view", view)
         self.runner = web.AppRunner(app)
@@ -202,6 +221,16 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[1]["instanceId"], "running")
         self.assertEqual(self.requests[1]["headers"]["Authorization"], "Bearer demo-token")
 
+    async def test_reports_aigate_request_timeout_safely(self):
+        from bridge.aigate_native import AigateNativeError, list_running_instances
+
+        self.slow_instance_list = True
+        async with ClientSession(timeout=ClientTimeout(total=0.01)) as short_session:
+            with self.assertRaises(AigateNativeError) as raised:
+                await list_running_instances("demo-token", short_session, self.api_base)
+
+        self.assertEqual(raised.exception.code, "AIGATE_TIMEOUT")
+
     async def test_runs_native_comfyui_without_authorization_header(self):
         from bridge.aigate_native import run_native_inpaint_on_instance
 
@@ -228,14 +257,61 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(native_requests[0]["imageName"], "comfyps_job42_source.png")
         self.assertEqual(native_requests[1]["imageName"], "comfyps_job42_mask.png")
         self.assertEqual(native_requests[0]["type"], "input")
-        self.assertNotIn("Authorization", native_requests[0]["headers"])
-        self.assertNotIn("Authorization", native_requests[2]["headers"])
+        for request in native_requests:
+            self.assertNotIn("Authorization", request["headers"])
         self.assertEqual(
             native_requests[2]["body"]["prompt"]["36"]["inputs"]["prompt"], "蓝色头发"
         )
         self.assertEqual(native_requests[2]["body"]["client_id"], "comfyps_aigate_job42")
         self.assertEqual(native_requests[4]["query"]["type"], "output")
         self.assertIn("正在提交 ComfyUI 工作流…", progress)
+
+    async def test_reports_failed_history_without_waiting_for_timeout(self):
+        from bridge.aigate_native import AigateNativeError, run_native_inpaint_on_instance
+
+        self.failed_history = True
+        workflow = {
+            "5": {"inputs": {"vae_name": "old"}},
+            "36": {"inputs": {"prompt": "old"}},
+            "71": {"inputs": {"image": "old"}},
+            "214": {"inputs": {"image": "old"}},
+            "224": {"inputs": {"filename_prefix": "old"}},
+        }
+        with TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.png"
+            mask_path = Path(directory) / "mask.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nsource")
+            mask_path.write_bytes(b"\x89PNG\r\n\x1a\nmask")
+            with self.assertRaises(AigateNativeError) as raised:
+                await run_native_inpaint_on_instance(
+                    self.api_base, image_path, mask_path, "蓝色头发", "job-fail", workflow,
+                    lambda message: None, self.session, max_attempts=1,
+                )
+        self.assertEqual(raised.exception.code, "COMFYUI_WORKFLOW_FAILED")
+
+    async def test_does_not_follow_native_comfyui_redirects(self):
+        from bridge.aigate_native import AigateNativeError, run_native_inpaint_on_instance
+
+        self.redirect_prompt = True
+        workflow = {
+            "5": {"inputs": {"vae_name": "old"}},
+            "36": {"inputs": {"prompt": "old"}},
+            "71": {"inputs": {"image": "old"}},
+            "214": {"inputs": {"image": "old"}},
+            "224": {"inputs": {"filename_prefix": "old"}},
+        }
+        with TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.png"
+            mask_path = Path(directory) / "mask.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nsource")
+            mask_path.write_bytes(b"\x89PNG\r\n\x1a\nmask")
+            with self.assertRaises(AigateNativeError):
+                await run_native_inpaint_on_instance(
+                    self.api_base, image_path, mask_path, "蓝色头发", "job-redirect",
+                    workflow, lambda message: None, self.session,
+                )
+
+        self.assertEqual(self.redirect_target_hits, 0)
 
     async def test_wrapper_discovers_instance_and_loads_workflow_file(self):
         from bridge.aigate_native import run_native_inpaint
