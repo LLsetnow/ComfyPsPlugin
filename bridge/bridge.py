@@ -1133,6 +1133,10 @@ async def handle_test_comfyui(request):
         async with ClientSession(timeout=ClientTimeout(total=5)) as session:
             async with session.get(comfyui_url + "/system_stats") as response:
                 status = response.status
+                if not 200 <= status < 300:
+                    return cors(web.json_response(
+                        {"ok": False, "status": status,
+                         "message": "ComfyUI 返回 HTTP " + str(status)}, status=502))
                 data = await response.json(content_type=None)
     except asyncio.TimeoutError:
         return cors(web.json_response(
@@ -1144,9 +1148,6 @@ async def handle_test_comfyui(request):
         return cors(web.json_response(
             {"ok": False, "status": status, "message": "ComfyUI 返回了无效响应"}, status=502))
 
-    if not 200 <= status < 300:
-        return cors(web.json_response(
-            {"ok": False, "status": status, "message": "ComfyUI 返回 HTTP " + str(status)}, status=502))
     if not isinstance(data, dict):
         return cors(web.json_response(
             {"ok": False, "status": status, "message": "ComfyUI 返回了无效响应"}, status=502))

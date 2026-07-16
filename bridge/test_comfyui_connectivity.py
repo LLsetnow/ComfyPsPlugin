@@ -31,6 +31,8 @@ class FakeResponseContext:
         return False
 
     async def json(self, content_type=None):
+        if isinstance(self.body, BaseException):
+            raise self.body
         return self.body
 
 
@@ -85,3 +87,13 @@ class TestComfyuiConnectivity(unittest.IsolatedAsyncioTestCase):
         data = json.loads(response.body.decode("utf-8"))
         self.assertFalse(data["ok"])
         self.assertEqual(data["status"], 503)
+
+    async def test_reports_http_status_before_decoding_error_body(self):
+        factory = FakeSessionFactory(503, ValueError("not json"))
+        with patch.object(bridge, "ClientSession", factory):
+            response = await bridge.handle_test_comfyui(JsonRequest({
+                "comfyuiUrl": "http://127.0.0.1:8188",
+            }))
+        data = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(data["status"], 503)
+        self.assertEqual(data["message"], "ComfyUI 返回 HTTP 503")
