@@ -21,6 +21,7 @@ import os
 import random
 import struct
 import time
+import urllib.parse
 import zlib
 from pathlib import Path
 
@@ -363,9 +364,19 @@ async def handle_test_comfyui(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response(
             {"ok": False, "status": 0, "message": "请求体不是 JSON"}, status=400)
-    if not (body.get("comfyuiUrl") or "").strip():
+    url = str(body.get("comfyuiUrl") or "").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if not url:
         return web.json_response(
             {"ok": False, "status": 0, "message": "请输入 ComfyUI 地址"}, status=400)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return web.json_response(
+            {"ok": False, "status": 0,
+             "message": "ComfyUI 地址必须以 http:// 或 https:// 开头"}, status=400)
+    if parsed.query or parsed.fragment:
+        return web.json_response(
+            {"ok": False, "status": 0,
+             "message": "ComfyUI 地址不能包含查询参数或片段"}, status=400)
     return web.json_response({"ok": True, "status": 200, "version": "0.3.0-dev"})
 
 

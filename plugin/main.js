@@ -497,6 +497,18 @@ function findRhCredentialById(credentials, credentialId) {
   return null;
 }
 
+function findRhCredentialByApiKey(credentials, apiKey, excludedCredentialId) {
+  var targetKey = String(apiKey || "").replace(/^\s+|\s+$/g, "");
+  if (!targetKey) return null;
+  for (var i = 0; i < credentials.length; i++) {
+    var credential = credentials[i];
+    if (credential && credential.id !== excludedCredentialId && credential.apiKey === targetKey) {
+      return credential;
+    }
+  }
+  return null;
+}
+
 function getActiveRhCredential(credentials) {
   var list = credentials || loadRhCredentials();
   return findRhCredentialById(list, localStorage.getItem(SETTINGS_KEYS.activeRhCredentialId) || "");
@@ -1803,10 +1815,10 @@ function canStartWorkflow(workflow, settings) {
   var slot = getRunSlot(workflow, settings);
   if (slot === "runningHub") {
     if (!supportsRunningHubParallel(settings)) {
-      var credentialId = settings && settings.rhCredentialId ? settings.rhCredentialId : "";
+      var credentialKey = settings && settings.apiKey ? settings.apiKey : "";
       var activeRuns = _activeRuns.runningHub || [];
       for (var i = 0; i < activeRuns.length; i++) {
-        if (activeRuns[i] && activeRuns[i].rhCredentialId === credentialId) return false;
+        if (activeRuns[i] && activeRuns[i].rhCredentialKey === credentialKey) return false;
       }
     }
     return activeRunCount("other") === 0;
@@ -3552,6 +3564,7 @@ async function onRunClick() {
   var runState = {
     workflowId: wf.id,
     rhCredentialId: settings.rhCredentialId || "",
+    rhCredentialKey: settings.apiKey || "",
     cancelRequested: false,
     taskId: wf.gptImage ? makeGptTaskId() : "",
     bridgeRequestStarted: false,
@@ -4210,6 +4223,11 @@ async function saveRhCredentialEditor() {
   }
   var credentials = loadRhCredentials();
   var credential = findRhCredentialById(credentials, _rhCredentialEditorId);
+  var duplicate = findRhCredentialByApiKey(credentials, apiKey, credential ? credential.id : "");
+  if (duplicate) {
+    setStatus("该 API Key 已保存为凭据「" + duplicate.name + "」，一个 Key 只能保存一次", "err");
+    return;
+  }
   if (credential) {
     credential.name = name;
     if (credential.apiKey !== apiKey) {

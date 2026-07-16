@@ -14,10 +14,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: 安装桥测试依赖
+        run: python -m pip install -r bridge/requirements.txt
       - name: 语法检查 bridge.py
         run: python -m py_compile bridge/bridge.py
       - name: 语法检查 dev_server.py
         run: python -m py_compile dev/dev_server.py
+      - name: 运行 ComfyUI 连通性测试
+        run: python -m unittest bridge.test_comfyui_connectivity dev.test_comfyui_connectivity -v
 
   workflow-json-validate:
     runs-on: ubuntu-latest
@@ -33,6 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: 禁止 ES6 语法 (UXP 不兼容)
         run: |
           FILE=plugin/main.js
@@ -59,3 +66,5 @@ jobs:
             exit 1
           fi
           echo "✓ 通过"
+      - name: RunningHub 凭据逻辑测试
+        run: node --test plugin/test_rh_credentials.js

@@ -1131,7 +1131,9 @@ async def handle_test_comfyui(request):
     status = 0
     try:
         async with ClientSession(timeout=ClientTimeout(total=5)) as session:
-            async with session.get(comfyui_url + "/system_stats") as response:
+            async with session.get(
+                comfyui_url + "/system_stats", allow_redirects=False
+            ) as response:
                 status = response.status
                 if not 200 <= status < 300:
                     return cors(web.json_response(
