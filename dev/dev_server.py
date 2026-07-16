@@ -356,6 +356,19 @@ async def handle_test_key(request: web.Request) -> web.Response:
     })
 
 
+async def handle_test_comfyui(request: web.Request) -> web.Response:
+    """Mock bridge /test-comfyui 端点。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"ok": False, "status": 0, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("comfyuiUrl") or "").strip():
+        return web.json_response(
+            {"ok": False, "status": 0, "message": "请输入 ComfyUI 地址"}, status=400)
+    return web.json_response({"ok": True, "status": 200, "version": "0.3.0-dev"})
+
+
 async def handle_codex_status(request: web.Request) -> web.Response:
     """Mock Codex 订阅图像能力状态。"""
     return web.json_response({
@@ -639,6 +652,7 @@ def main():
     app.router.add_post("/run", handle_run)
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
+    app.router.add_post("/test-comfyui", handle_test_comfyui)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)

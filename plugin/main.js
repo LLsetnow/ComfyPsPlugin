@@ -159,6 +159,8 @@ var SETTINGS_KEYS = {
   backend: "comfyps.backend",
   rhSite: "comfyps.rhSite",
   apiKey: "comfyps.apiKey",
+  rhCredentials: "comfyps.rhCredentials",
+  activeRhCredentialId: "comfyps.activeRhCredentialId",
   comfyuiUrl: "comfyps.comfyuiUrl",
   theme: "comfyps.theme",
   apiType: "comfyps.apiType",
@@ -407,15 +409,113 @@ function stopLogPolling() {
   _logPollTimer = 0;
 }
 
+function normalizeRhCredentialSite(site) {
+  return site === "cn" ? "cn" : "ai";
+}
+
+function makeRhCredentialId() {
+  return "rh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+}
+
+function makeDefaultRhCredentialName(site) {
+  return site === "cn" ? "CN 凭据" : "AI 凭据";
+}
+
+function normalizeRhCredential(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  var apiKey = String(raw.apiKey || "").replace(/^\s+|\s+$/g, "");
+  if (!apiKey) return null;
+  var site = normalizeRhCredentialSite(raw.site);
+  var apiType = String(raw.apiType || "");
+  var status = raw.status === "ready" || raw.status === "error" ? raw.status : "unchecked";
+  return {
+    id: String(raw.id || makeRhCredentialId()),
+    name: String(raw.name || makeDefaultRhCredentialName(site)),
+    site: site,
+    apiKey: apiKey,
+    coins: String(raw.coins || ""),
+    balance: String(raw.balance || ""),
+    symbol: String(raw.symbol || (site === "cn" ? "¥" : "$")),
+    apiType: apiType,
+    supportsParallel: typeof raw.supportsParallel === "boolean"
+      ? raw.supportsParallel : supportsRunningHubParallel({ apiType: apiType }),
+    status: status,
+    errorMessage: String(raw.errorMessage || ""),
+    checkedAt: Number(raw.checkedAt) || 0,
+    createdAt: Number(raw.createdAt) || Date.now()
+  };
+}
+
+function saveRhCredentials(credentials) {
+  localStorage.setItem(SETTINGS_KEYS.rhCredentials, JSON.stringify(credentials || []));
+}
+
+function loadRhCredentials() {
+  var stored = localStorage.getItem(SETTINGS_KEYS.rhCredentials);
+  var credentials = [];
+  if (stored !== null) {
+    try {
+      var parsed = JSON.parse(stored);
+      if (parsed && typeof parsed.length === "number") {
+        for (var i = 0; i < parsed.length; i++) {
+          var normalized = normalizeRhCredential(parsed[i]);
+          if (normalized) credentials.push(normalized);
+        }
+      }
+    } catch (_) {}
+    return credentials;
+  }
+
+  // 首次升级：把旧版单 Key 设置迁移成一条待检测的凭据记录。
+  var legacyKey = String(localStorage.getItem(SETTINGS_KEYS.apiKey) || "").replace(/^\s+|\s+$/g, "");
+  if (legacyKey) {
+    var legacySite = normalizeRhCredentialSite(localStorage.getItem(SETTINGS_KEYS.rhSite));
+    var legacyApiType = String(localStorage.getItem(SETTINGS_KEYS.apiType) || "");
+    var legacyCredential = normalizeRhCredential({
+      id: makeRhCredentialId(),
+      name: makeDefaultRhCredentialName(legacySite),
+      site: legacySite,
+      apiKey: legacyKey,
+      apiType: legacyApiType,
+      status: "unchecked",
+      createdAt: Date.now()
+    });
+    if (legacyCredential) {
+      credentials.push(legacyCredential);
+      localStorage.setItem(SETTINGS_KEYS.activeRhCredentialId, legacyCredential.id);
+    }
+  }
+  saveRhCredentials(credentials);
+  return credentials;
+}
+
+function findRhCredentialById(credentials, credentialId) {
+  if (!credentialId) return null;
+  for (var i = 0; i < credentials.length; i++) {
+    if (credentials[i] && credentials[i].id === credentialId) return credentials[i];
+  }
+  return null;
+}
+
+function getActiveRhCredential(credentials) {
+  var list = credentials || loadRhCredentials();
+  return findRhCredentialById(list, localStorage.getItem(SETTINGS_KEYS.activeRhCredentialId) || "");
+}
+
 function loadSettings() {
+  var rhCredentials = loadRhCredentials();
+  var activeRhCredential = getActiveRhCredential(rhCredentials);
   return {
     bridgeUrl: localStorage.getItem(SETTINGS_KEYS.bridgeUrl) || "http://127.0.0.1:8765",
     backend: localStorage.getItem(SETTINGS_KEYS.backend) || "runninghub",
-    rhSite: localStorage.getItem(SETTINGS_KEYS.rhSite) || "ai",
-    apiKey: localStorage.getItem(SETTINGS_KEYS.apiKey) || "",
+    rhSite: activeRhCredential ? activeRhCredential.site : "ai",
+    apiKey: activeRhCredential ? activeRhCredential.apiKey : "",
+    rhCredentials: rhCredentials,
+    rhCredential: activeRhCredential,
+    rhCredentialId: activeRhCredential ? activeRhCredential.id : "",
     comfyuiUrl: localStorage.getItem(SETTINGS_KEYS.comfyuiUrl) || "http://127.0.0.1:8188",
     theme: localStorage.getItem(SETTINGS_KEYS.theme) || "dark",
-    apiType: localStorage.getItem(SETTINGS_KEYS.apiType) || "",
+    apiType: activeRhCredential ? activeRhCredential.apiType : "",
     gptImageAuth: localStorage.getItem(SETTINGS_KEYS.gptImageAuth) || "codex",
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
     gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
@@ -429,6 +529,7 @@ function loadSettings() {
 
 function supportsRunningHubParallel(settings) {
   var source = settings || loadSettings();
+  if (source && typeof source.supportsParallel === "boolean") return source.supportsParallel;
   var apiType = String(source.apiType || "").toLowerCase();
   return apiType.indexOf("enterprise") !== -1 || apiType.indexOf("shared") !== -1;
 }
@@ -1677,7 +1778,7 @@ function activeRunCount(slot) {
 }
 
 function registerActiveRun(slot, runState, settings) {
-  if (slot === "runningHub" && supportsRunningHubParallel(settings)) {
+  if (slot === "runningHub") {
     if (!_activeRuns.runningHub || typeof _activeRuns.runningHub.length !== "number") {
       _activeRuns.runningHub = [];
     }
@@ -1700,7 +1801,14 @@ function unregisterActiveRun(slot, runState) {
 
 function canStartWorkflow(workflow, settings) {
   var slot = getRunSlot(workflow, settings);
-  if (slot === "runningHub" && supportsRunningHubParallel(settings)) {
+  if (slot === "runningHub") {
+    if (!supportsRunningHubParallel(settings)) {
+      var credentialId = settings && settings.rhCredentialId ? settings.rhCredentialId : "";
+      var activeRuns = _activeRuns.runningHub || [];
+      for (var i = 0; i < activeRuns.length; i++) {
+        if (activeRuns[i] && activeRuns[i].rhCredentialId === credentialId) return false;
+      }
+    }
     return activeRunCount("other") === 0;
   }
   if (activeRunCount(slot) > 0) return false;
@@ -3410,6 +3518,18 @@ async function onRunClick() {
     setStatus("没有打开的文档", "err");
     return;
   }
+  var isRhLocalMaskDebug = !wf.gptImage && settings.backend === "runninghub"
+    && settings.rhLocalDebug && wf.needsMask;
+  if (!wf.gptImage && settings.backend === "runninghub" && !isRhLocalMaskDebug) {
+    if (!settings.rhCredential) {
+      setStatus("请先在设置中添加并选择 RunningHub 凭据", "err");
+      return;
+    }
+    if (settings.rhCredential.status !== "ready") {
+      setStatus("当前 RunningHub 凭据尚未通过检测，请在设置中重新检测", "err");
+      return;
+    }
+  }
   var localValidationRequested = !!(wf.gptImage && settings.gptImageLocalValidation);
   var localValidationCanStart = localValidationRequested && !_activeRuns.gptImage && !_activeRuns.other;
   if (!localValidationCanStart && !canStartWorkflow(wf, settings)) {
@@ -3431,6 +3551,7 @@ async function onRunClick() {
   }
   var runState = {
     workflowId: wf.id,
+    rhCredentialId: settings.rhCredentialId || "",
     cancelRequested: false,
     taskId: wf.gptImage ? makeGptTaskId() : "",
     bridgeRequestStarted: false,
@@ -3706,14 +3827,11 @@ function _segGet(segId) {
 function renderSettings() {
   var s = loadSettings();
   var bridgeInput = $("settingBridgeUrl");
-  var apiKeyInput = $("settingApiKey");
   var comfyuiInput = $("settingComfyuiUrl");
   var gptImageApiKeyInput = $("settingGptImageApiKey");
   var gptImageLocalValidationInput = $("settingGptImageLocalValidation");
-  var balanceDisplay = $("balanceDisplay");
 
   if (bridgeInput) bridgeInput.value = s.bridgeUrl;
-  if (apiKeyInput) apiKeyInput.value = s.apiKey;
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
   if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
@@ -3722,30 +3840,15 @@ function renderSettings() {
   var autoStartBridgeInput = $("settingAutoStartBridge");
   if (autoStartBridgeInput) autoStartBridgeInput.checked = s.autoStartBridge;
   _segSelect("segBackend", s.backend);
-  _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
   _segSelect("segGptImageAuth", s.gptImageAuth);
   _segSelect("segCachePath", s.cacheMode);
 
-  // 显示已保存的 API 类型标签
-  _showApiTypeBadge(s.apiType);
-
   _applyBackendVisibility();
-  _applySiteLink();
   _applyGptImageAuthVisibility();
   _applyCachePathVisibility();
   _refreshCachePathDisplay();
-}
-
-function _showApiTypeBadge(apiType) {
-  var balanceDisplay = $("balanceDisplay");
-  if (!balanceDisplay) return;
-  if (!apiType) { balanceDisplay.style.display = "none"; return; }
-  var supportsParallel = supportsRunningHubParallel({ apiType: apiType });
-  balanceDisplay.style.display = "inline-block";
-  balanceDisplay.innerHTML = '<span class="balance-badge ' + (supportsParallel ? 'ok' : 'err') + '">'
-    + (supportsParallel ? '共享/企业级 · 支持并发' : '消费级 · RunningHub 单任务，可与 GPT Image 并行')
-    + '</span>';
+  renderRhCredentials();
 }
 
 function _applyBackendVisibility() {
@@ -3779,69 +3882,440 @@ function _applyCachePathVisibility() {
   }
 }
 
-function _applySiteLink() {
-  var site = _segGet("segSite");
+function _applySiteLink(site) {
+  var resolvedSite = normalizeRhCredentialSite(site);
   var linkGetKey = $("linkGetKey");
   if (!linkGetKey) return;
-  linkGetKey.href = site === "cn"
+  linkGetKey.href = resolvedSite === "cn"
     ? "https://www.runninghub.cn/enterprise-api/consumerApi"
     : "https://www.runninghub.ai/enterprise-api/consumerApi";
 }
 
-async function testApiKey() {
-  var btn = $("btnTestKey");
-  var balanceDisplay = $("balanceDisplay");
-  if (btn) { btn.disabled = true; btn.textContent = "检测中…"; }
-  if (balanceDisplay) balanceDisplay.style.display = "none";
+var _rhCredentialEditorId = "";
+var _rhCredentialAutoChecked = {};
+var _rhCredentialRefreshInFlight = {};
 
-  var settings = loadSettings();
-  var bridgeUrl = settings.bridgeUrl;
-  var apiKey = ($("settingApiKey") ? $("settingApiKey").value : "").trim();
-  var site = _segGet("segSite") || "ai";
+function maskRhCredentialKey(apiKey) {
+  var value = String(apiKey || "");
+  if (value.length <= 8) return "••••";
+  return value.slice(0, 4) + "••••" + value.slice(-4);
+}
 
-  if (!apiKey) {
-    if (balanceDisplay) {
-      balanceDisplay.style.display = "inline-block";
-      balanceDisplay.innerHTML = '<span class="balance-badge err">请输入 API Key</span>';
-    }
-    if (btn) { btn.disabled = false; btn.textContent = "测试"; }
+function formatRhCredentialCheckedAt(timestamp) {
+  if (!timestamp) return "未检测";
+  var date = new Date(timestamp);
+  if (isNaN(date.getTime())) return "未检测";
+  return "检测于 " + _queuePadTime(date.getMonth() + 1) + "-" + _queuePadTime(date.getDate())
+    + " " + _queuePadTime(date.getHours()) + ":" + _queuePadTime(date.getMinutes());
+}
+
+function rhCredentialStatusLabel(credential) {
+  if (credential.status === "ready") return "有效";
+  if (credential.status === "error") return "检测失败";
+  return "待检测";
+}
+
+function rhCredentialConcurrencyLabel(credential) {
+  return credential.supportsParallel ? "支持并发" : "单任务";
+}
+
+function appendRhChip(container, text, className) {
+  var chip = document.createElement("span");
+  chip.className = "rh-chip " + className;
+  chip.textContent = text;
+  container.appendChild(chip);
+}
+
+function renderRhCredentialCurrent(credential) {
+  var current = $("rhCredentialCurrent");
+  if (!current) return;
+  while (current.firstChild) current.removeChild(current.firstChild);
+  if (!credential) {
+    current.textContent = "尚未选择凭据";
     return;
   }
+  var prefix = document.createTextNode("当前使用：");
+  var name = document.createElement("strong");
+  name.textContent = credential.name + " · " + credential.site;
+  var suffix = document.createTextNode(" · " + rhCredentialConcurrencyLabel(credential));
+  current.appendChild(prefix);
+  current.appendChild(name);
+  current.appendChild(suffix);
+}
 
+function createRhCredentialCard(credential, active) {
+  var card = document.createElement("div");
+  card.className = "rh-credential-card" + (active ? " active" : "") + " " + credential.status;
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.setAttribute("aria-label", "切换到 " + credential.name);
+
+  var head = document.createElement("div");
+  head.className = "rh-credential-card-head";
+  var name = document.createElement("div");
+  name.className = "rh-credential-name";
+  name.textContent = credential.name;
+  head.appendChild(name);
+  var chips = document.createElement("div");
+  chips.className = "rh-credential-chips";
+  appendRhChip(chips, credential.site, credential.site === "cn" ? "site-cn" : "site-ai");
+  appendRhChip(chips, active ? "当前使用" : rhCredentialStatusLabel(credential),
+    active ? "active" : credential.status);
+  head.appendChild(chips);
+  card.appendChild(head);
+
+  var key = document.createElement("div");
+  key.className = "rh-credential-key";
+  key.textContent = maskRhCredentialKey(credential.apiKey);
+  card.appendChild(key);
+
+  var details = document.createElement("div");
+  details.className = "rh-credential-details";
+  var coins = document.createElement("span");
+  coins.appendChild(document.createTextNode("RH币 "));
+  var coinValue = document.createElement("strong");
+  coinValue.textContent = credential.coins || "--";
+  coins.appendChild(coinValue);
+  details.appendChild(coins);
+  var balance = document.createElement("span");
+  balance.appendChild(document.createTextNode("余额 "));
+  var balanceValue = document.createElement("strong");
+  balanceValue.textContent = credential.balance ? credential.symbol + credential.balance : "--";
+  balance.appendChild(balanceValue);
+  details.appendChild(balance);
+  var checkedAt = document.createElement("span");
+  checkedAt.textContent = formatRhCredentialCheckedAt(credential.checkedAt);
+  details.appendChild(checkedAt);
+  appendRhChip(details, rhCredentialConcurrencyLabel(credential), credential.supportsParallel ? "parallel" : "serial");
+  card.appendChild(details);
+
+  if (credential.status === "error" && credential.errorMessage) {
+    var error = document.createElement("div");
+    error.className = "setting-hint";
+    error.style.color = "var(--danger)";
+    error.textContent = credential.errorMessage;
+    card.appendChild(error);
+  }
+
+  var actions = document.createElement("div");
+  actions.className = "rh-credential-actions";
+  var edit = document.createElement("button");
+  edit.className = "rh-credential-action";
+  edit.type = "button";
+  edit.textContent = "编辑";
+  edit.addEventListener("click", function (event) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    showRhCredentialEditor(credential.id);
+  });
+  actions.appendChild(edit);
+  var remove = document.createElement("button");
+  remove.className = "rh-credential-action";
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", function (event) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    deleteRhCredential(credential.id);
+  });
+  actions.appendChild(remove);
+  card.appendChild(actions);
+
+  card.addEventListener("click", function () { activateRhCredential(credential.id); });
+  card.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" || event.key === " ") {
+      if (event.preventDefault) event.preventDefault();
+      activateRhCredential(credential.id);
+    }
+  });
+  return card;
+}
+
+function renderRhCredentials() {
+  var listEl = $("rhCredentialList");
+  var emptyEl = $("rhCredentialEmpty");
+  if (!listEl) return;
+  while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+  var credentials = loadRhCredentials();
+  var active = getActiveRhCredential(credentials);
+  renderRhCredentialCurrent(active);
+  if (emptyEl) emptyEl.style.display = credentials.length ? "none" : "block";
+
+  var sites = ["ai", "cn"];
+  for (var s = 0; s < sites.length; s++) {
+    var site = sites[s];
+    var groupItems = [];
+    for (var i = 0; i < credentials.length; i++) {
+      if (credentials[i].site === site) groupItems.push(credentials[i]);
+    }
+    if (!groupItems.length) continue;
+    var group = document.createElement("div");
+    group.className = "rh-credential-group";
+    var groupTitle = document.createElement("div");
+    groupTitle.className = "rh-credential-group-title";
+    var dot = document.createElement("span");
+    dot.className = "rh-credential-site-dot" + (site === "cn" ? " cn" : "");
+    groupTitle.appendChild(dot);
+    groupTitle.appendChild(document.createTextNode(site + " 站点"));
+    group.appendChild(groupTitle);
+    for (var j = 0; j < groupItems.length; j++) {
+      group.appendChild(createRhCredentialCard(groupItems[j], !!active && active.id === groupItems[j].id));
+    }
+    listEl.appendChild(group);
+  }
+  _applySiteLink(active ? active.site : "ai");
+  if (active && active.status === "unchecked" && !_rhCredentialAutoChecked[active.id]) {
+    _rhCredentialAutoChecked[active.id] = true;
+    refreshRhCredential(active.id, true);
+  }
+}
+
+function setRhCredentialEditorSiteLocked(locked) {
+  var segment = $("segRhCredentialSite");
+  if (!segment) return;
+  var buttons = segment.querySelectorAll("button");
+  for (var i = 0; i < buttons.length; i++) buttons[i].disabled = !!locked;
+}
+
+function showRhCredentialEditor(credentialId) {
+  var editor = $("rhCredentialEditor");
+  var title = $("rhCredentialEditorTitle");
+  var nameInput = $("settingRhCredentialName");
+  var keyInput = $("settingRhCredentialKey");
+  if (!editor || !nameInput || !keyInput) return;
+  var credential = findRhCredentialById(loadRhCredentials(), credentialId || "");
+  _rhCredentialEditorId = credential ? credential.id : "";
+  if (credential) {
+    if (title) title.textContent = "编辑凭据";
+    nameInput.value = credential.name;
+    keyInput.value = credential.apiKey;
+    _segSelect("segRhCredentialSite", credential.site);
+    setRhCredentialEditorSiteLocked(true);
+    _applySiteLink(credential.site);
+  } else {
+    if (title) title.textContent = "添加凭据";
+    nameInput.value = "";
+    keyInput.value = "";
+    _segSelect("segRhCredentialSite", "ai");
+    setRhCredentialEditorSiteLocked(false);
+    _applySiteLink("ai");
+  }
+  editor.style.display = "block";
+  try { nameInput.focus(); } catch (_) {}
+}
+
+function hideRhCredentialEditor() {
+  var editor = $("rhCredentialEditor");
+  if (editor) editor.style.display = "none";
+  _rhCredentialEditorId = "";
+  var active = getActiveRhCredential();
+  _applySiteLink(active ? active.site : "ai");
+}
+
+function updateRhCredentialFromTest(credentialId, data, errorMessage) {
+  var credentials = loadRhCredentials();
+  var credential = findRhCredentialById(credentials, credentialId);
+  if (!credential) return null;
+  credential.checkedAt = Date.now();
+  if (data && data.ok) {
+    credential.coins = String(data.coins || "0");
+    credential.balance = String(data.balance || "0");
+    credential.symbol = String(data.symbol || (credential.site === "cn" ? "¥" : "$"));
+    credential.apiType = String(data.api_type || "");
+    credential.supportsParallel = supportsRunningHubParallel({ apiType: credential.apiType });
+    credential.status = "ready";
+    credential.errorMessage = "";
+  } else {
+    credential.status = "error";
+    credential.errorMessage = errorMessage || (data && data.message) || "凭据检测失败";
+  }
+  saveRhCredentials(credentials);
+  return credential;
+}
+
+async function refreshRhCredential(credentialId, silent) {
+  if (!credentialId || _rhCredentialRefreshInFlight[credentialId]) return false;
+  var credentials = loadRhCredentials();
+  var credential = findRhCredentialById(credentials, credentialId);
+  if (!credential) return false;
+  _rhCredentialRefreshInFlight[credentialId] = true;
   try {
-    var resp = await fetchWithTimeout(
-      bridgeUrl.replace(/\/+$/, "") + "/test-key",
+    var settings = loadSettings();
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/test-key",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey, site: site }),
+        body: JSON.stringify({ apiKey: credential.apiKey, site: credential.site })
       },
       10000
     );
-    var data = await resp.json();
-    if (balanceDisplay) {
-      balanceDisplay.style.display = "block";
-      if (data.ok) {
-        // 共享/企业级密钥支持并发提交；不在插件侧限制并发数量。
-        var apiType = data.api_type || "";
-        saveSetting("apiType", apiType);
-        var supportsParallel = supportsRunningHubParallel({ apiType: apiType });
-        var html = '<span class="balance-badge ok">' + data.message + '</span>';
-        if (supportsParallel) {
-          html += ' <span style="font-size:10px;color:var(--accent);">(共享/企业级 · 支持并发)</span>';
-        }
-        balanceDisplay.innerHTML = html;
-      } else {
-        balanceDisplay.innerHTML = '<span class="balance-badge err">' + (data.message || "Key 无效") + '</span>';
-      }
+    var data = await response.json();
+    var updated = updateRhCredentialFromTest(credentialId, data, "");
+    renderRhCredentials();
+    refreshRunButton();
+    if (!silent && updated) {
+      setStatus(data.ok ? "凭据「" + updated.name + "」已更新 ✓" : updated.errorMessage, data.ok ? "ok" : "err");
     }
-  } catch (e) {
-    if (balanceDisplay) {
-      balanceDisplay.style.display = "inline-block";
-      balanceDisplay.innerHTML = '<span class="balance-badge err">桥连接失败</span>';
-    }
+    return !!(data && data.ok);
+  } catch (_) {
+    var failed = updateRhCredentialFromTest(credentialId, null, "桥连接失败或认证检测超时");
+    renderRhCredentials();
+    refreshRunButton();
+    if (!silent && failed) setStatus(failed.errorMessage, "err");
+    return false;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "测试"; }
+    delete _rhCredentialRefreshInFlight[credentialId];
+  }
+}
+
+async function refreshAllRhCredentials() {
+  var button = $("btnRefreshRhCredentials");
+  var originalText = button ? button.textContent : "刷新余额";
+  if (button) { button.disabled = true; button.textContent = "刷新中…"; }
+  var credentials = loadRhCredentials();
+  var succeeded = 0;
+  for (var i = 0; i < credentials.length; i++) {
+    if (await refreshRhCredential(credentials[i].id, true)) succeeded++;
+  }
+  if (button) { button.disabled = false; button.textContent = originalText; }
+  if (!credentials.length) setStatus("请先添加 RunningHub 凭据", "err");
+  else setStatus("已刷新 " + succeeded + "/" + credentials.length + " 个凭据", succeeded === credentials.length ? "ok" : "err");
+}
+
+function activateRhCredential(credentialId) {
+  var credentials = loadRhCredentials();
+  var credential = findRhCredentialById(credentials, credentialId);
+  if (!credential) return;
+  if (credential.status !== "ready") {
+    setStatus(credential.errorMessage || "该凭据尚未通过检测，无法切换", "err");
+    return;
+  }
+  localStorage.setItem(SETTINGS_KEYS.activeRhCredentialId, credential.id);
+  renderRhCredentials();
+  renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
+  refreshRunButton();
+  setStatus("已切换到「" + credential.name + "」· " + credential.site, "ok");
+  refreshRhCredential(credential.id, true);
+}
+
+async function saveRhCredentialEditor() {
+  var nameInput = $("settingRhCredentialName");
+  var keyInput = $("settingRhCredentialKey");
+  if (!nameInput || !keyInput) return;
+  var apiKey = String(keyInput.value || "").replace(/^\s+|\s+$/g, "");
+  var site = normalizeRhCredentialSite(_segGet("segRhCredentialSite"));
+  var name = String(nameInput.value || "").replace(/^\s+|\s+$/g, "") || makeDefaultRhCredentialName(site);
+  if (!apiKey) {
+    setStatus("请输入 RunningHub API Key", "err");
+    return;
+  }
+  var credentials = loadRhCredentials();
+  var credential = findRhCredentialById(credentials, _rhCredentialEditorId);
+  if (credential) {
+    credential.name = name;
+    if (credential.apiKey !== apiKey) {
+      credential.apiKey = apiKey;
+      credential.coins = "";
+      credential.balance = "";
+      credential.apiType = "";
+      credential.supportsParallel = false;
+    }
+    credential.status = "unchecked";
+    credential.errorMessage = "";
+    credential.checkedAt = 0;
+  } else {
+    credential = normalizeRhCredential({
+      id: makeRhCredentialId(),
+      name: name,
+      site: site,
+      apiKey: apiKey,
+      status: "unchecked",
+      createdAt: Date.now()
+    });
+    if (credential) credentials.push(credential);
+  }
+  saveRhCredentials(credentials);
+  hideRhCredentialEditor();
+  renderRhCredentials();
+  await refreshRhCredential(credential.id, false);
+}
+
+function deleteRhCredential(credentialId) {
+  var credentials = loadRhCredentials();
+  var credential = findRhCredentialById(credentials, credentialId);
+  if (!credential) return;
+  if (typeof confirm === "function" && !confirm("确定删除凭据「" + credential.name + "」吗？")) return;
+  var activeId = localStorage.getItem(SETTINGS_KEYS.activeRhCredentialId) || "";
+  for (var i = credentials.length - 1; i >= 0; i--) {
+    if (credentials[i].id === credentialId) credentials.splice(i, 1);
+  }
+  if (activeId === credentialId) {
+    var next = null;
+    for (var j = 0; j < credentials.length; j++) {
+      if (credentials[j].status === "ready") { next = credentials[j]; break; }
+    }
+    if (next) localStorage.setItem(SETTINGS_KEYS.activeRhCredentialId, next.id);
+    else localStorage.removeItem(SETTINGS_KEYS.activeRhCredentialId);
+  }
+  saveRhCredentials(credentials);
+  hideRhCredentialEditor();
+  renderRhCredentials();
+  refreshRunButton();
+  setStatus("已删除凭据「" + credential.name + "」", "ok");
+}
+
+function showComfyuiConnectionStatus(ok, message) {
+  var display = $("comfyuiConnectionStatus");
+  if (!display) return;
+  display.style.display = "block";
+  while (display.firstChild) display.removeChild(display.firstChild);
+  var badge = document.createElement("span");
+  badge.className = "balance-badge " + (ok ? "ok" : "err");
+  badge.textContent = message;
+  display.appendChild(badge);
+}
+
+async function testComfyuiConnection() {
+  var input = $("settingComfyuiUrl");
+  var button = $("btnTestComfyui");
+  var comfyuiUrl = String(input ? input.value : "").replace(/^\s+|\s+$/g, "");
+  if (!comfyuiUrl) {
+    showComfyuiConnectionStatus(false, "请输入 ComfyUI 地址");
+    return;
+  }
+
+  var originalText = button ? button.textContent : "测试连接";
+  if (button) { button.disabled = true; button.textContent = "检测中…"; }
+  try {
+    var settings = loadSettings();
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/test-comfyui",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ comfyuiUrl: comfyuiUrl }),
+      },
+      8000
+    );
+    if (response.status === 404) {
+      showComfyuiConnectionStatus(false, "本地桥版本过旧，请更新后重启桥");
+      return;
+    }
+    var data = await response.json();
+    if (data && data.ok) {
+      showComfyuiConnectionStatus(
+        true,
+        "已连接" + (data.version ? " · ComfyUI " + data.version : "")
+      );
+    } else {
+      showComfyuiConnectionStatus(
+        false,
+        data && data.message ? data.message : "ComfyUI 连接失败"
+      );
+    }
+  } catch (_) {
+    showComfyuiConnectionStatus(false, "桥连接失败或检测超时");
+  } finally {
+    if (button) { button.disabled = false; button.textContent = originalText; }
   }
 }
 
@@ -3893,14 +4367,12 @@ async function testGptImageAuth() {
 
 function saveAllSettings() {
   var bridgeUrl = ($("settingBridgeUrl") ? $("settingBridgeUrl").value : "").trim();
-  var apiKey = ($("settingApiKey") ? $("settingApiKey").value : "").trim();
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
   var autoStartBridge = !($("settingAutoStartBridge")) || !!$("settingAutoStartBridge").checked;
   var backend = _segGet("segBackend") || "runninghub";
-  var site = _segGet("segSite") || "ai";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
   var cacheMode = _segGet("segCachePath") || "default";
 
@@ -3909,8 +4381,6 @@ function saveAllSettings() {
 
   saveSetting("bridgeUrl", bridgeUrl);
   saveSetting("backend", backend);
-  saveSetting("rhSite", site);
-  saveSetting("apiKey", apiKey);
   saveSetting("comfyuiUrl", comfyuiUrl);
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
@@ -4016,14 +4486,23 @@ function saveAllSettings() {
     });
   }
 
-  // ---- 设置页: 站点切换 ----
-  var segSite = $("segSite");
-  if (segSite) {
-    segSite.addEventListener("click", function (e) {
-      if (e.target.tagName === "BUTTON") {
-        _segSelect("segSite", e.target.dataset.value);
-        _applySiteLink();
-        saveAllSettings();
+  // ---- 设置页: RunningHub 凭据 ----
+  var btnAddRhCredential = $("btnAddRhCredential");
+  if (btnAddRhCredential) btnAddRhCredential.addEventListener("click", function () {
+    showRhCredentialEditor("");
+  });
+  var btnCancelRhCredential = $("btnCancelRhCredential");
+  if (btnCancelRhCredential) btnCancelRhCredential.addEventListener("click", hideRhCredentialEditor);
+  var btnSaveRhCredential = $("btnSaveRhCredential");
+  if (btnSaveRhCredential) btnSaveRhCredential.addEventListener("click", saveRhCredentialEditor);
+  var btnRefreshRhCredentials = $("btnRefreshRhCredentials");
+  if (btnRefreshRhCredentials) btnRefreshRhCredentials.addEventListener("click", refreshAllRhCredentials);
+  var segRhCredentialSite = $("segRhCredentialSite");
+  if (segRhCredentialSite) {
+    segRhCredentialSite.addEventListener("click", function (e) {
+      if (e.target.tagName === "BUTTON" && !_rhCredentialEditorId && !e.target.disabled) {
+        _segSelect("segRhCredentialSite", e.target.dataset.value);
+        _applySiteLink(e.target.dataset.value);
       }
     });
   }
@@ -4071,7 +4550,7 @@ function saveAllSettings() {
   seedDevWorkQueue();
 
   // ---- 设置页: 输入自动保存 ----
-  ["settingBridgeUrl", "settingApiKey", "settingComfyuiUrl", "settingGptImageApiKey"].forEach(function (id) {
+  ["settingBridgeUrl", "settingComfyuiUrl", "settingGptImageApiKey"].forEach(function (id) {
     var el = $(id);
     if (el) el.addEventListener("blur", saveAllSettings);
   });
@@ -4082,13 +4561,12 @@ function saveAllSettings() {
   var autoStartBridgeChk = $("settingAutoStartBridge");
   if (autoStartBridgeChk) autoStartBridgeChk.addEventListener("change", saveAllSettings);
 
-  // ---- 设置页: 测试 Key ----
-  var btnTestKey = $("btnTestKey");
-  if (btnTestKey) btnTestKey.addEventListener("click", testApiKey);
   var btnTestCodex = $("btnTestCodex");
   if (btnTestCodex) btnTestCodex.addEventListener("click", testGptImageAuth);
   var btnTestGptImageKey = $("btnTestGptImageKey");
   if (btnTestGptImageKey) btnTestGptImageKey.addEventListener("click", testGptImageAuth);
+  var btnTestComfyui = $("btnTestComfyui");
+  if (btnTestComfyui) btnTestComfyui.addEventListener("click", testComfyuiConnection);
 
   // ---- 设置页: 缓存路径 ----
   var btnBrowseCachePath = $("btnBrowseCachePath");

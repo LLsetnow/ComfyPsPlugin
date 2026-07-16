@@ -609,6 +609,70 @@
     .balance-badge.ok { background: rgba(22,163,74,0.15); color: var(--success); }
     .balance-badge.err { background: rgba(220,38,38,0.12); color: var(--danger); }
 
+    /* ---- RunningHub 多凭据 ---- */
+    .rh-credentials-toolbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .rh-credentials-toolbar .setting-label { margin-bottom: 2px; }
+    .rh-credential-current { color: var(--text-dim); font-size: 10px; line-height: 1.4; }
+    .rh-credential-current strong { color: var(--text); font-weight: 600; }
+    .rh-credential-list { display: flex; flex-direction: column; gap: 9px; }
+    .rh-credential-group { display: flex; flex-direction: column; gap: 5px; }
+    .rh-credential-group-title {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin: 1px 1px 0;
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+    .rh-credential-site-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+    .rh-credential-site-dot.cn { background: var(--warn); }
+    .rh-credential-card {
+      position: relative;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-input);
+      cursor: pointer;
+      transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
+    }
+    .rh-credential-card:hover { border-color: var(--border-strong); background: var(--bg-card-alt); }
+    .rh-credential-card.active { border-color: var(--accent); background: var(--accent-glow); box-shadow: 0 0 0 1px var(--accent); }
+    .rh-credential-card.error { border-color: rgba(255,107,107,0.45); }
+    .rh-credential-card.unchecked { border-style: dashed; }
+    .rh-credential-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .rh-credential-name { min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .rh-credential-chips { display: flex; flex: 0 0 auto; align-items: center; gap: 3px; }
+    .rh-chip { padding: 2px 5px; border-radius: 4px; font-size: 9px; font-weight: 600; line-height: 1.2; }
+    .rh-chip.site-ai { color: #b9d9ff; background: rgba(74,158,255,0.16); }
+    .rh-chip.site-cn { color: #ffd699; background: rgba(240,173,78,0.15); }
+    .rh-chip.active { color: #d6eaff; background: rgba(74,158,255,0.22); }
+    .rh-chip.parallel { color: var(--success); background: rgba(92,219,92,0.14); }
+    .rh-chip.serial { color: #ffd699; background: rgba(240,173,78,0.15); }
+    .rh-chip.error { color: var(--danger); background: rgba(255,107,107,0.12); }
+    .rh-chip.unchecked { color: var(--text-dim); background: rgba(146,153,165,0.12); }
+    .rh-credential-key { margin-top: 3px; color: var(--text-dim); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 9.5px; letter-spacing: 0.2px; }
+    .rh-credential-details { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 6px; padding-right: 72px; color: var(--text-dim); font-size: 10px; line-height: 1.35; }
+    .rh-credential-details strong { color: var(--text); font-size: 10.5px; }
+    .rh-credential-actions { position: absolute; right: 5px; bottom: 4px; display: flex; gap: 2px; opacity: 0; transition: opacity 0.18s; }
+    .rh-credential-card:hover .rh-credential-actions,
+    .rh-credential-card.active .rh-credential-actions { opacity: 1; }
+    .rh-credential-action { padding: 3px 4px; border: none; border-radius: 3px; color: var(--text-dim); background: transparent; font-family: var(--font); font-size: 9px; cursor: pointer; }
+    .rh-credential-action:hover { color: var(--accent); background: rgba(74,158,255,0.12); }
+    .rh-credential-empty { margin: 1px 0 8px; padding: 14px 8px; color: var(--text-dim); text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 10.5px; }
+    .rh-credential-editor { margin-top: 9px; padding: 9px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg-input); }
+    .rh-credential-editor-title { margin-bottom: 8px; color: var(--text); font-size: 11px; font-weight: 600; }
+    .rh-credential-editor .setting-row { margin-bottom: 8px; }
+    .rh-credential-editor-actions { display: flex; justify-content: flex-end; gap: 6px; }
+    .rh-credential-editor .segmented button:disabled { opacity: 0.55; cursor: default; }
+
     .link-sm {
       font-size: 10px; color: var(--accent); text-decoration: none;
     }
@@ -954,30 +1018,52 @@
           </div>
 
           <div id="rhSettings">
-            <div class="setting-row">
-              <div class="setting-label">RunningHub 站点</div>
-              <div class="segmented" id="segSite">
-                <button data-value="ai" class="active">ai</button>
-                <button data-value="cn">cn</button>
+            <div class="rh-credentials-toolbar">
+              <div>
+                <div class="setting-label">RunningHub 凭据</div>
+                <div id="rhCredentialCurrent" class="rh-credential-current">尚未选择凭据</div>
+              </div>
+              <button id="btnRefreshRhCredentials" class="btn-sm" type="button">刷新余额</button>
+            </div>
+            <div id="rhCredentialList" class="rh-credential-list"></div>
+            <div id="rhCredentialEmpty" class="rh-credential-empty">还没有保存的 RunningHub 凭据</div>
+            <div class="input-row" style="margin-bottom:8px;">
+              <button id="btnAddRhCredential" class="btn-sm" type="button">+ 添加凭据</button>
+              <a id="linkGetKey" class="link-sm" href="https://www.runninghub.ai/enterprise-api/consumerApi" target="_blank">如何获取 API Key? →</a>
+            </div>
+            <div id="rhCredentialEditor" class="rh-credential-editor" style="display:none;">
+              <div id="rhCredentialEditorTitle" class="rh-credential-editor-title">添加凭据</div>
+              <div class="setting-row">
+                <div class="setting-label">名称</div>
+                <input id="settingRhCredentialName" type="text" placeholder="例如：AI 主账户" />
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">RunningHub 站点</div>
+                <div class="segmented" id="segRhCredentialSite">
+                  <button data-value="ai" class="active" type="button">ai</button>
+                  <button data-value="cn" type="button">cn</button>
+                </div>
+                <div id="rhCredentialSiteHint" class="setting-hint">站点在创建后固定；如需换站点，请添加另一条凭据。</div>
+              </div>
+              <div class="setting-row">
+                <div class="setting-label">API Key</div>
+                <input id="settingRhCredentialKey" type="password" placeholder="rh-..." />
+              </div>
+              <div class="rh-credential-editor-actions">
+                <button id="btnCancelRhCredential" class="btn-sm" type="button">取消</button>
+                <button id="btnSaveRhCredential" class="btn-sm" type="button">保存并检测</button>
               </div>
             </div>
-            <div class="setting-row">
-              <div class="setting-label">API Key</div>
-              <div class="input-row">
-                <input id="settingApiKey" type="password" placeholder="rh-..." />
-                <button id="btnTestKey" class="btn-sm">测试</button>
-              </div>
-              <span id="balanceDisplay" style="display:none;margin-top:4px;"></span>
-            </div>
-            <a id="linkGetKey" class="link-sm" href="https://www.runninghub.ai/enterprise-api/consumerApi" target="_blank">
-              如何获取 API Key? →
-            </a>
           </div>
 
           <div id="comfyuiSettings" style="display:none;">
             <div class="setting-row">
               <div class="setting-label">ComfyUI 地址</div>
-              <input id="settingComfyuiUrl" type="text" value="http://127.0.0.1:8188" />
+              <div class="input-row">
+                <input id="settingComfyuiUrl" type="text" value="http://127.0.0.1:8188" />
+                <button id="btnTestComfyui" class="btn-sm" type="button">测试连接</button>
+              </div>
+              <div id="comfyuiConnectionStatus" class="setting-hint" style="display:none;"></div>
             </div>
           </div>
         </div>
