@@ -26,6 +26,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 import zlib
 from pathlib import Path
@@ -1100,6 +1101,61 @@ async def handle_test_key(request):
     return cors(web.json_response(result))
 
 
+def normalize_comfyui_url(value: str) -> str:
+    """验证并规范化用户输入的 ComfyUI 根地址。"""
+    url = str(value or "").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if not url:
+        raise ValueError("请输入 ComfyUI 地址")
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("ComfyUI 地址必须以 http:// 或 https:// 开头")
+    if parsed.query or parsed.fragment:
+        raise ValueError("ComfyUI 地址不能包含查询参数或片段")
+    return url
+
+
+async def handle_test_comfyui(request):
+    """确认本地桥可访问指定 ComfyUI 的系统状态接口，不提交任务。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "status": 0, "message": "请求体不是 JSON"}, status=400))
+
+    try:
+        comfyui_url = normalize_comfyui_url(body.get("comfyuiUrl"))
+    except ValueError as error:
+        return cors(web.json_response(
+            {"ok": False, "status": 0, "message": str(error)}, status=400))
+
+    status = 0
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session:
+            async with session.get(comfyui_url + "/system_stats") as response:
+                status = response.status
+                data = await response.json(content_type=None)
+    except asyncio.TimeoutError:
+        return cors(web.json_response(
+            {"ok": False, "status": 0, "message": "连接 ComfyUI 超时（5 秒）"}, status=502))
+    except ClientError as error:
+        return cors(web.json_response(
+            {"ok": False, "status": 0, "message": "无法连接 ComfyUI: " + str(error)}, status=502))
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return cors(web.json_response(
+            {"ok": False, "status": status, "message": "ComfyUI 返回了无效响应"}, status=502))
+
+    if not 200 <= status < 300:
+        return cors(web.json_response(
+            {"ok": False, "status": status, "message": "ComfyUI 返回 HTTP " + str(status)}, status=502))
+    if not isinstance(data, dict):
+        return cors(web.json_response(
+            {"ok": False, "status": status, "message": "ComfyUI 返回了无效响应"}, status=502))
+
+    system = data.get("system") if isinstance(data.get("system"), dict) else {}
+    version = str(system.get("comfyui_version") or data.get("comfyui_version") or "")
+    return cors(web.json_response({"ok": True, "status": status, "version": version}))
+
+
 def _check_account_single(api_key: str, site: str, status_url: str) -> dict:
     """单站点余额查询, 返回格式与 rh_cli.account.check_account 一致。"""
     key_prefix = api_key[:4] + "****"
@@ -1610,6 +1666,7 @@ def main():
     app.router.add_get("/logs", handle_logs)
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
+    app.router.add_post("/test-comfyui", handle_test_comfyui)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)
