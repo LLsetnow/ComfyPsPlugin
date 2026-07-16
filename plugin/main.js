@@ -2295,7 +2295,6 @@ function sortWorkQueue(selectedTaskId) {
 
 function updateQueueControls() {
   var importBtn = $("queueImportBtn");
-  var previewBtn = $("queuePreviewBtn");
   var stopBtn = $("queueStopBtn");
   var deleteBtn = $("queueDeleteBtn");
   var section = $("workQueueSection");
@@ -2306,7 +2305,6 @@ function updateQueueControls() {
   var isRunning = selectedTask && selectedTask.status === "running";
 
   if (importBtn) importBtn.disabled = !(isCompleted && selectedTask.resultFile);
-  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
   if (stopBtn) stopBtn.disabled = !isRunning;
   if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
   if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
@@ -2468,12 +2466,22 @@ function renderWorkQueue() {
         var img = document.createElement("img");
         img.className = "queue-thumb";
         img.alt = task.wfName;
+        img.title = "点击预览";
+        img.style.cursor = "pointer";
         if (task.thumbUrl) {
           img.src = task.thumbUrl;
         } else if (task.resultFile) {
           // 历史任务：缩略图按需从 result.png 懒加载，避免打开队列页时一次性读全部结果。
           _loadThumbFromResult(task, img);
         }
+        // 点击缩略图：选中并直接打开预览。
+        (function (t, index) {
+          img.addEventListener("click", function (ev) {
+            if (ev && ev.stopPropagation) ev.stopPropagation();
+            selectWorkQueueTask(index);
+            openQueuePreview(t);
+          });
+        })(task, idx);
         card.appendChild(img);
       }
 
@@ -2571,9 +2579,12 @@ async function onQueueImportClick() {
   }
 }
 
-function onQueuePreviewClick() {
-  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
-  var task = _workQueue[_selectedQueueIdx];
+// 点击任务缩略图直接预览。历史任务缩略图可能尚未懒加载，这里补读一次。
+async function openQueuePreview(task) {
+  if (!task || task.status === "running") return;
+  if (!task.thumbUrl && task.resultFile) {
+    await _loadThumbFromResult(task, null);
+  }
   if (!task.thumbUrl) { setStatus("没有可预览的图像", "err"); return; }
   var modal = $("queuePreviewModal");
   var modalImg = $("queuePreviewImg");
@@ -3876,8 +3887,6 @@ function saveAllSettings() {
   // ---- 工作队列按钮 ----
   var queueImportBtn = $("queueImportBtn");
   if (queueImportBtn) queueImportBtn.addEventListener("click", onQueueImportClick);
-  var queuePreviewBtn = $("queuePreviewBtn");
-  if (queuePreviewBtn) queuePreviewBtn.addEventListener("click", onQueuePreviewClick);
   var queueStopBtn = $("queueStopBtn");
   if (queueStopBtn) queueStopBtn.addEventListener("click", onQueueStopClick);
   var queueDeleteBtn = $("queueDeleteBtn");
