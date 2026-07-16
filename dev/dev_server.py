@@ -243,7 +243,10 @@ async def cors_middleware(request: web.Request, handler):
             )
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    resp.headers["Access-Control-Expose-Headers"] = "X-Task-Id, X-ComfyPS-Local-Validation"
+    resp.headers["Access-Control-Expose-Headers"] = (
+        "X-Task-Id, X-ComfyPS-Local-Validation, "
+        "X-ComfyPS-Task-Cost-Type, X-ComfyPS-Task-Cost"
+    )
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp
 
@@ -574,6 +577,9 @@ async def handle_run(request: web.Request) -> web.Response:
     dev_log(f"  [mock /run] 完成 task={task_id}")
     response = web.Response(body=DEMO_PNG, content_type="image/png")
     response.headers["X-Task-Id"] = task_id
+    if str(backend).lower() == "runninghub":
+        response.headers["X-ComfyPS-Task-Cost-Type"] = "coins"
+        response.headers["X-ComfyPS-Task-Cost"] = "17"
     return response
 
 

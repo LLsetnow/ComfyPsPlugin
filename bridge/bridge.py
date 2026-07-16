@@ -817,7 +817,7 @@ def run_inpaint_blocking(
     mask_node_id: str | None = None,
     task_id: str | None = None,
     cancel_event: threading.Event | None = None,
-) -> bytes:
+) -> tuple[bytes, str | None, str | None]:
     """RunningHub 模式: 上传蒙版(可选) → 注入提示词 → 跑工作流 → 读结果字节。"""
     cfg = CONFIG
     wf_id = str(workflow_id or cfg["workflowId"])
@@ -914,7 +914,13 @@ def run_inpaint_blocking(
         _th.Timer(60, lambda: _task_progress.pop(task_id, None)).start()
     if not result.files:
         raise RuntimeError("工作流没有返回任何输出文件")
-    return Path(result.files[0]).read_bytes()
+    cost_type = getattr(result, "cost_type", None)
+    cost = getattr(result, "cost", None)
+    if cost_type not in ("coins", "money") or cost is None or not str(cost).strip():
+        cost_type, cost = None, None
+    else:
+        cost = str(cost).strip()
+    return Path(result.files[0]).read_bytes(), cost_type, cost
 
 
 def run_comfyui_blocking(
@@ -1013,7 +1019,10 @@ def _inject_image_input(workflow: dict, node_id: str, image_b64: str):
 def cors(resp: web.StreamResponse) -> web.StreamResponse:
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    resp.headers["Access-Control-Expose-Headers"] = "X-Task-Id, X-ComfyPS-Local-Validation"
+    resp.headers["Access-Control-Expose-Headers"] = (
+        "X-Task-Id, X-ComfyPS-Local-Validation, "
+        "X-ComfyPS-Task-Cost-Type, X-ComfyPS-Task-Cost"
+    )
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp
 
@@ -1529,6 +1538,8 @@ async def handle_run(request):
             _sh.copy2(mask_path, BRIDGE_DIR / "debug_last_mask.png")
 
         loop = asyncio.get_event_loop()
+        task_cost_type = None
+        task_cost = None
 
         if backend == "comfyui":
             result_bytes = await loop.run_in_executor(
@@ -1539,7 +1550,7 @@ async def handle_run(request):
             cancel_event = threading.Event()
             _rh_cancel_events[task_id] = cancel_event
             try:
-                result_bytes = await loop.run_in_executor(
+                result_bytes, task_cost_type, task_cost = await loop.run_in_executor(
                     None,
                     lambda: run_inpaint_blocking(
                         img_path, mask_path if needs_mask else None, out_dir,
@@ -1552,6 +1563,9 @@ async def handle_run(request):
 
         resp = web.Response(body=result_bytes, content_type="image/png")
         resp.headers["X-Task-Id"] = task_id
+        if task_cost_type in ("coins", "money") and task_cost:
+            resp.headers["X-ComfyPS-Task-Cost-Type"] = task_cost_type
+            resp.headers["X-ComfyPS-Task-Cost"] = task_cost
         bridge_log("# 工作流完成 ← task=" + str(task_id))
         return cors(resp)
     except RhCliError as e:

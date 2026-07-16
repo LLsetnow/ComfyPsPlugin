@@ -1810,6 +1810,12 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 
   // 提取任务 ID 并启动进度轮询
   var taskId = resp.headers.get("X-Task-Id");
+  var taskCostType = resp.headers.get("X-ComfyPS-Task-Cost-Type") || "";
+  var taskCost = resp.headers.get("X-ComfyPS-Task-Cost") || "";
+  if (taskCostType !== "coins" && taskCostType !== "money") {
+    taskCostType = "";
+    taskCost = "";
+  }
   if (taskId && onProgress) {
     pollTimer = setInterval(async function () {
       try {
@@ -1825,7 +1831,11 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
   }
 
   try {
-    return await resp.arrayBuffer();
+    return {
+      resultBuffer: await resp.arrayBuffer(),
+      taskCostType: taskCostType,
+      taskCost: taskCost
+    };
   } finally {
     if (pollTimer) clearInterval(pollTimer);
   }
@@ -2108,6 +2118,8 @@ async function writeTaskMeta(task, psDocName) {
       createdAt: task.createdAt || Date.now(),
       completedAt: task.completedAt || Date.now(),
       durationMs: (typeof task.durationMs === "number") ? task.durationMs : null,
+      taskCostType: task.taskCostType || "",
+      taskCost: task.taskCost || "",
       hasMask: !!task.hasMask,
       savedOk: !!task.savedOk,
       placement: task.placement || null,
@@ -2184,6 +2196,8 @@ async function _historyItemFromFolder(taskFolder, psDocName) {
     createdAt: Number(meta.createdAt) || 0,
     completedAt: Number(meta.completedAt) || 0,
     durationMs: (typeof meta.durationMs === "number") ? meta.durationMs : null,
+    taskCostType: meta.taskCostType || "",
+    taskCost: meta.taskCost || "",
     psDocName: psDocName,
     fromHistory: true
   };
@@ -2359,6 +2373,14 @@ function formatQueueDuration(durationMs) {
   return "完成耗时 " + hours + " 小时 " + remainingMinutes + " 分";
 }
 
+function formatQueueTaskCost(task) {
+  if (!task || (task.taskCostType !== "coins" && task.taskCostType !== "money")) return "";
+  if (task.taskCost === null || typeof task.taskCost === "undefined") return "";
+  var value = String(task.taskCost).replace(/^\s+|\s+$/g, "");
+  if (!value) return "";
+  return task.taskCostType === "coins" ? "消耗 " + value + " RH币" : "消耗 ¥" + value;
+}
+
 function seedDevWorkQueue() {
   if (!IS_DEV || _sessionTasks.length > 0) return;
   var demoThumb = "/demo-image.png";
@@ -2404,6 +2426,8 @@ function seedDevWorkQueue() {
       progressMsg: "处理完成",
       createdAt: demoNow - 12400,
       durationMs: 8400,
+      taskCostType: "coins",
+      taskCost: "17",
       psDocName: demoDoc
     },
     {
@@ -2508,6 +2532,12 @@ function renderWorkQueue() {
         var duration = document.createElement("span");
         duration.textContent = formatQueueDuration(task.durationMs);
         meta.appendChild(duration);
+      }
+      var taskCost = formatQueueTaskCost(task);
+      if (taskCost) {
+        var cost = document.createElement("span");
+        cost.textContent = taskCost;
+        meta.appendChild(cost);
       }
       cardBody.appendChild(meta);
 
@@ -3441,6 +3471,8 @@ async function onRunClick() {
       status: "running",
       createdAt: Date.now(),
       durationMs: null,
+      taskCostType: "",
+      taskCost: "",
       runState: runState,
       runSlot: runSlot,
       resultFile: null,
@@ -3574,10 +3606,15 @@ async function onRunClick() {
         revealSelection = false;
         selectionSnapshotChannel = "";
       } else {
-        resultBuffer = await callBridge(
+        var bridgeResult = await callBridge(
           settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
           runState.taskId, runState.onProgress
         );
+        resultBuffer = bridgeResult.resultBuffer;
+        if (queueItem) {
+          queueItem.taskCostType = bridgeResult.taskCostType;
+          queueItem.taskCost = bridgeResult.taskCost;
+        }
       }
     }
 
