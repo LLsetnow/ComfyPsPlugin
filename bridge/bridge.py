@@ -33,6 +33,17 @@ from pathlib import Path
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
 
+try:
+    from aigate_native import (
+        AigateNativeError, control_aigate_instance, list_instance_summaries,
+        run_native_inpaint,
+    )
+except ImportError:
+    from bridge.aigate_native import (
+        AigateNativeError, control_aigate_instance, list_instance_summaries,
+        run_native_inpaint,
+    )
+
 BRIDGE_DIR = Path(__file__).resolve().parent
 
 try:
@@ -1159,6 +1170,50 @@ async def handle_test_comfyui(request):
     return cors(web.json_response({"ok": True, "status": status, "version": version}))
 
 
+async def handle_aigate_instances(request):
+    """返回云扉实例的最小安全摘要，供设置页显示和控制。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
+    token = (body.get("aigateToken") or "").strip()
+    if not token:
+        return cors(web.json_response(
+            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
+            status=400))
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            instances = await list_instance_summaries(token, session)
+        return cors(web.json_response({"ok": True, "instances": instances}))
+    except AigateNativeError as e:
+        return cors(web.json_response(
+            {"ok": False, "error": e.code, "message": e.message}, status=e.status))
+
+
+async def handle_aigate_instance_action(request):
+    """启动或关闭设置页指定的云扉实例。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
+    token = (body.get("aigateToken") or "").strip()
+    instance_id = (body.get("instanceId") or "").strip()
+    action = (body.get("action") or "").strip().lower()
+    if not token:
+        return cors(web.json_response(
+            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
+            status=400))
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            result = await control_aigate_instance(token, instance_id, action, session)
+        return cors(web.json_response({"ok": True, **result}))
+    except AigateNativeError as e:
+        return cors(web.json_response(
+            {"ok": False, "error": e.code, "message": e.message}, status=e.status))
+
+
 def _check_account_single(api_key: str, site: str, status_url: str) -> dict:
     """单站点余额查询, 返回格式与 rh_cli.account.check_account 一致。"""
     key_prefix = api_key[:4] + "****"
@@ -1561,6 +1616,7 @@ async def handle_run(request):
     site = body.get("site") or None
     api_key = body.get("apiKey") or None
     comfyui_url = body.get("comfyuiUrl") or "http://127.0.0.1:8188"
+    aigate_token = body.get("aigateToken") or ""
     needs_mask = body.get("needsMask", True)
     workflow_id = body.get("workflowId") or None
     workflow_file = body.get("workflowFile") or None
@@ -1576,6 +1632,14 @@ async def handle_run(request):
     if needs_mask and not mask_b64:
         return cors(web.json_response(
             {"error": "MISSING", "message": "此工作流需要 mask (选区蒙版)"}, status=400))
+    if backend == "aigate":
+        if not str(aigate_token).strip():
+            return cors(web.json_response(
+                {"error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"}, status=400))
+        if not needs_mask or Path(str(workflow_file or "")).name != "inpaint_boogu_api.json":
+            return cors(web.json_response(
+                {"error": "AIGATE_WORKFLOW_UNSUPPORTED", "message": "云扉原生后端目前仅支持 Boogu 局部编辑"},
+                status=400))
 
     bridge_log(
         "# 工作流提交 → task=" + str(task_id) + " backend=" + backend
@@ -1600,7 +1664,18 @@ async def handle_run(request):
         task_cost_type = None
         task_cost = None
 
-        if backend == "comfyui":
+        if backend == "aigate":
+            workflow_path = (BRIDGE_DIR / str(workflow_file)).resolve()
+
+            def aigate_progress(message):
+                _task_progress[task_id] = {"percent": 50, "message": str(message)}
+
+            async with ClientSession(timeout=ClientTimeout(total=195)) as session:
+                result_bytes = await run_native_inpaint(
+                    aigate_token, img_path, mask_path, prompt, task_id, workflow_path,
+                    aigate_progress, session,
+                )
+        elif backend == "comfyui":
             result_bytes = await loop.run_in_executor(
                 None,
                 lambda: run_comfyui_blocking(img_path, mask_path if needs_mask else None, out_dir, prompt, comfyui_url),
@@ -1627,6 +1702,10 @@ async def handle_run(request):
             resp.headers["X-ComfyPS-Task-Cost"] = task_cost
         bridge_log("# 工作流完成 ← task=" + str(task_id))
         return cors(resp)
+    except AigateNativeError as e:
+        bridge_log("# 工作流失败 ← task=" + str(task_id) + " " + e.message, "error")
+        return cors(web.json_response(
+            {"error": e.code, "message": e.message}, status=e.status))
     except RhCliError as e:
         code = getattr(e, "code", "RH_ERROR")
         bridge_log("# 工作流失败 ← task=" + str(task_id) + " " + str(getattr(e, "message", e)), "error")
@@ -1670,6 +1749,8 @@ def main():
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_post("/test-comfyui", handle_test_comfyui)
+    app.router.add_post("/aigate/instances", handle_aigate_instances)
+    app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)
