@@ -1105,19 +1105,25 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
       }
 
       try {
-        // Always use batchPlay to duplicate the document: this reliably switches
-        // the batchPlay active document to the copy so that all subsequent fill
-        // and save commands target the duplicate, not the original.
-        await batchPlay([{
-          _obj: "duplicate",
-          _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
-          name: "ComfyPS Mask Input",
-          _options: noDialog,
-        }], {});
-        batchPlayDuplicate = true;
-
-        if (normalizedCropBounds) {
-          await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
+        // Use the same DOM duplicate-and-crop path as the active-layer image
+        // export. In real Photoshop an untargeted batchPlay crop can leave the
+        // mask save on the original full-size document, producing dimensions
+        // that do not match the cropped image.
+        if (typeof doc.duplicate === "function") {
+          duplicateDoc = await doc.duplicate("ComfyPS Mask Input");
+          batchPlayDuplicate = true;
+          if (normalizedCropBounds) await duplicateDoc.crop(normalizedCropBounds);
+        } else {
+          await batchPlay([{
+            _obj: "duplicate",
+            _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
+            name: "ComfyPS Mask Input",
+            _options: noDialog,
+          }], {});
+          batchPlayDuplicate = true;
+          if (normalizedCropBounds) {
+            await batchPlay([_cropDescriptor(normalizedCropBounds, noDialog)], {});
+          }
         }
 
         // Create a new layer at the top of the duplicate for the B&W mask.
@@ -1149,11 +1155,15 @@ async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBo
       } finally {
         if (batchPlayDuplicate) {
           try {
-            await batchPlay([{
-              _obj: "close",
-              saving: { _enum: "yesNo", _value: "no" },
-              _options: noDialog,
-            }], {});
+            if (duplicateDoc && typeof duplicateDoc.closeWithoutSaving === "function") {
+              await duplicateDoc.closeWithoutSaving();
+            } else {
+              await batchPlay([{
+                _obj: "close",
+                saving: { _enum: "yesNo", _value: "no" },
+                _options: noDialog,
+              }], {});
+            }
           } catch (_) {}
         }
 
