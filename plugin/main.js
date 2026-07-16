@@ -768,14 +768,45 @@ function fetchWithTimeout(url, options, timeoutMs) {
 // =========================================================================
 // 状态显示
 // =========================================================================
+var _toastHideTimer = 0;
+var _toastRemoveTimer = 0;
+
+// 短暂提示弹窗：几秒后自动淡出；错误停留更久；点击可立即关闭。
+function showToast(msg, kind) {
+  var host = $("toast");
+  if (!host) return;
+  if (_toastHideTimer) { clearTimeout(_toastHideTimer); _toastHideTimer = 0; }
+  if (_toastRemoveTimer) { clearTimeout(_toastRemoveTimer); _toastRemoveTimer = 0; }
+  if (!msg) {
+    host.className = "";
+    host.style.display = "none";
+    host.textContent = "";
+    return;
+  }
+  host.textContent = msg;
+  host.style.display = "block";
+  host.className = kind || "";
+  // 下一拍再加 show，触发淡入动画
+  setTimeout(function () {
+    host.className = "show" + (kind ? " " + kind : "");
+  }, 10);
+  var ms = kind === "err" ? 5000 : 2800;
+  _toastHideTimer = setTimeout(function () {
+    host.className = kind ? kind : ""; // 去掉 show → 淡出
+    _toastRemoveTimer = setTimeout(function () {
+      if (host) host.style.display = "none";
+      _toastRemoveTimer = 0;
+    }, 260);
+    _toastHideTimer = 0;
+  }, ms);
+}
+
 function setStatus(msg, kind) {
   if (msg) {
     addLogEntry(kind === "err" ? "error" : (kind === "ok" ? "success" : "info"), msg, "插件");
   }
-  var el = $("status");
-  if (!el) return;
-  el.textContent = msg;
-  el.className = kind || "";
+  // 统一改为短暂弹窗提示（提交/完成/失败等），不再固定占用页面顶部。
+  showToast(msg, kind);
 }
 
 // =========================================================================
@@ -3361,11 +3392,8 @@ async function onRunClick() {
   if (runState.localValidation) {
     setStatus("正在进行本地验证…", "");
   } else {
+    // 提交提示走短暂弹窗，自动消失，无需手动清理。
     setStatus("任务已提交 ✓", "ok");
-    setTimeout(function () {
-      var el = $("status");
-      if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
-    }, 2000);
   }
 
   // 立即入队（非本地验证模式）
@@ -3860,6 +3888,8 @@ function saveAllSettings() {
   });
   var queuePreviewClose = $("queuePreviewClose");
   if (queuePreviewClose) queuePreviewClose.addEventListener("click", onQueuePreviewClose);
+  var toastEl = $("toast");
+  if (toastEl) toastEl.addEventListener("click", function () { showToast(""); });
   var queuePreviewModal = $("queuePreviewModal");
   if (queuePreviewModal) {
     queuePreviewModal.addEventListener("click", function (e) {

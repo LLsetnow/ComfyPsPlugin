@@ -485,6 +485,33 @@
     #status.err { color: var(--danger); }
     #status.ok  { color: var(--success); }
 
+    /* ---- Toast 短暂弹窗（提交/完成/失败等消息） ---- */
+    #toast {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: 14px;
+      padding: 8px 12px;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius);
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+      z-index: 10000;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.22s ease, transform 0.22s ease;
+      text-align: center;
+      cursor: pointer;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.err { border-left-color: var(--danger); color: var(--danger); }
+    #toast.ok  { border-left-color: var(--success); color: var(--success); }
+
     /* ---- Settings ---- */
     .settings-stack { display: flex; flex-direction: column; gap: 8px; }
     .settings-card {
@@ -1034,6 +1061,9 @@
     <img id="queuePreviewImg" src="" alt="预览" />
     <button id="queuePreviewClose">关闭</button>
   </div>
+
+  <!-- 短暂提示弹窗（提交/完成/失败等消息，几秒后自动消失，可点击关闭） -->
+  <div id="toast"></div>
 
   <script src="main.js"></script>
 </body>
