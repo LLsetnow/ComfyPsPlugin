@@ -6,7 +6,7 @@
 // ---- 环境检测: UXP vs 浏览器 Dev 模式 ----
 var IS_DEV = typeof window !== "undefined" && window.__COMFYPS_DEV__;
 
-var app, core, action, imaging, localFileSystem, formats;
+var app, core, action, imaging, localFileSystem, formats, uxpShell;
 
 if (IS_DEV) {
   var _mockPs = window.__mock_photoshop;
@@ -17,6 +17,7 @@ if (IS_DEV) {
   imaging = _mockPs.imaging;
   localFileSystem = _mockUxp.storage.localFileSystem;
   formats = _mockUxp.storage.formats;
+  uxpShell = _mockUxp.shell;
 } else {
   var _ps = require("photoshop");
   var _uxp = require("uxp");
@@ -26,6 +27,7 @@ if (IS_DEV) {
   imaging = _ps.imaging;
   localFileSystem = _uxp.storage.localFileSystem;
   formats = _uxp.storage.formats;
+  uxpShell = _uxp.shell;
 }
 
 var executeAsModal = core.executeAsModal;
@@ -165,6 +167,7 @@ var SETTINGS_KEYS = {
   gptImageLocalValidation: "comfyps.gptImageLocalValidation",
   rhLocalDebug: "comfyps.rhLocalDebug",
   cacheMode: "comfyps.cacheMode",
+  autoStartBridge: "comfyps.autoStartBridge",
 };
 
 // =========================================================================
@@ -417,6 +420,8 @@ function loadSettings() {
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
     gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
     rhLocalDebug: localStorage.getItem(SETTINGS_KEYS.rhLocalDebug) === "true",
+    // 默认开启：打开插件时若桥离线，自动尝试启动一次。
+    autoStartBridge: localStorage.getItem(SETTINGS_KEYS.autoStartBridge) !== "false",
     cacheMode: localStorage.getItem(SETTINGS_KEYS.cacheMode)
       || (localStorage.getItem("comfyps.cacheBasePath") ? "custom" : "default"),
   };
@@ -483,6 +488,273 @@ function base64ToBytes(b64str) {
 }
 
 // =========================================================================
+// 自包含 PNG 编码器 (无损, 支持 RGBA=color type 6 与 灰度=color type 0)
+// UXP 的 imaging.encodeImageData 只输出 JPEG(有损、无 alpha)，Canvas 也不支持
+// putImageData/toDataURL，因此插件侧裁切后必须用纯 JS 编码 PNG。
+// DEFLATE 采用固定 Huffman + 贪心 LZ77，已在 Node(zlib) 与 macOS(sips) 双解码器
+// 上做过逐字节校验(尺寸/CRC/像素往返/压缩率)。
+// =========================================================================
+var _PNG_CRC_TABLE = (function () {
+  var table = new Array(256);
+  for (var n = 0; n < 256; n++) {
+    var c = n;
+    for (var k = 0; k < 8; k++) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function _pngCrc32(bytes, start, end) {
+  var crc = 0xffffffff;
+  for (var i = start; i < end; i++) {
+    crc = _PNG_CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function _pngAdler32(bytes) {
+  var a = 1, b = 0;
+  var MOD = 65521;
+  var i = 0;
+  var len = bytes.length;
+  while (i < len) {
+    var tlen = len - i > 5552 ? 5552 : len - i;
+    for (var n = 0; n < tlen; n++) {
+      a += bytes[i++];
+      b += a;
+    }
+    a %= MOD;
+    b %= MOD;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+function _PngBitWriter() {
+  this.bytes = [];
+  this.bitBuffer = 0;
+  this.bitCount = 0;
+}
+_PngBitWriter.prototype.writeBits = function (value, nbits) {
+  this.bitBuffer |= (value << this.bitCount);
+  this.bitCount += nbits;
+  while (this.bitCount >= 8) {
+    this.bytes.push(this.bitBuffer & 0xff);
+    this.bitBuffer >>>= 8;
+    this.bitCount -= 8;
+  }
+};
+_PngBitWriter.prototype.writeHuff = function (code, nbits) {
+  // Huffman codes are defined MSB-first; reverse them for the LSB-first writer.
+  var reversed = 0;
+  for (var i = 0; i < nbits; i++) {
+    reversed = (reversed << 1) | ((code >>> i) & 1);
+  }
+  this.writeBits(reversed, nbits);
+};
+_PngBitWriter.prototype.finish = function () {
+  if (this.bitCount > 0) {
+    this.bytes.push(this.bitBuffer & 0xff);
+    this.bitBuffer = 0;
+    this.bitCount = 0;
+  }
+  return this.bytes;
+};
+
+function _pngWriteFixedLiteral(bw, litval) {
+  if (litval <= 143) bw.writeHuff(0x30 + litval, 8);
+  else bw.writeHuff(0x190 + (litval - 144), 9);
+}
+
+var _PNG_LEN_BASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+var _PNG_LEN_EXTRA = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+function _pngWriteFixedLength(bw, length) {
+  var idx = 0;
+  for (var i = 28; i >= 0; i--) {
+    if (length >= _PNG_LEN_BASE[i]) { idx = i; break; }
+  }
+  var sym = 257 + idx;
+  if (sym <= 279) bw.writeHuff(0x00 + (sym - 256), 7);
+  else bw.writeHuff(0xc0 + (sym - 280), 8);
+  var eb = _PNG_LEN_EXTRA[idx];
+  if (eb > 0) bw.writeBits(length - _PNG_LEN_BASE[idx], eb);
+}
+
+var _PNG_DIST_BASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+var _PNG_DIST_EXTRA = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+function _pngWriteFixedDistance(bw, dist) {
+  var idx = 0;
+  for (var i = 29; i >= 0; i--) {
+    if (dist >= _PNG_DIST_BASE[i]) { idx = i; break; }
+  }
+  bw.writeHuff(idx, 5);
+  var eb = _PNG_DIST_EXTRA[idx];
+  if (eb > 0) bw.writeBits(dist - _PNG_DIST_BASE[idx], eb);
+}
+
+function _pngDeflateFixed(data) {
+  var len = data.length;
+  var bw = new _PngBitWriter();
+  bw.writeBits(1, 1); // BFINAL=1
+  bw.writeBits(1, 2); // BTYPE=01 (fixed Huffman)
+
+  var WSIZE = 32768;
+  var MIN_MATCH = 3;
+  var MAX_MATCH = 258;
+  var HASH_SIZE = 1 << 15;
+  var HASH_MASK = HASH_SIZE - 1;
+  var head = new Int32Array(HASH_SIZE);
+  var prev = new Int32Array(len > 0 ? len : 1);
+  for (var hi = 0; hi < HASH_SIZE; hi++) head[hi] = -1;
+
+  var MAX_CHAIN = 128;
+  var pos = 0;
+  while (pos < len) {
+    var bestLen = 0;
+    var bestDist = 0;
+    if (pos + MIN_MATCH <= len) {
+      var hv = ((data[pos] << 10) ^ (data[pos + 1] << 5) ^ data[pos + 2]) & HASH_MASK;
+      var cand = head[hv];
+      var chain = 0;
+      var limit = len - pos;
+      if (limit > MAX_MATCH) limit = MAX_MATCH;
+      while (cand >= 0 && chain < MAX_CHAIN) {
+        var dist = pos - cand;
+        if (dist > WSIZE) break;
+        if (bestLen === 0 || data[cand + bestLen] === data[pos + bestLen]) {
+          var l = 0;
+          while (l < limit && data[cand + l] === data[pos + l]) l++;
+          if (l > bestLen) {
+            bestLen = l;
+            bestDist = dist;
+            if (l >= limit) break;
+          }
+        }
+        cand = prev[cand];
+        chain++;
+      }
+    }
+
+    if (bestLen >= MIN_MATCH) {
+      _pngWriteFixedLength(bw, bestLen);
+      _pngWriteFixedDistance(bw, bestDist);
+      var end = pos + bestLen;
+      while (pos < end) {
+        if (pos + MIN_MATCH <= len) {
+          var hh = ((data[pos] << 10) ^ (data[pos + 1] << 5) ^ data[pos + 2]) & HASH_MASK;
+          prev[pos] = head[hh];
+          head[hh] = pos;
+        }
+        pos++;
+      }
+    } else {
+      _pngWriteFixedLiteral(bw, data[pos]);
+      if (pos + MIN_MATCH <= len) {
+        var hx = ((data[pos] << 10) ^ (data[pos + 1] << 5) ^ data[pos + 2]) & HASH_MASK;
+        prev[pos] = head[hx];
+        head[hx] = pos;
+      }
+      pos++;
+    }
+  }
+
+  bw.writeHuff(0x00, 7); // end-of-block symbol 256
+  return bw.finish();
+}
+
+function _pngZlibCompress(data) {
+  var deflated = _pngDeflateFixed(data);
+  var adler = _pngAdler32(data);
+  var out = [];
+  out.push(0x78); // CMF
+  out.push(0x01); // FLG (level 0, no dict, valid FCHECK)
+  for (var i = 0; i < deflated.length; i++) out.push(deflated[i]);
+  out.push((adler >>> 24) & 0xff, (adler >>> 16) & 0xff, (adler >>> 8) & 0xff, adler & 0xff);
+  return out;
+}
+
+function _pngPaeth(a, b, c) {
+  var p = a + b - c;
+  var pa = p > a ? p - a : a - p;
+  var pb = p > b ? p - b : b - p;
+  var pc = p > c ? p - c : c - p;
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+function _pngFilterScanlines(pixels, width, height, channels) {
+  var stride = width * channels;
+  var out = new Uint8Array((stride + 1) * height);
+  var prevRow = new Uint8Array(stride);
+  var curFiltered = new Uint8Array(stride);
+  var bestFiltered = new Uint8Array(stride);
+  var op = 0;
+  for (var y = 0; y < height; y++) {
+    var rowStart = y * stride;
+    var bestType = 0;
+    var bestSum = -1;
+    for (var ft = 0; ft < 5; ft++) {
+      var sum = 0;
+      for (var x = 0; x < stride; x++) {
+        var raw = pixels[rowStart + x];
+        var left = x >= channels ? pixels[rowStart + x - channels] : 0;
+        var up = prevRow[x];
+        var ul = x >= channels ? prevRow[x - channels] : 0;
+        var val;
+        if (ft === 0) val = raw;
+        else if (ft === 1) val = (raw - left) & 0xff;
+        else if (ft === 2) val = (raw - up) & 0xff;
+        else if (ft === 3) val = (raw - ((left + up) >> 1)) & 0xff;
+        else val = (raw - _pngPaeth(left, up, ul)) & 0xff;
+        curFiltered[x] = val;
+        sum += val < 128 ? val : 256 - val;
+      }
+      if (bestSum < 0 || sum < bestSum) {
+        bestSum = sum;
+        bestType = ft;
+        var tmp = bestFiltered; bestFiltered = curFiltered; curFiltered = tmp;
+      }
+    }
+    out[op++] = bestType;
+    for (var xx = 0; xx < stride; xx++) out[op++] = bestFiltered[xx];
+    for (var xr = 0; xr < stride; xr++) prevRow[xr] = pixels[rowStart + xr];
+  }
+  return out;
+}
+
+function _pngU32be(arr, v) {
+  arr.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+}
+
+function _pngChunk(out, type, data) {
+  _pngU32be(out, data.length);
+  var typeStart = out.length;
+  out.push(type.charCodeAt(0), type.charCodeAt(1), type.charCodeAt(2), type.charCodeAt(3));
+  for (var i = 0; i < data.length; i++) out.push(data[i]);
+  var crc = _pngCrc32(out, typeStart, out.length);
+  _pngU32be(out, crc);
+}
+
+// pixels: Uint8Array chunky. channels: 4 表示 RGBA(type 6), 1 表示灰度(type 0)。
+function _encodePng(pixels, width, height, channels) {
+  var colorType = channels === 1 ? 0 : 6;
+  var filtered = _pngFilterScanlines(pixels, width, height, channels);
+  var idat = _pngZlibCompress(filtered);
+  var out = [];
+  out.push(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+  var ihdr = [];
+  _pngU32be(ihdr, width);
+  _pngU32be(ihdr, height);
+  ihdr.push(8, colorType, 0, 0, 0);
+  _pngChunk(out, "IHDR", ihdr);
+  _pngChunk(out, "IDAT", idat);
+  _pngChunk(out, "IEND", []);
+  return new Uint8Array(out);
+}
+
+// =========================================================================
 // 工具: fetch with timeout
 // =========================================================================
 function fetchWithTimeout(url, options, timeoutMs) {
@@ -499,14 +771,45 @@ function fetchWithTimeout(url, options, timeoutMs) {
 // =========================================================================
 // 状态显示
 // =========================================================================
+var _toastHideTimer = 0;
+var _toastRemoveTimer = 0;
+
+// 短暂提示弹窗：几秒后自动淡出；错误停留更久；点击可立即关闭。
+function showToast(msg, kind) {
+  var host = $("toast");
+  if (!host) return;
+  if (_toastHideTimer) { clearTimeout(_toastHideTimer); _toastHideTimer = 0; }
+  if (_toastRemoveTimer) { clearTimeout(_toastRemoveTimer); _toastRemoveTimer = 0; }
+  if (!msg) {
+    host.className = "";
+    host.style.display = "none";
+    host.textContent = "";
+    return;
+  }
+  host.textContent = msg;
+  host.style.display = "block";
+  host.className = kind || "";
+  // 下一拍再加 show，触发淡入动画
+  setTimeout(function () {
+    host.className = "show" + (kind ? " " + kind : "");
+  }, 10);
+  var ms = kind === "err" ? 5000 : 2800;
+  _toastHideTimer = setTimeout(function () {
+    host.className = kind ? kind : ""; // 去掉 show → 淡出
+    _toastRemoveTimer = setTimeout(function () {
+      if (host) host.style.display = "none";
+      _toastRemoveTimer = 0;
+    }, 260);
+    _toastHideTimer = 0;
+  }, ms);
+}
+
 function setStatus(msg, kind) {
   if (msg) {
     addLogEntry(kind === "err" ? "error" : (kind === "ok" ? "success" : "info"), msg, "插件");
   }
-  var el = $("status");
-  if (!el) return;
-  el.textContent = msg;
-  el.className = kind || "";
+  // 统一改为短暂弹窗提示（提交/完成/失败等），不再固定占用页面顶部。
+  showToast(msg, kind);
 }
 
 // =========================================================================
@@ -663,7 +966,8 @@ function navigateTo(page) {
     }
     checkBridgeHealth();
   } else if (pageName === "queue") {
-    renderWorkQueue();
+    // 打开队列页：按当前 PS 文件名自动扫描并加载历史任务。
+    loadQueueHistoryForActiveDoc();
   } else if (pageName === "logs") {
     renderLogPanel();
     startLogPolling();
@@ -967,7 +1271,162 @@ async function runFastGptEditValidation(layerName) {
   }
 }
 
+// =========================================================================
+// 无文档切换的选区裁切导出 (photoshop.imaging)
+// getPixels/getSelection 直接按 sourceBounds 读取像素，无需复制文档或切换图层
+// 可见性，因此不会瞬间切换到临时副本文档；再由插件侧 _encodePng 编码上传。
+// 旧的“复制文档+裁切”路径保留为回退，兼容缺少 imaging 能力的宿主版本。
+// 无论走哪条路径，图片与蒙版都补齐到同一个 normalized 选区外接矩形，尺寸严格一致。
+// =========================================================================
+function _imagingCropSupported() {
+  return !!(imaging && typeof imaging.getPixels === "function"
+    && typeof imaging.getSelection === "function");
+}
+
+function _activeDocId() {
+  var doc = app.activeDocument;
+  if (!doc) throw new Error("没有打开的文档");
+  return doc.id;
+}
+
+function _boundsOffset(actual, bounds) {
+  var left = actual && actual.left !== undefined ? _asPixels(actual.left) : bounds.left;
+  var top = actual && actual.top !== undefined ? _asPixels(actual.top) : bounds.top;
+  return { left: left, top: top };
+}
+
+// 把 imaging 返回的(可能被裁到实际像素区域的)缓冲区补齐到完整选区外接矩形，
+// 保证图片与蒙版尺寸严格一致。RGBA 空白处填透明。
+function _padRgbaToRect(data, comps, srcW, srcH, offLeft, offTop, bounds) {
+  var w = bounds.width, h = bounds.height;
+  var dst = new Uint8Array(w * h * 4);
+  var dx0 = Math.round(offLeft - bounds.left);
+  var dy0 = Math.round(offTop - bounds.top);
+  for (var y = 0; y < srcH; y++) {
+    var dy = dy0 + y;
+    if (dy < 0 || dy >= h) continue;
+    for (var x = 0; x < srcW; x++) {
+      var dx = dx0 + x;
+      if (dx < 0 || dx >= w) continue;
+      var s = (y * srcW + x) * comps;
+      var d = (dy * w + dx) * 4;
+      dst[d] = data[s];
+      dst[d + 1] = comps >= 3 ? data[s + 1] : data[s];
+      dst[d + 2] = comps >= 3 ? data[s + 2] : data[s];
+      dst[d + 3] = comps === 4 ? data[s + 3] : (comps === 2 ? data[s + 1] : 255);
+    }
+  }
+  return dst;
+}
+
+// 灰度补齐；空白处填 fillValue(选区蒙版未选中区应为 0)。
+function _padGrayToRect(data, comps, srcW, srcH, offLeft, offTop, bounds, fillValue) {
+  var w = bounds.width, h = bounds.height;
+  var dst = new Uint8Array(w * h);
+  if (fillValue) {
+    for (var i = 0; i < dst.length; i++) dst[i] = fillValue;
+  }
+  var dx0 = Math.round(offLeft - bounds.left);
+  var dy0 = Math.round(offTop - bounds.top);
+  for (var y = 0; y < srcH; y++) {
+    var dy = dy0 + y;
+    if (dy < 0 || dy >= h) continue;
+    for (var x = 0; x < srcW; x++) {
+      var dx = dx0 + x;
+      if (dx < 0 || dx >= w) continue;
+      dst[dy * w + dx] = data[(y * srcW + x) * comps];
+    }
+  }
+  return dst;
+}
+
+async function _exportActiveLayerSelectionViaImaging(bounds) {
+  var docId = _activeDocId();
+  var layerId = Number(_activeLayerId());
+  if (!bounds) bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
+  var rgba = null;
+  // imaging 读取需要 modal 作用域，但 executeAsModal 本身不切换/复制文档，因此不会闪切。
+  await executeAsModal(async function () {
+    var res = await imaging.getPixels({
+      documentID: docId,
+      layerID: layerId,
+      sourceBounds: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom },
+      colorSpace: "RGB",
+      componentSize: 8,
+      applyAlpha: false,
+    });
+    var imageData = res.imageData;
+    var off = _boundsOffset(res.sourceBounds, bounds);
+    var comps = imageData.components || 4;
+    var data = await imageData.getData({ chunky: true });
+    rgba = _padRgbaToRect(data, comps, imageData.width, imageData.height, off.left, off.top, bounds);
+    try { if (typeof imageData.dispose === "function") imageData.dispose(); } catch (_) {}
+  }, { commandName: "读取选区图层像素(imaging)" });
+  var png = _encodePng(rgba, bounds.width, bounds.height, 4);
+  return { image: bytesToBase64(png), bounds: bounds };
+}
+
+async function _readSelectionGray(bounds) {
+  var docId = _activeDocId();
+  var gray = null;
+  // 同样在 modal 作用域内读取选区蒙版；不复制文档，无闪切。
+  await executeAsModal(async function () {
+    var res = await imaging.getSelection({
+      documentID: docId,
+      sourceBounds: { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom },
+    });
+    var imageData = res.imageData;
+    var off = _boundsOffset(res.sourceBounds, bounds);
+    var comps = imageData.components || 1;
+    var data = await imageData.getData({ chunky: true });
+    // imaging.getSelection: 选中处=255(白)，未选中=0(黑)；空白补 0(未选中)。
+    gray = _padGrayToRect(data, comps, imageData.width, imageData.height, off.left, off.top, bounds, 0);
+    try { if (typeof imageData.dispose === "function") imageData.dispose(); } catch (_) {}
+  }, { commandName: "读取选区蒙版(imaging)" });
+  return gray;
+}
+
+async function _exportSelectionMaskViaImaging(forGptImage, keepSelectionSnapshot, cropBounds) {
+  var bounds = _normalizeSelectionCropBounds(cropBounds);
+  var gray = await _readSelectionGray(bounds);
+  var png;
+  if (forGptImage) {
+    // 与旧路径一致: 未选区=不透明白，选区=透明(alpha 随选区羽化过渡)。
+    var n = bounds.width * bounds.height;
+    var rgba = new Uint8Array(n * 4);
+    for (var i = 0; i < n; i++) {
+      var o = i * 4;
+      rgba[o] = 255; rgba[o + 1] = 255; rgba[o + 2] = 255;
+      rgba[o + 3] = 255 - gray[i];
+    }
+    png = _encodePng(rgba, bounds.width, bounds.height, 4);
+  } else {
+    // RunningHub: 选区=白，未选区=黑。
+    png = _encodePng(gray, bounds.width, bounds.height, 1);
+  }
+  var maskB64 = bytesToBase64(png);
+  if (keepSelectionSnapshot) {
+    var channelName = await _snapshotSelectionChannel();
+    return { mask: maskB64, selectionChannelName: channelName };
+  }
+  return maskB64;
+}
+
 async function exportActiveLayerSelectionPNG() {
+  if (_imagingCropSupported()) {
+    try {
+      return await _exportActiveLayerSelectionViaImaging();
+    } catch (e) {
+      addLogEntry("warn", "imaging 图层导出失败，回退复制文档(会闪切): " +
+        (e && e.message ? e.message : e), "插件");
+    }
+  } else {
+    addLogEntry("warn", "当前宿主无 imaging.getPixels/getSelection，使用复制文档导出(会闪切)", "插件");
+  }
+  return await _exportActiveLayerSelectionViaDuplicate();
+}
+
+async function _exportActiveLayerSelectionViaDuplicate() {
   var folder = await localFileSystem.getDataFolder();
   var file = await folder.createFile("comfyps_gpt_edit_input.png", { overwrite: true });
   var token = await localFileSystem.createSessionToken(file);
@@ -1031,6 +1490,20 @@ async function exportActiveLayerSelectionPNG() {
 // 导出当前选区为蒙版 PNG (base64, 默认白=选中；GPT Image 为透明=编辑区)
 // =========================================================================
 async function exportSelectionMaskPNG(forGptImage, keepSelectionSnapshot, cropBounds) {
+  // 选区裁切场景(cropBounds 存在)优先走无切换的 imaging 路径；本地整画布调试
+  // (无 cropBounds)保留旧的整画布导出行为。
+  if (cropBounds && _imagingCropSupported()) {
+    try {
+      return await _exportSelectionMaskViaImaging(forGptImage, keepSelectionSnapshot, cropBounds);
+    } catch (e) {
+      addLogEntry("warn", "imaging 蒙版导出失败，回退复制文档(会闪切): " +
+        (e && e.message ? e.message : e), "插件");
+    }
+  }
+  return await _exportSelectionMaskViaDuplicate(forGptImage, keepSelectionSnapshot, cropBounds);
+}
+
+async function _exportSelectionMaskViaDuplicate(forGptImage, keepSelectionSnapshot, cropBounds) {
   var doc = app.activeDocument;
   if (!doc) throw new Error("没有打开的文档");
 
@@ -1337,6 +1810,12 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 
   // 提取任务 ID 并启动进度轮询
   var taskId = resp.headers.get("X-Task-Id");
+  var taskCostType = resp.headers.get("X-ComfyPS-Task-Cost-Type") || "";
+  var taskCost = resp.headers.get("X-ComfyPS-Task-Cost") || "";
+  if (taskCostType !== "coins" && taskCostType !== "money") {
+    taskCostType = "";
+    taskCost = "";
+  }
   if (taskId && onProgress) {
     pollTimer = setInterval(async function () {
       try {
@@ -1352,7 +1831,11 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
   }
 
   try {
-    return await resp.arrayBuffer();
+    return {
+      resultBuffer: await resp.arrayBuffer(),
+      taskCostType: taskCostType,
+      taskCost: taskCost
+    };
   } finally {
     if (pollTimer) clearInterval(pollTimer);
   }
@@ -1522,22 +2005,39 @@ async function removeSelectionSnapshotChannel(channelName) {
 // =========================================================================
 // 工作队列: 文件保存
 // =========================================================================
-async function _getOrCreateCacheFolder(psDocName, taskId) {
-  var base;
+function _sanitizeDocName(psDocName) {
+  return (psDocName || "").replace(/[\/\\:\*\?"<>\|]/g, "_") || "untitled";
+}
+
+// 解析缓存根目录(自定义路径或插件数据目录)。
+async function _getCacheBaseFolder() {
   var storedCacheMode = localStorage.getItem(SETTINGS_KEYS.cacheMode);
   var cacheMode = storedCacheMode
     || (localStorage.getItem("comfyps.cacheBasePath") ? "custom" : "default");
   var token = cacheMode === "custom" ? localStorage.getItem("comfyps.cacheBasePath") : "";
   if (token) {
     try {
-      base = await localFileSystem.getEntryForPersistentToken(token);
+      return await localFileSystem.getEntryForPersistentToken(token);
     } catch (_) {
-      base = await localFileSystem.getDataFolder();
+      return await localFileSystem.getDataFolder();
     }
-  } else {
-    base = await localFileSystem.getDataFolder();
   }
-  var safeName = psDocName.replace(/[\/\\:\*\?"<>\|]/g, "_") || "untitled";
+  return await localFileSystem.getDataFolder();
+}
+
+// 在父目录里按名查已有子目录，找不到返回 null(不新建)。
+async function _findChildFolder(parent, name) {
+  if (!parent || typeof parent.getEntries !== "function") return null;
+  var entries = await parent.getEntries();
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i] && entries[i].name === name && entries[i].isFolder) return entries[i];
+  }
+  return null;
+}
+
+async function _getOrCreateCacheFolder(psDocName, taskId) {
+  var base = await _getCacheBaseFolder();
+  var safeName = _sanitizeDocName(psDocName);
   var docFolder;
   try {
     docFolder = await base.createEntry(safeName, { type: require("uxp").storage.types.folder, overwrite: false });
@@ -1591,8 +2091,175 @@ async function saveTaskResult(resultBuffer, maskB64, taskId, psDocName) {
 }
 
 // =========================================================================
+// 工作队列: 历史任务持久化 (按 PS 文件名 / taskId 存 meta.json，重启后可重建)
+// =========================================================================
+function getActiveDocName() {
+  try {
+    return (app.activeDocument && (app.activeDocument.name || "untitled")) || "";
+  } catch (_) { return ""; }
+}
+
+function _utf8Format() {
+  // 真实 UXP: formats.utf8; dev mock 里补了同名字段。
+  return (formats && formats.utf8) ? formats.utf8 : "utf8";
+}
+
+// 写入任务元数据，供下次打开队列页重建历史(仅对已保存结果的完成任务有意义)。
+async function writeTaskMeta(task, psDocName) {
+  if (!task || !task.id) return;
+  try {
+    var folder = await _getOrCreateCacheFolder(psDocName, task.id);
+    var meta = {
+      id: task.id,
+      wfName: task.wfName || "",
+      wfId: task.wfId || "",
+      layerName: task.layerName || "",
+      status: task.status || "completed",
+      createdAt: task.createdAt || Date.now(),
+      completedAt: task.completedAt || Date.now(),
+      durationMs: (typeof task.durationMs === "number") ? task.durationMs : null,
+      taskCostType: task.taskCostType || "",
+      taskCost: task.taskCost || "",
+      hasMask: !!task.hasMask,
+      savedOk: !!task.savedOk,
+      placement: task.placement || null,
+      psDocName: psDocName || ""
+    };
+    var f = await folder.createEntry("meta.json", {
+      type: require("uxp").storage.types.file, overwrite: true
+    });
+    await f.write(JSON.stringify(meta), { format: _utf8Format() });
+  } catch (e) {
+    console.warn("ComfyPS: 写入任务元数据失败", e);
+  }
+}
+
+// 扫描某个 PS 文档的缓存目录，重建其历史任务(有 result.png 才算可重导入)。
+async function scanDocHistory(psDocName) {
+  if (!psDocName) return [];
+  var items = [];
+  try {
+    var base = await _getCacheBaseFolder();
+    var docFolder = await _findChildFolder(base, _sanitizeDocName(psDocName));
+    if (!docFolder || typeof docFolder.getEntries !== "function") return [];
+    var taskFolders = await docFolder.getEntries();
+    for (var i = 0; i < taskFolders.length; i++) {
+      var tf = taskFolders[i];
+      if (!tf || !tf.isFolder || typeof tf.getEntries !== "function") continue;
+      var item = await _historyItemFromFolder(tf, psDocName);
+      if (item) items.push(item);
+    }
+  } catch (e) {
+    console.warn("ComfyPS: 扫描历史任务失败", e);
+    return [];
+  }
+  items.sort(function (a, b) {
+    return (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
+  });
+  return items;
+}
+
+async function _historyItemFromFolder(taskFolder, psDocName) {
+  var entries = await taskFolder.getEntries();
+  var resultFile = null, maskFile = null, metaFile = null;
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (!e || e.isFolder) continue;
+    if (e.name === "result.png") resultFile = e;
+    else if (e.name === "mask.png") maskFile = e;
+    else if (e.name === "meta.json") metaFile = e;
+  }
+  if (!resultFile) return null; // 没有结果图不可重导入，跳过
+  var meta = {};
+  if (metaFile) {
+    try { meta = JSON.parse(await metaFile.read({ format: _utf8Format() })) || {}; }
+    catch (_) { meta = {}; }
+  }
+  return {
+    id: meta.id || taskFolder.name,
+    wfName: meta.wfName || "历史任务",
+    wfId: meta.wfId || "",
+    layerName: meta.layerName || ("ComfyPS - " + (meta.wfName || "历史任务")),
+    status: "completed",
+    runState: null,
+    resultFile: resultFile,
+    maskFile: maskFile,
+    hasMask: (typeof meta.hasMask === "boolean") ? meta.hasMask : !!maskFile,
+    // 跨会话后选区快照通道已丢失：历史导入只按 placement 贴回，不再恢复选区蒙版。
+    revealSelection: false,
+    selectionSnapshotChannel: "",
+    placement: meta.placement || null,
+    thumbUrl: "",           // 缩略图在渲染时按需从 result.png 懒加载
+    savedOk: true,
+    percent: 100,
+    progressMsg: "",
+    createdAt: Number(meta.createdAt) || 0,
+    completedAt: Number(meta.completedAt) || 0,
+    durationMs: (typeof meta.durationMs === "number") ? meta.durationMs : null,
+    taskCostType: meta.taskCostType || "",
+    taskCost: meta.taskCost || "",
+    psDocName: psDocName,
+    fromHistory: true
+  };
+}
+
+async function deleteTaskFolderFromDisk(psDocName, taskId) {
+  try {
+    var base = await _getCacheBaseFolder();
+    var docFolder = await _findChildFolder(base, _sanitizeDocName(psDocName));
+    if (!docFolder) return;
+    var tf = await _findChildFolder(docFolder, taskId);
+    if (tf && typeof tf.delete === "function") await tf.delete();
+  } catch (e) {
+    console.warn("ComfyPS: 删除历史任务目录失败", e);
+  }
+}
+
+// =========================================================================
 // 工作队列: UI 渲染与操作
 // =========================================================================
+var _sessionTasks = [];          // 本会话创建的所有任务(跨文档)，按 psDocName 标记
+var _historyQueue = [];          // 当前查看文档的磁盘历史任务
+var _queueViewDocName = "";      // 队列页当前展示的 PS 文档名
+
+// 用会话任务(当前文档) + 磁盘历史(去重) 重建 _workQueue 视图。
+function rebuildWorkQueueView(selectedId) {
+  var docName = _queueViewDocName;
+  var seen = {};
+  var list = [];
+  for (var i = 0; i < _sessionTasks.length; i++) {
+    var t = _sessionTasks[i];
+    if (t && t.psDocName === docName) { list.push(t); seen[t.id] = true; }
+  }
+  for (var h = 0; h < _historyQueue.length; h++) {
+    var hi = _historyQueue[h];
+    if (hi && !seen[hi.id]) { list.push(hi); seen[hi.id] = true; }
+  }
+  _workQueue = list;
+  sortWorkQueue(selectedId);
+}
+
+// 打开队列页时：扫描当前文档历史并重建视图。
+async function loadQueueHistoryForActiveDoc() {
+  var docName = getActiveDocName();
+  _queueViewDocName = docName;
+  updateQueueDocHeader(docName);
+  var prevSelectedId = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length)
+    ? _workQueue[_selectedQueueIdx].id : "";
+  try {
+    _historyQueue = await scanDocHistory(docName);
+  } catch (_) {
+    _historyQueue = [];
+  }
+  rebuildWorkQueueView(prevSelectedId);
+  renderWorkQueue();
+}
+
+function updateQueueDocHeader(docName) {
+  var el = $("queueDocName");
+  if (el) el.textContent = docName || "未打开文档";
+}
+
 function renderQueueProgress() {
   var fill = $("queueProgressFill");
   var msg = $("queueProgressMsg");
@@ -1645,7 +2312,6 @@ function sortWorkQueue(selectedTaskId) {
 
 function updateQueueControls() {
   var importBtn = $("queueImportBtn");
-  var previewBtn = $("queuePreviewBtn");
   var stopBtn = $("queueStopBtn");
   var deleteBtn = $("queueDeleteBtn");
   var section = $("workQueueSection");
@@ -1656,7 +2322,6 @@ function updateQueueControls() {
   var isRunning = selectedTask && selectedTask.status === "running";
 
   if (importBtn) importBtn.disabled = !(isCompleted && selectedTask.resultFile);
-  if (previewBtn) previewBtn.disabled = !(isCompleted && selectedTask.thumbUrl);
   if (stopBtn) stopBtn.disabled = !isRunning;
   if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
   if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
@@ -1708,11 +2373,20 @@ function formatQueueDuration(durationMs) {
   return "完成耗时 " + hours + " 小时 " + remainingMinutes + " 分";
 }
 
+function formatQueueTaskCost(task) {
+  if (!task || (task.taskCostType !== "coins" && task.taskCostType !== "money")) return "";
+  if (task.taskCost === null || typeof task.taskCost === "undefined") return "";
+  var value = String(task.taskCost).replace(/^\s+|\s+$/g, "");
+  if (!value) return "";
+  return task.taskCostType === "coins" ? "消耗 " + value + " RH币" : "消耗 ¥" + value;
+}
+
 function seedDevWorkQueue() {
-  if (!IS_DEV || _workQueue.length > 0) return;
+  if (!IS_DEV || _sessionTasks.length > 0) return;
   var demoThumb = "/demo-image.png";
   var demoNow = Date.now();
-  _workQueue = [
+  var demoDoc = getActiveDocName() || "demo-document.psd";
+  _sessionTasks = [
     {
       id: "demo-running",
       wfName: "局部编辑",
@@ -1730,7 +2404,8 @@ function seedDevWorkQueue() {
       savedOk: false,
       percent: 65,
       progressMsg: "正在生成结果…",
-      createdAt: demoNow - 38000
+      createdAt: demoNow - 38000,
+      psDocName: demoDoc
     },
     {
       id: "demo-completed",
@@ -1750,7 +2425,10 @@ function seedDevWorkQueue() {
       percent: 100,
       progressMsg: "处理完成",
       createdAt: demoNow - 12400,
-      durationMs: 8400
+      durationMs: 8400,
+      taskCostType: "coins",
+      taskCost: "17",
+      psDocName: demoDoc
     },
     {
       id: "demo-failed",
@@ -1769,11 +2447,26 @@ function seedDevWorkQueue() {
       savedOk: false,
       percent: 0,
       progressMsg: "演示任务失败",
-      createdAt: demoNow - 76000
+      createdAt: demoNow - 76000,
+      psDocName: demoDoc
     }
   ];
-  sortWorkQueue("demo-completed");
+  _queueViewDocName = demoDoc;
+  rebuildWorkQueueView("demo-completed");
   renderQueueTabBadge();
+}
+
+async function _loadThumbFromResult(task, img) {
+  if (!task || !task.resultFile) return;
+  try {
+    var bytes = await task.resultFile.read({ format: formats.binary });
+    if (!bytes || !bytes.byteLength) return;
+    var blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+    var url = URL.createObjectURL(blob);
+    task.thumbUrl = url;
+    if (img) img.src = url;
+    updateQueueControls(); // 缩略图就绪后“预览”按钮可用性可能变化
+  } catch (_) {}
 }
 
 function renderWorkQueue() {
@@ -1799,8 +2492,23 @@ function renderWorkQueue() {
       } else {
         var img = document.createElement("img");
         img.className = "queue-thumb";
-        img.src = task.thumbUrl || "";
         img.alt = task.wfName;
+        img.title = "点击预览";
+        img.style.cursor = "pointer";
+        if (task.thumbUrl) {
+          img.src = task.thumbUrl;
+        } else if (task.resultFile) {
+          // 历史任务：缩略图按需从 result.png 懒加载，避免打开队列页时一次性读全部结果。
+          _loadThumbFromResult(task, img);
+        }
+        // 点击缩略图：选中并直接打开预览。
+        (function (t, index) {
+          img.addEventListener("click", function (ev) {
+            if (ev && ev.stopPropagation) ev.stopPropagation();
+            selectWorkQueueTask(index);
+            openQueuePreview(t);
+          });
+        })(task, idx);
         card.appendChild(img);
       }
 
@@ -1824,6 +2532,12 @@ function renderWorkQueue() {
         var duration = document.createElement("span");
         duration.textContent = formatQueueDuration(task.durationMs);
         meta.appendChild(duration);
+      }
+      var taskCost = formatQueueTaskCost(task);
+      if (taskCost) {
+        var cost = document.createElement("span");
+        cost.textContent = taskCost;
+        meta.appendChild(cost);
       }
       cardBody.appendChild(meta);
 
@@ -1898,9 +2612,12 @@ async function onQueueImportClick() {
   }
 }
 
-function onQueuePreviewClick() {
-  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
-  var task = _workQueue[_selectedQueueIdx];
+// 点击任务缩略图直接预览。历史任务缩略图可能尚未懒加载，这里补读一次。
+async function openQueuePreview(task) {
+  if (!task || task.status === "running") return;
+  if (!task.thumbUrl && task.resultFile) {
+    await _loadThumbFromResult(task, null);
+  }
   if (!task.thumbUrl) { setStatus("没有可预览的图像", "err"); return; }
   var modal = $("queuePreviewModal");
   var modalImg = $("queuePreviewImg");
@@ -1946,7 +2663,25 @@ function onQueueDeleteClick() {
   if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
   var task = _workQueue[_selectedQueueIdx];
   if (!task || task.status === "running") return;
+  // 已保存结果的任务(含历史)删除时一并清掉磁盘目录，避免下次扫描又出现。
+  var hasDisk = !!(task.resultFile || task.fromHistory);
+  if (hasDisk && typeof confirm === "function"
+    && !confirm("删除该任务及其磁盘缓存结果？此操作不可恢复。")) {
+    return;
+  }
   if (task.thumbUrl) { try { URL.revokeObjectURL(task.thumbUrl); } catch (_) {} }
+
+  // 从会话主表与历史缓存中移除
+  for (var s = _sessionTasks.length - 1; s >= 0; s--) {
+    if (_sessionTasks[s] && _sessionTasks[s].id === task.id) _sessionTasks.splice(s, 1);
+  }
+  for (var h = _historyQueue.length - 1; h >= 0; h--) {
+    if (_historyQueue[h] && _historyQueue[h].id === task.id) _historyQueue.splice(h, 1);
+  }
+  if (hasDisk) {
+    deleteTaskFolderFromDisk(task.psDocName || _queueViewDocName, task.id);
+  }
+
   _workQueue.splice(_selectedQueueIdx, 1);
   if (_workQueue.length === 0) {
     _selectedQueueIdx = -1;
@@ -2219,6 +2954,9 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
 var _bridgeOnline = false;
 var _healthPollTimer = 0;
 var _restarting = false;
+var _launchingBridge = false;
+var _bridgeAutoStartTried = false; // 本会话仅自动启动桥一次
+var _bridgeBtnMode = "restart"; // "restart"=桥在线时重启; "start"=桥离线时启动
 var _lastBridgeUiLog = "";
 
 async function checkBridgeHealth() {
@@ -2243,7 +2981,19 @@ async function checkBridgeHealth() {
   } catch (_) {
     _setBridgeBarUI("off", "桥未运行", true);
     _bridgeOnline = false;
+    _maybeAutoStartBridge();
   }
+}
+
+// 打开插件时若桥离线，自动尝试启动一次(需设置开启且宿主支持 shell.openPath)。
+function _maybeAutoStartBridge() {
+  if (_bridgeAutoStartTried || _launchingBridge || _restarting) return;
+  var s = loadSettings();
+  if (!s.autoStartBridge || !s.bridgeUrl) return;
+  if (!uxpShell || typeof uxpShell.openPath !== "function") return;
+  _bridgeAutoStartTried = true;
+  addLogEntry("info", "检测到桥离线，正在自动启动桥…", "插件");
+  startBridgeViaShell();
 }
 
 function _setBridgeBarUI(state, text, restartEnabled) {
@@ -2268,7 +3018,16 @@ function _setBridgeBarUI(state, text, restartEnabled) {
     if (_restarting) {
       btn.disabled = true;
       btn.textContent = "重启中…";
+    } else if (_launchingBridge) {
+      btn.disabled = true;
+      btn.textContent = "启动中…";
+    } else if (state === "off") {
+      // 桥离线时按钮变为“启动桥”(通过 shell.openPath 拉起启动脚本)。
+      _bridgeBtnMode = "start";
+      btn.disabled = !restartEnabled;
+      btn.textContent = "▶ 启动桥";
     } else {
+      _bridgeBtnMode = "restart";
       btn.disabled = !restartEnabled;
       btn.textContent = "⟳ 重启桥";
     }
@@ -2313,6 +3072,71 @@ async function restartBridge() {
   }
   _restarting = false;
   setStatus("桥重启后超时未恢复, 请手动检查", "err");
+  checkBridgeHealth();
+}
+
+// UXP 沙箱无法 spawn 进程，但可用 shell.openPath 打开一个启动脚本(.command)，
+// 由 macOS 运行它来拉起 Python 桥。首次会弹用户授权框，并可见地打开一个终端窗口。
+async function _bridgeLauncherPath() {
+  if (!localFileSystem || typeof localFileSystem.getPluginFolder !== "function") {
+    throw new Error("当前宿主不支持定位插件目录");
+  }
+  var folder = await localFileSystem.getPluginFolder();
+  var base = folder && folder.nativePath;
+  if (!base) throw new Error("无法获取插件目录路径");
+  var sep = base.charAt(base.length - 1) === "/" ? "" : "/";
+  return base + sep + "start_bridge.command";
+}
+
+async function startBridgeViaShell() {
+  if (_launchingBridge || _restarting) return;
+  if (!uxpShell || typeof uxpShell.openPath !== "function") {
+    setStatus("当前宿主不支持自动启动桥，请手动运行 bridge.py", "err");
+    return;
+  }
+  _launchingBridge = true;
+  _setBridgeBarUI("chk", "正在启动桥…", false);
+  setStatus("正在启动本地桥…");
+
+  var launcherPath;
+  try {
+    launcherPath = await _bridgeLauncherPath();
+    var err = await uxpShell.openPath(
+      launcherPath,
+      "启动 ComfyPS 本地桥：将打开终端运行 Python 桥 (bridge.py)。"
+    );
+    if (err) throw new Error(err);
+    addLogEntry("info", "已请求启动桥: " + launcherPath, "插件");
+    setStatus("已请求启动桥，等待就绪…");
+  } catch (e) {
+    _launchingBridge = false;
+    setStatus("启动桥失败: " + (e && e.message ? e.message : String(e)), "err");
+    addLogEntry("error", "启动桥失败: " + (e && e.message ? e.message : e) +
+      (launcherPath ? " (" + launcherPath + ")" : ""), "插件");
+    checkBridgeHealth();
+    return;
+  }
+
+  var settings = loadSettings();
+  var bridgeUrl = settings.bridgeUrl ? settings.bridgeUrl.replace(/\/+$/, "") : "";
+  var attempts = 0;
+  while (attempts < 40) {
+    await new Promise(function (r) { setTimeout(r, 500); });
+    attempts++;
+    if (bridgeUrl) {
+      try {
+        var hr = await fetchWithTimeout(bridgeUrl + "/health", null, 2000);
+        if (hr.ok) {
+          _launchingBridge = false;
+          setStatus("桥已启动 ✓", "ok");
+          checkBridgeHealth();
+          return;
+        }
+      } catch (_) {}
+    }
+  }
+  _launchingBridge = false;
+  setStatus("桥启动后超时未就绪，请检查弹出的终端窗口是否有报错", "err");
   checkBridgeHealth();
 }
 
@@ -2625,11 +3449,8 @@ async function onRunClick() {
   if (runState.localValidation) {
     setStatus("正在进行本地验证…", "");
   } else {
+    // 提交提示走短暂弹窗，自动消失，无需手动清理。
     setStatus("任务已提交 ✓", "ok");
-    setTimeout(function () {
-      var el = $("status");
-      if (el && el.textContent === "任务已提交 ✓") { el.textContent = ""; el.className = ""; }
-    }, 2000);
   }
 
   // 立即入队（非本地验证模式）
@@ -2650,6 +3471,8 @@ async function onRunClick() {
       status: "running",
       createdAt: Date.now(),
       durationMs: null,
+      taskCostType: "",
+      taskCost: "",
       runState: runState,
       runSlot: runSlot,
       resultFile: null,
@@ -2661,7 +3484,8 @@ async function onRunClick() {
       thumbUrl: "",
       savedOk: false,
       percent: 0,
-      progressMsg: "正在提交任务…"
+      progressMsg: "正在提交任务…",
+      psDocName: psDocName || "untitled"
     };
     // 进度回调：更新队列项数据，并刷新进度条显示
     (function (item) {
@@ -2675,8 +3499,13 @@ async function onRunClick() {
         renderQueueProgress();
       };
     })(queueItem);
-    _workQueue.unshift(queueItem);
-    sortWorkQueue(queueItem.id);
+    // 任务进入会话主表(跨文档)；仅当队列页正展示同一文档时才并入可见视图。
+    _sessionTasks.unshift(queueItem);
+    if (!_queueViewDocName) _queueViewDocName = queueItem.psDocName;
+    if (queueItem.psDocName === _queueViewDocName) {
+      _workQueue.unshift(queueItem);
+      sortWorkQueue(queueItem.id);
+    }
     renderWorkQueue();
   }
 
@@ -2777,10 +3606,15 @@ async function onRunClick() {
         revealSelection = false;
         selectionSnapshotChannel = "";
       } else {
-        resultBuffer = await callBridge(
+        var bridgeResult = await callBridge(
           settings.bridgeUrl, imageB64, maskB64, prompt, settings, wf, inputs,
           runState.taskId, runState.onProgress
         );
+        resultBuffer = bridgeResult.resultBuffer;
+        if (queueItem) {
+          queueItem.taskCostType = bridgeResult.taskCostType;
+          queueItem.taskCost = bridgeResult.taskCost;
+        }
       }
     }
 
@@ -2816,6 +3650,10 @@ async function onRunClick() {
       queueItem.completedAt = Date.now();
       queueItem.durationMs = queueItem.completedAt - queueItem.createdAt;
       queueItem.runState = null;
+      // 落盘任务元数据，便于下次打开队列页按 PS 文件名重建历史(仅保存成功的)。
+      if (queueItem.savedOk) {
+        writeTaskMeta(queueItem, psDocName).catch(function () {});
+      }
     }
     selectionSnapshotChannel = "";
     renderWorkQueue();
@@ -2881,6 +3719,8 @@ function renderSettings() {
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
   var rhLocalDebugInput = $("settingRhLocalDebug");
   if (rhLocalDebugInput) rhLocalDebugInput.checked = s.rhLocalDebug;
+  var autoStartBridgeInput = $("settingAutoStartBridge");
+  if (autoStartBridgeInput) autoStartBridgeInput.checked = s.autoStartBridge;
   _segSelect("segBackend", s.backend);
   _segSelect("segSite", s.rhSite);
   _segSelect("segTheme", s.theme);
@@ -3058,6 +3898,7 @@ function saveAllSettings() {
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
+  var autoStartBridge = !($("settingAutoStartBridge")) || !!$("settingAutoStartBridge").checked;
   var backend = _segGet("segBackend") || "runninghub";
   var site = _segGet("segSite") || "ai";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
@@ -3075,6 +3916,7 @@ function saveAllSettings() {
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
   saveSetting("rhLocalDebug", rhLocalDebug ? "true" : "false");
+  saveSetting("autoStartBridge", autoStartBridge ? "true" : "false");
   saveSetting("theme", theme);
   saveSetting("cacheMode", cacheMode);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
@@ -3102,14 +3944,18 @@ function saveAllSettings() {
   // ---- 工作队列按钮 ----
   var queueImportBtn = $("queueImportBtn");
   if (queueImportBtn) queueImportBtn.addEventListener("click", onQueueImportClick);
-  var queuePreviewBtn = $("queuePreviewBtn");
-  if (queuePreviewBtn) queuePreviewBtn.addEventListener("click", onQueuePreviewClick);
   var queueStopBtn = $("queueStopBtn");
   if (queueStopBtn) queueStopBtn.addEventListener("click", onQueueStopClick);
   var queueDeleteBtn = $("queueDeleteBtn");
   if (queueDeleteBtn) queueDeleteBtn.addEventListener("click", onQueueDeleteClick);
+  var queueRefreshBtn = $("queueRefreshBtn");
+  if (queueRefreshBtn) queueRefreshBtn.addEventListener("click", function () {
+    loadQueueHistoryForActiveDoc();
+  });
   var queuePreviewClose = $("queuePreviewClose");
   if (queuePreviewClose) queuePreviewClose.addEventListener("click", onQueuePreviewClose);
+  var toastEl = $("toast");
+  if (toastEl) toastEl.addEventListener("click", function () { showToast(""); });
   var queuePreviewModal = $("queuePreviewModal");
   if (queuePreviewModal) {
     queuePreviewModal.addEventListener("click", function (e) {
@@ -3145,11 +3991,14 @@ function saveAllSettings() {
     });
   }
 
-  // ---- 重启桥按钮 ----
+  // ---- 启动/重启桥按钮 ----
   var restartBtn = $("restartBtn");
   if (restartBtn) {
     restartBtn.addEventListener("click", function () {
-      if (typeof confirm === "function" ? confirm("确定要重启本地桥吗？正在处理的任务将丢失。") : true) {
+      if (_bridgeBtnMode === "start") {
+        // 桥离线：通过 shell.openPath 拉起启动脚本(会弹授权框、打开终端)。
+        startBridgeViaShell();
+      } else if (typeof confirm === "function" ? confirm("确定要重启本地桥吗？正在处理的任务将丢失。") : true) {
         restartBridge();
       }
     });
@@ -3230,6 +4079,8 @@ function saveAllSettings() {
   if (gptImageLocalValidation) gptImageLocalValidation.addEventListener("change", saveAllSettings);
   var rhLocalDebugChk = $("settingRhLocalDebug");
   if (rhLocalDebugChk) rhLocalDebugChk.addEventListener("change", saveAllSettings);
+  var autoStartBridgeChk = $("settingAutoStartBridge");
+  if (autoStartBridgeChk) autoStartBridgeChk.addEventListener("change", saveAllSettings);
 
   // ---- 设置页: 测试 Key ----
   var btnTestKey = $("btnTestKey");

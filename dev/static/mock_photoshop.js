@@ -239,9 +239,80 @@
   };
 
   // -------------------------------------------------------------------
-  // imaging (占位, main.js 不直接调用)
+  // imaging — 模拟 photoshop.imaging 的无切换裁切读取
+  // getPixels: 返回 sourceBounds 区域的 RGBA 像素(合成渐变图)
+  // getSelection: 返回选区蒙版(选区内=255 白, 选区外=0 黑)
   // -------------------------------------------------------------------
-  const imaging = {};
+  function _makeImageData(width, height, components, data) {
+    return {
+      width,
+      height,
+      components,
+      componentSize: 8,
+      colorSpace: components >= 3 ? "RGB" : "Grayscale",
+      hasAlpha: components === 4 || components === 2,
+      pixelFormat: components === 4 ? "RGBA" : components >= 3 ? "RGB" : "Grayscale",
+      async getData() {
+        return data;
+      },
+      dispose() {},
+    };
+  }
+
+  function _rectFromBounds(b) {
+    const left = b.left | 0;
+    const top = b.top | 0;
+    const right = b.right !== undefined ? b.right | 0 : left + (b.width | 0);
+    const bottom = b.bottom !== undefined ? b.bottom | 0 : top + (b.height | 0);
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  const imaging = {
+    async getPixels(options) {
+      const b = _rectFromBounds(options.sourceBounds || {
+        left: 0, top: 0, right: MOCK_DOC.width, bottom: MOCK_DOC.height,
+      });
+      const w = b.width, h = b.height;
+      const data = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const o = (y * w + x) * 4;
+          data[o] = Math.round(((b.left + x) * 255) / Math.max(1, MOCK_DOC.width - 1));
+          data[o + 1] = Math.round(((b.top + y) * 255) / Math.max(1, MOCK_DOC.height - 1));
+          data[o + 2] = 128;
+          data[o + 3] = 255;
+        }
+      }
+      return {
+        imageData: _makeImageData(w, h, 4, data),
+        sourceBounds: { left: b.left, top: b.top, right: b.right, bottom: b.bottom },
+      };
+    },
+    async getSelection(options) {
+      const sel = MOCK_DOC._selection;
+      const b = _rectFromBounds(options.sourceBounds || {
+        left: 0, top: 0, right: MOCK_DOC.width, bottom: MOCK_DOC.height,
+      });
+      const w = b.width, h = b.height;
+      const data = new Uint8Array(w * h);
+      if (sel) {
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const ax = b.left + x, ay = b.top + y;
+            const inside = ax >= sel.x && ax < sel.x + sel.w && ay >= sel.y && ay < sel.y + sel.h;
+            data[y * w + x] = inside ? 255 : 0;
+          }
+        }
+      }
+      return {
+        imageData: _makeImageData(w, h, 1, data),
+        sourceBounds: { left: b.left, top: b.top, right: b.right, bottom: b.bottom },
+      };
+    },
+    async encodeImageData(_options) {
+      throw new Error("mock encodeImageData 未实现(插件应使用内置 PNG 编码)");
+    },
+  };
 
   // -------------------------------------------------------------------
   // 暴露到 window

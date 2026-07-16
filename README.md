@@ -66,17 +66,31 @@ python bridge/bridge.py
 # 监听 http://127.0.0.1:8765
 ```
 
+> 也可以在面板顶部桥状态栏点 **「▶ 启动桥」**(桥离线时显示)让插件替你拉起桥：它通过 `uxp.shell.openPath` 打开 `plugin/start_bridge.command`,自动定位仓库、优先用 `.venv`、清占用端口后运行 `bridge.py`。首次会弹一次系统授权确认,并打开一个终端窗口(关掉即停桥)。桥在线时该按钮变为「⟳ 重启桥」。
+
 ### 加载插件到 Photoshop(2022+ / v23.0+)
 - **推荐**:装 **UXP Developer Tool**(通过 Creative Cloud)→ Add Plugin 选 `plugin/manifest.json` → Load。
 - **免下载**:侧载——把 `plugin/` 拷到
   `~/Library/Application Support/Adobe/UXP/Plugins/External/`,并在
   `~/Library/Application Support/Adobe/UXP/PluginsInfo/v1/PS.json` 加一条 `enabled` 记录
   (macOS 用正斜杠路径),重启 Photoshop。
+- **开发**:把 External 插件目录里的 `main.js` / `index.html` / `manifest.json` / `icons`
+  换成指向仓库 `plugin/` 的**符号链接**,这样每次全新启动 Photoshop 都加载最新版、无需手动 cp
+  (已开着的面板仍需重载或重启 PS 才生效;边写边看可用 `python dev/dev_server.py` 浏览器预览)。
 
 ### 操作
 1. 打开图片,**选中要处理的图层**,用选框/套索**画一个选区**。
-2. 点面板里的「运行」。
-3. 状态走完「导出 → 云端处理 → 贴回」后,结果作为新图层出现,选区外像素不变。
+2. (局部编辑)在「模型」下拉里选 **QwenImage**(默认)或 **Boogu**。
+3. 点面板里的「运行」。
+4. 状态走完「导出 → 云端处理 → 贴回」后,结果作为新图层出现,选区外像素不变。
+
+> 局部编辑只上传**活动图层的选区外接矩形**(图片与蒙版严格同尺寸)。导出走 Photoshop Imaging API(`getPixels`/`getSelection`)在插件侧裁切并编码 PNG,**不复制文档、不闪切**;返图按原矩形坐标贴回。缺少 Imaging 能力的旧宿主会自动回退到"复制文档裁切"的老路径。
+
+### 任务队列
+
+「任务队列」页**按当前 PS 文件名**列出该文档的历史任务:完成结果会缓存到磁盘并写入 `meta.json`,**重开 Photoshop 后仍能加载**。切换文档时列表自动跟随,可点「刷新」重扫。选中某条可**预览 / 导入(按原坐标贴回) / 删除**(删除会一并清掉磁盘缓存)。
+
+> 注意:跨 Photoshop 重启后,提交时的选区快照通道已丢失,历史任务导入**只按坐标贴回、不再自动恢复选区蒙版**(结果图本身已包含编辑内容)。
 
 ## GPT Image
 

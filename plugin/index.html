@@ -485,6 +485,33 @@
     #status.err { color: var(--danger); }
     #status.ok  { color: var(--success); }
 
+    /* ---- Toast 短暂弹窗（提交/完成/失败等消息） ---- */
+    #toast {
+      display: none;
+      position: fixed;
+      left: 8px; right: 8px; bottom: 14px;
+      padding: 8px 12px;
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      border-radius: var(--radius);
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+      z-index: 10000;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.22s ease, transform 0.22s ease;
+      text-align: center;
+      cursor: pointer;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.err { border-left-color: var(--danger); color: var(--danger); }
+    #toast.ok  { border-left-color: var(--success); color: var(--success); }
+
     /* ---- Settings ---- */
     .settings-stack { display: flex; flex-direction: column; gap: 8px; }
     .settings-card {
@@ -844,12 +871,15 @@
     <!-- ================================================================= -->
     <div id="pageQueue" class="page">
       <div class="page-heading">任务队列</div>
+      <div class="queue-doc-header" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="flex-grow:1;flex-shrink:1;flex-basis:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--text-dim);">当前文档：<span id="queueDocName">未打开文档</span></span>
+        <button id="queueRefreshBtn" class="btn-sm" style="flex-grow:0;flex-shrink:0;">刷新</button>
+      </div>
       <div id="queueEmptyState" class="queue-empty">还没有运行中的任务或历史结果</div>
       <div id="workQueueSection">
         <div class="queue-section-title">运行记录</div>
         <div class="queue-actions">
           <button id="queueImportBtn" class="btn-sm" disabled>导入</button>
-          <button id="queuePreviewBtn" class="btn-sm" disabled>预览</button>
           <button id="queueStopBtn" class="btn-sm btn-danger" disabled>停止</button>
           <button id="queueDeleteBtn" class="btn-sm btn-danger" disabled>删除</button>
         </div>
@@ -903,6 +933,13 @@
             <span id="bridgeBarDot" class="bridge-bar-dot chk"></span>
             <span id="bridgeBarText" class="bridge-bar-text">检测中…</span>
             <button id="restartBtn" class="btn-bar-restart" disabled>⟳ 重启桥</button>
+          </div>
+          <div class="setting-row" style="margin-top:8px;">
+            <label class="setting-checkbox">
+              <input id="settingAutoStartBridge" type="checkbox" checked />
+              <span>打开插件时自动启动桥（离线时）</span>
+            </label>
+            <div class="setting-hint">桥离线时自动通过启动脚本拉起 bridge.py（首次会弹一次系统授权、并打开一个终端窗口）。每次打开插件仅尝试一次；桥已在运行则不重复启动。</div>
           </div>
         </div>
 
@@ -1030,6 +1067,9 @@
     <img id="queuePreviewImg" src="" alt="预览" />
     <button id="queuePreviewClose">关闭</button>
   </div>
+
+  <!-- 短暂提示弹窗（提交/完成/失败等消息，几秒后自动消失，可点击关闭） -->
+  <div id="toast"></div>
 
   <script src="main.js"></script>
 </body>
