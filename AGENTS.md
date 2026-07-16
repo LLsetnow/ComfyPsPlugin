@@ -123,16 +123,24 @@ python bridge/bridge.py           # → http://127.0.0.1:8765
 ### 安装到 Photoshop
 
 插件目录：`~/Library/Application Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/`
-更新文件后需在 PS 中重新加载面板。
 
-**CRITICAL: 每次修改 `plugin/` 目录下的文件后，必须立即同步到 PS 插件目录：**
+**该目录下的文件已用符号链接指向仓库 `plugin/`（单一真源，2026-07-16 起）：**
 
-```bash
-cp plugin/main.js ~/Library/Application\ Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/main.js
-cp plugin/index.html ~/Library/Application\ Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/index.html
+```
+com.llsetnow.comfyps_1.0.0/
+  main.js       -> <repo>/plugin/main.js
+  index.html    -> <repo>/plugin/index.html
+  manifest.json -> <repo>/plugin/manifest.json
+  icons         -> <repo>/plugin/icons
 ```
 
-不要等用户提醒，修改完成后自动执行同步。
+因此：
+
+- **改完 `plugin/` 下的文件无需再手动同步 / cp。** 符号链接下 `cp plugin/main.js <目标>` 会因“源与目标是同一文件”报错，不要再执行，也不要在完成插件改动后自动 cp。
+- **每次全新启动 PS 都会自动加载仓库最新版。**
+- PS 已经开着时改文件不会热更新——需在 PS 中**重新加载面板**（增效工具菜单重载 / 关闭再打开面板）或重启 PS。边写边看请用 `dev/dev_server.py` 浏览器预览（真正热更新）。
+
+首次搭建 / 还原符号链接：删除目录内真实文件后 `ln -s "<repo>/plugin/main.js" "<目标>/main.js"`（index.html / manifest.json / icons 同理）。原始真实文件的备份**不要放在 `External/` 内**，否则会被 PS 当成重复插件。
 
 ## API 端点
 
