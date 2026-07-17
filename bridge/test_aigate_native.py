@@ -233,17 +233,17 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.session.close()
         await self.runner.cleanup()
 
-    async def test_reads_balance_and_formats_cents(self):
+    async def test_reads_raw_balance_with_bearer_token(self):
         from bridge.aigate_native import get_aigate_account
 
         actual = await get_aigate_account("demo-token", self.session, self.api_base)
 
-        self.assertEqual(actual, {"balance": "12898", "balanceLabel": "¥ 128.98"})
+        self.assertEqual(actual, {"balance": "12898"})
         self.assertEqual(
             self.requests[-1]["headers"]["Authorization"], "Bearer demo-token"
         )
 
-    async def test_lists_skus_with_price_label_and_area(self):
+    async def test_lists_skus_with_raw_price_and_bearer_token(self):
         from bridge.aigate_native import list_aigate_skus
 
         actual = await list_aigate_skus(
@@ -254,11 +254,13 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             "skuName": "4090-24GB-DDR5",
             "vmSize": "24",
             "price": "199",
-            "priceLabel": "¥ 1.99 / 小时",
         }])
         self.assertEqual(self.requests[-1]["areaName"], "华东一区")
+        self.assertEqual(
+            self.requests[-1]["headers"]["Authorization"], "Bearer demo-token"
+        )
 
-    async def test_creates_configured_instance_without_echoing_token(self):
+    async def test_creates_configured_instance_with_numeric_image_id_and_bearer_token(self):
         from bridge.aigate_native import create_aigate_instance
 
         actual = await create_aigate_instance("demo-token", "4090-24GB-DDR5", {
@@ -270,9 +272,31 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             "skuName": "4090-24GB-DDR5",
             "areaName": "华东一区",
             "count": 1,
-            "imageId": "42",
+            "imageId": 42,
             "imageType": "2",
         })
+        self.assertEqual(
+            self.requests[-1]["headers"]["Authorization"], "Bearer demo-token"
+        )
+
+    async def test_rejects_missing_or_invalid_image_id_safely(self):
+        from bridge.aigate_native import AigateNativeError, create_aigate_instance
+
+        invalid_configs = [
+            {"areaName": "华东一区", "imageType": "2"},
+            {"areaName": "华东一区", "imageId": "image-42", "imageType": "2"},
+            {"areaName": "华东一区", "imageId": "-1", "imageType": "2"},
+        ]
+        for create_config in invalid_configs:
+            with self.subTest(create_config=create_config):
+                with self.assertRaises(AigateNativeError) as raised:
+                    await create_aigate_instance(
+                        "demo-token", "4090-24GB-DDR5", create_config,
+                        self.session, self.api_base,
+                    )
+                self.assertEqual(raised.exception.code, "AIGATE_CREATE_CONFIG_REQUIRED")
+                self.assertEqual(raised.exception.status, 409)
+        self.assertEqual(self.requests, [])
 
     async def test_lists_running_instances_with_bearer_token(self):
         from bridge.aigate_native import list_running_instances
