@@ -54,6 +54,10 @@ class JsonRequest:
 
 
 class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        if hasattr(bridge, "_aigate_managed_tokens"):
+            bridge._aigate_managed_tokens.clear()
+
     async def test_lists_sanitized_instances(self):
         expected = [{
             "instanceId": "i-1",
@@ -90,6 +94,54 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
             "instanceId": "i-1",
             "action": "close",
         })
+
+    async def test_syncs_managed_instance_ids_without_returning_token(self):
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
+        ):
+            response = await bridge.handle_aigate_instances(JsonRequest({
+                "aigateToken": "demo-token",
+                "managedInstanceIds": ["i-1", "i-1", ""],
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(bridge._aigate_managed_tokens["i-1"], "demo-token")
+        self.assertNotIn("demo-token", response.body.decode("utf-8"))
+
+    async def test_releasing_instance_unregisters_managed_token(self):
+        bridge._aigate_managed_tokens = {"i-1": "demo-token"}
+        with patch.object(
+            bridge,
+            "control_aigate_instance",
+            new=AsyncMock(return_value={"instanceId": "i-1", "action": "release"}),
+        ):
+            response = await bridge.handle_aigate_instance_action(JsonRequest({
+                "aigateToken": "demo-token",
+                "instanceId": "i-1",
+                "action": "release",
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertNotIn("i-1", bridge._aigate_managed_tokens)
+
+    async def test_closes_all_managed_instances_from_lifecycle_request(self):
+        with patch.object(
+            bridge,
+            "close_aigate_instances",
+            new=AsyncMock(return_value={"closed": ["i-1"], "failed": []}),
+        ) as close_instances:
+            response = await bridge.handle_aigate_close_managed(JsonRequest({
+                "aigateToken": "demo-token",
+                "managedInstanceIds": ["i-1"],
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": True,
+            "closed": ["i-1"],
+            "failed": [],
+        })
+        close_instances.assert_awaited_once()
 
     async def test_runs_aigate_native_adapter_without_extra_set_args(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
