@@ -81,6 +81,10 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
         self.slow_instance_list = False
         self.redirect_prompt = False
         self.redirect_target_hits = 0
+        self.personal_images = []
+        self.personal_image_pages = None
+        self.community_images = []
+        self.malformed_image_page = False
         app = web.Application()
 
         async def list_instances(request):
@@ -153,11 +157,36 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                 "instanceId": "new-1", "instanceName": "", "operationStatus": "1",
             }})
 
+        async def image_page(request):
+            body = await request.json()
+            self.requests.append({
+                "kind": "image-page",
+                "headers": dict(request.headers),
+                "body": body,
+            })
+            if self.malformed_image_page:
+                return web.json_response({"code": 0, "data": {"total": "not-a-number"}})
+            records = self.personal_images if body.get("imageType") == "3" else self.community_images
+            if body.get("imageType") == "3" and self.personal_image_pages is not None:
+                page_index = max(0, int(body.get("current") or 1) - 1)
+                records = (
+                    self.personal_image_pages[page_index]
+                    if page_index < len(self.personal_image_pages) else []
+                )
+                total = sum(len(page) for page in self.personal_image_pages)
+            else:
+                total = len(records)
+            return web.json_response({
+                "code": 0,
+                "data": {"total": total, "records": records},
+            })
+
         app.router.add_post("/instance/page", list_instances)
         app.router.add_get("/instance/get", get_instance)
         app.router.add_post("/user/balance", account_balance)
         app.router.add_get("/instance/skuList", sku_list)
         app.router.add_post("/instance/start", start_instance)
+        app.router.add_post("/image/page", image_page)
         app.router.add_get("/instance/{action}", control_instance)
 
         async def upload_image(request):
@@ -297,6 +326,115 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(raised.exception.code, "AIGATE_CREATE_CONFIG_REQUIRED")
                 self.assertEqual(raised.exception.status, 409)
         self.assertEqual(self.requests, [])
+
+    async def test_resolves_personal_image_before_community(self):
+        from bridge.aigate_native import resolve_aigate_create_image
+
+        self.personal_images = [{
+            "worksId": "301", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+        self.community_images = [{
+            "worksId": "302", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+
+        actual = await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+            "areaName": "华东一区", "imageId": "", "imageTypes": ["3", "2"],
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+        }, self.session, self.api_base)
+
+        self.assertEqual(actual["imageId"], 301)
+        self.assertEqual(actual["imageType"], "3")
+        self.assertEqual(
+            [item["body"]["imageType"] for item in self.requests
+             if item.get("kind") == "image-page"],
+            ["3"],
+        )
+
+    async def test_honors_configured_community_before_personal_image_order(self):
+        from bridge.aigate_native import resolve_aigate_create_image
+
+        self.personal_images = [{
+            "worksId": "301", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+        self.community_images = [{
+            "worksId": "302", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+
+        actual = await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+            "areaName": "华东一区", "imageId": "", "imageTypes": ["2", "3"],
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+        }, self.session, self.api_base)
+
+        self.assertEqual(actual, {"imageId": 302, "imageType": "2"})
+        self.assertEqual(
+            [item["body"]["imageType"] for item in self.requests
+             if item.get("kind") == "image-page"],
+            ["2"],
+        )
+
+    async def test_searches_later_personal_image_pages_before_community_fallback(self):
+        from bridge.aigate_native import resolve_aigate_create_image
+
+        self.personal_image_pages = [
+            [{"worksId": "101", "name": "other-image"} for _ in range(20)],
+            [{"worksId": "301", "name": "comfyui-boogu-edit-int8-20260716"}],
+        ]
+
+        actual = await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+            "areaName": "华东一区", "imageId": "", "imageTypes": ["3", "2"],
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+        }, self.session, self.api_base)
+
+        self.assertEqual(actual, {"imageId": 301, "imageType": "3"})
+        requests = [item for item in self.requests if item.get("kind") == "image-page"]
+        self.assertEqual([item["body"]["current"] for item in requests], [1, 2])
+        self.assertEqual([item["body"]["imageType"] for item in requests], ["3", "3"])
+
+    async def test_falls_back_to_community_image_with_area_and_sku(self):
+        from bridge.aigate_native import resolve_aigate_create_image
+
+        self.community_images = [{
+            "worksId": "302", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+
+        actual = await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+            "areaName": "华东一区", "imageId": "", "imageTypes": ["3", "2"],
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+        }, self.session, self.api_base)
+
+        self.assertEqual(actual["imageId"], 302)
+        self.assertEqual(actual["imageType"], "2")
+        community_request = [item for item in self.requests if item.get("kind") == "image-page"][-1]
+        self.assertEqual(community_request["body"], {
+            "current": 1, "pageSize": 20, "imageType": "2", "areaName": "华东一区",
+            "skuName": "4090-24GB-DDR5", "imageName": "comfyui-boogu-edit-int8-20260716",
+            "imageVersion": "",
+        })
+
+    async def test_rejects_create_when_neither_default_image_exists(self):
+        from bridge.aigate_native import AigateNativeError, resolve_aigate_create_image
+
+        with self.assertRaises(AigateNativeError) as raised:
+            await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+                "areaName": "华东一区", "imageId": "", "imageTypes": ["3", "2"],
+                "imageName": "comfyui-boogu-edit-int8-20260716",
+            }, self.session, self.api_base)
+
+        self.assertEqual(raised.exception.code, "AIGATE_IMAGE_NOT_FOUND")
+        self.assertEqual(raised.exception.status, 409)
+
+    async def test_rejects_malformed_image_page_without_echoing_token(self):
+        from bridge.aigate_native import AigateNativeError, resolve_aigate_create_image
+
+        self.malformed_image_page = True
+        with self.assertRaises(AigateNativeError) as raised:
+            await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+                "areaName": "华东一区", "imageId": "", "imageTypes": ["3"],
+                "imageName": "comfyui-boogu-edit-int8-20260716",
+            }, self.session, self.api_base)
+
+        self.assertEqual(raised.exception.code, "AIGATE_BAD_RESPONSE")
+        self.assertNotIn("demo-token", raised.exception.message)
 
     async def test_lists_running_instances_with_bearer_token(self):
         from bridge.aigate_native import list_running_instances

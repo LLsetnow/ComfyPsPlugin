@@ -39,13 +39,13 @@ try:
     from aigate_native import (
         AigateNativeError, close_aigate_instances, control_aigate_instance,
         create_aigate_instance, get_aigate_account, list_aigate_skus,
-        list_instance_summaries, run_native_inpaint,
+        list_instance_summaries, resolve_aigate_create_image, run_native_inpaint,
     )
 except ImportError:
     from bridge.aigate_native import (
         AigateNativeError, close_aigate_instances, control_aigate_instance,
         create_aigate_instance, get_aigate_account, list_aigate_skus,
-        list_instance_summaries, run_native_inpaint,
+        list_instance_summaries, resolve_aigate_create_image, run_native_inpaint,
     )
 
 try:
@@ -237,16 +237,32 @@ def get_aigate_create_config():
         raise AigateNativeError(
             "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置预设 ComfyUI 镜像", 409
         )
-    result = {
-        "areaName": str(raw.get("areaName") or "").strip(),
-        "imageId": raw.get("imageId"),
-        "imageType": str(raw.get("imageType") or "").strip(),
-    }
-    if not result["areaName"] or not result["imageType"]:
+    area_name = str(raw.get("areaName") or "").strip()
+    if not area_name:
         raise AigateNativeError(
-            "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置预设 ComfyUI 镜像", 409
+            "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置云扉区域", 409
         )
-    return result
+    image_id = raw.get("imageId")
+    image_type = str(raw.get("imageType") or "").strip()
+    if image_id is not None and str(image_id).strip() and image_type not in ("2", "3"):
+        raise AigateNativeError(
+            "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置有效的云扉镜像类型", 409
+        )
+    image_types = raw.get("imageTypes")
+    if not isinstance(image_types, list):
+        image_types = ["3", "2"]
+    image_types = [str(value) for value in image_types if str(value) in ("2", "3")]
+    if not image_types:
+        image_types = ["3", "2"]
+    return {
+        "areaName": area_name,
+        "imageId": image_id,
+        "imageType": image_type,
+        "imageName": str(
+            raw.get("imageName") or "comfyui-boogu-edit-int8-20260716"
+        ).strip(),
+        "imageTypes": image_types,
+    }
 
 
 async def handle_aigate_account(request):
@@ -300,8 +316,18 @@ async def handle_aigate_create_instance(request):
                     raise AigateNativeError(
                         "AIGATE_INSTANCE_EXISTS", "云扉控制台已有实例，不能重复创建", 409
                     )
+                sku_name = str(body.get("skuName") or "").strip()
+                if not sku_name:
+                    raise AigateNativeError(
+                        "AIGATE_SKU_REQUIRED", "请选择 GPU 规格", 400
+                    )
+                resolved_image = await resolve_aigate_create_image(
+                    token, sku_name, config, session
+                )
+                create_config = dict(config)
+                create_config.update(resolved_image)
                 result = await create_aigate_instance(
-                    token, body.get("skuName"), config, session
+                    token, sku_name, create_config, session
                 )
             _sync_aigate_managed_instances(token, [result["instanceId"]])
         return cors(web.json_response({"ok": True, "instance": result}))

@@ -69,6 +69,22 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         bridge.CONFIG.clear()
         bridge.CONFIG.update(self.original_config)
 
+    def test_uses_default_named_image_when_no_explicit_id_is_configured(self):
+        bridge.CONFIG["aigateCreate"] = {"areaName": "华东一区"}
+
+        try:
+            actual = bridge.get_aigate_create_config()
+        except bridge.AigateNativeError:
+            actual = None
+
+        self.assertEqual(actual, {
+            "areaName": "华东一区",
+            "imageId": None,
+            "imageType": "",
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+            "imageTypes": ["3", "2"],
+        })
+
     async def test_returns_raw_account_balance_without_echoing_token(self):
         with patch.object(
             bridge, "get_aigate_account", new=AsyncMock(
@@ -173,6 +189,10 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
             bridge, "list_instance_summaries",
             new=AsyncMock(side_effect=list_current_instances),
         ) as listed, patch.object(
+            bridge, "resolve_aigate_create_image",
+            new=AsyncMock(return_value={"imageId": 42, "imageType": "2"}),
+            create=True,
+        ) as resolve, patch.object(
             bridge, "create_aigate_instance",
             new=AsyncMock(side_effect=create_instance),
         ) as create:
@@ -199,6 +219,7 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(created_instances), 1)
         self.assertEqual(create.await_count, 1)
         self.assertEqual(listed.await_count, 2)
+        self.assertEqual(resolve.await_count, 1)
         self.assertEqual(bridge._aigate_managed_tokens, {"new-1": "demo-token"})
 
     async def test_creates_empty_console_instance_with_configured_image_and_registers_it(self):
@@ -211,6 +232,10 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
         ) as listed, patch.object(
+            bridge, "resolve_aigate_create_image",
+            new=AsyncMock(return_value={"imageId": 42, "imageType": "2"}),
+            create=True,
+        ) as resolve, patch.object(
             bridge, "create_aigate_instance", new=AsyncMock(
                 return_value=created_instance
             )
@@ -226,13 +251,16 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
             "instance": created_instance,
         })
         listed.assert_awaited_once()
+        resolve.assert_awaited_once()
         create.assert_awaited_once()
         self.assertEqual(create.await_args.args[0], "demo-token")
         self.assertEqual(create.await_args.args[1], "4090-24GB-DDR5")
         self.assertEqual(create.await_args.args[2], {
             "areaName": "华东一区",
-            "imageId": "42",
+            "imageId": 42,
             "imageType": "2",
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+            "imageTypes": ["3", "2"],
         })
         self.assertEqual(bridge._aigate_managed_tokens, {"new-1": "demo-token"})
 
@@ -247,6 +275,10 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
         ), patch.object(
+            bridge, "resolve_aigate_create_image",
+            new=AsyncMock(return_value={"imageId": 42, "imageType": "2"}),
+            create=True,
+        ), patch.object(
             bridge, "create_aigate_instance", new=AsyncMock(
                 return_value=created_instance
             )
@@ -258,6 +290,95 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(create.await_args.args[2]["imageId"], 42)
+
+    async def test_resolves_image_inside_empty_console_create_lock(self):
+        bridge.CONFIG["aigateCreate"] = {"areaName": "华东一区"}
+        resolved = {"imageId": 301, "imageType": "3"}
+        created = {
+            "instanceId": "new-1",
+            "instanceName": "",
+            "operationStatus": "1",
+            "hasComfyui": True,
+        }
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
+        ), patch.object(
+            bridge, "resolve_aigate_create_image",
+            new=AsyncMock(return_value=resolved),
+            create=True,
+        ) as resolve, patch.object(
+            bridge, "create_aigate_instance", new=AsyncMock(return_value=created)
+        ) as create:
+            response = await bridge.handle_aigate_create_instance(JsonRequest({
+                "aigateToken": "demo-token",
+                "skuName": "4090-24GB-DDR5",
+            }))
+
+        self.assertEqual(response.status, 200)
+        resolve.assert_awaited_once()
+        self.assertEqual(resolve.await_args.args[0], "demo-token")
+        self.assertEqual(resolve.await_args.args[1], "4090-24GB-DDR5")
+        self.assertEqual(create.await_args.args[2]["imageId"], 301)
+        self.assertEqual(create.await_args.args[2]["imageType"], "3")
+
+    async def test_rejects_missing_sku_before_image_resolution(self):
+        bridge.CONFIG["aigateCreate"] = {"areaName": "华东一区"}
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
+        ), patch.object(
+            bridge, "resolve_aigate_create_image",
+            new=AsyncMock(return_value={"imageId": 301, "imageType": "3"}),
+        ) as resolve, patch.object(
+            bridge, "create_aigate_instance", new=AsyncMock(return_value={
+                "instanceId": "new-1",
+                "instanceName": "",
+                "operationStatus": "1",
+                "hasComfyui": True,
+            })
+        ) as create:
+            response = await bridge.handle_aigate_create_instance(JsonRequest({
+                "aigateToken": "demo-token",
+                "skuName": " ",
+            }))
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": False,
+            "error": "AIGATE_SKU_REQUIRED",
+            "message": "请选择 GPU 规格",
+        })
+        resolve.assert_not_awaited()
+        create.assert_not_awaited()
+
+    async def test_returns_image_resolution_error_without_creating(self):
+        bridge.CONFIG["aigateCreate"] = {"areaName": "华东一区"}
+        resolution_error = bridge.AigateNativeError(
+            "AIGATE_IMAGE_NOT_FOUND",
+            "未找到默认 ComfyUI 镜像（已尝试个人和社区镜像）",
+            409,
+        )
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
+        ), patch.object(
+            bridge, "resolve_aigate_create_image",
+            new=AsyncMock(side_effect=resolution_error),
+            create=True,
+        ) as resolve, patch.object(
+            bridge, "create_aigate_instance", new=AsyncMock()
+        ) as create:
+            response = await bridge.handle_aigate_create_instance(JsonRequest({
+                "aigateToken": "demo-token",
+                "skuName": "4090-24GB-DDR5",
+            }))
+
+        self.assertEqual(response.status, 409)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": False,
+            "error": "AIGATE_IMAGE_NOT_FOUND",
+            "message": "未找到默认 ComfyUI 镜像（已尝试个人和社区镜像）",
+        })
+        resolve.assert_awaited_once()
+        create.assert_not_awaited()
 
     def test_registers_account_and_instance_creation_routes(self):
         class FakeRouter:

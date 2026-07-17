@@ -45,6 +45,7 @@ class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
         created_data = json.loads(created.body.decode("utf-8"))
         self.assertTrue(created_data["ok"])
         self.assertEqual(created_data["instance"]["instanceId"], "mock-created-1")
+        self.assertEqual(created_data["instance"]["imageType"], "3")
 
         listed = await dev_server.handle_aigate_instances(JsonRequest({
             "aigateToken": "demo-token",

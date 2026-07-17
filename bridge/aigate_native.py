@@ -11,6 +11,7 @@ from aiohttp import ClientError, FormData
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 AIGATE_API_BASE = "https://waas.aigate.cc/api/openapi"
+DEFAULT_AIGATE_IMAGE_NAME = "comfyui-boogu-edit-int8-20260716"
 
 
 class AigateNativeError(RuntimeError):
@@ -75,6 +76,100 @@ def _require_aigate_image_id(create_config):
         return int(image_id.strip())
     raise AigateNativeError(
         "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置有效的云扉镜像", 409
+    )
+
+
+def _configured_aigate_image_id(create_config):
+    """返回可选的显式镜像 ID；空值交由默认镜像解析处理。"""
+    value = create_config.get("imageId") if isinstance(create_config, dict) else None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return _require_aigate_image_id(create_config)
+
+
+def _image_id_from_records(records, image_name):
+    """从镜像分页记录中精确匹配名称，并验证云扉镜像 ID。"""
+    for record in records:
+        if not isinstance(record, dict) or str(record.get("name") or "") != image_name:
+            continue
+        value = record.get("worksId")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        if isinstance(value, str) and re.match(r"^\d+$", value.strip()):
+            return int(value.strip())
+    return None
+
+
+def _aigate_image_page_data(data):
+    """验证镜像分页响应，确保个人镜像分页始终有限。"""
+    if not isinstance(data, dict) or not isinstance(data.get("records"), list):
+        raise AigateNativeError("AIGATE_BAD_RESPONSE", "云扉未返回有效镜像列表")
+    total = data.get("total")
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0:
+        return data["records"], total
+    if isinstance(total, str) and re.match(r"^\d+$", total.strip()):
+        return data["records"], int(total.strip())
+    raise AigateNativeError("AIGATE_BAD_RESPONSE", "云扉未返回有效镜像列表")
+
+
+async def resolve_aigate_create_image(token, sku_name, create_config, session,
+                                      api_base=AIGATE_API_BASE):
+    """解析创建所需镜像：显式 ID 优先，随后按配置顺序查找镜像。"""
+    explicit_id = _configured_aigate_image_id(create_config)
+    if explicit_id is not None:
+        return {
+            "imageId": explicit_id,
+            "imageType": str(create_config.get("imageType") or "").strip(),
+        }
+
+    image_name = str(
+        create_config.get("imageName") or DEFAULT_AIGATE_IMAGE_NAME
+    ).strip()
+    configured_types = create_config.get("imageTypes") or ["3", "2"]
+    if not isinstance(configured_types, list):
+        configured_types = ["3", "2"]
+    image_types = []
+    for value in configured_types:
+        image_type = str(value)
+        if image_type in ("3", "2") and image_type not in image_types:
+            image_types.append(image_type)
+    image_url = api_base.rstrip("/") + "/image/page"
+
+    for image_type in image_types:
+        if image_type == "3":
+            current = 1
+            while True:
+                data = await _aigate_json(session, "POST", image_url, token, {
+                    "current": current,
+                    "pageSize": 20,
+                    "imageType": "3",
+                })
+                records, total = _aigate_image_page_data(data)
+                image_id = _image_id_from_records(records, image_name)
+                if image_id is not None:
+                    return {"imageId": image_id, "imageType": "3"}
+                if current * 20 >= total:
+                    break
+                current += 1
+            continue
+
+        if image_type == "2":
+            data = await _aigate_json(session, "POST", image_url, token, {
+                "current": 1,
+                "pageSize": 20,
+                "imageType": "2",
+                "areaName": str(create_config.get("areaName") or "").strip(),
+                "skuName": str(sku_name or "").strip(),
+                "imageName": image_name,
+                "imageVersion": "",
+            })
+            records, _ = _aigate_image_page_data(data)
+            image_id = _image_id_from_records(records, image_name)
+            if image_id is not None:
+                return {"imageId": image_id, "imageType": "2"}
+
+    raise AigateNativeError(
+        "AIGATE_IMAGE_NOT_FOUND", "未找到默认 ComfyUI 镜像（已尝试个人和社区镜像）", 409
     )
 
 
