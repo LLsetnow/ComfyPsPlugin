@@ -56,10 +56,11 @@ Expected: exit code `0`; the Token is never printed.
 在 “Python 桥” 小节之后加入以下 Markdown，两个文件保持逐字一致：
 
 ```markdown
-### 云扉 AI Gate 凭证（仅本地）
+### 开发者 / 代理专用的云扉 AI Gate 密钥
 
 - 云扉 Token 仅保存在 `~/.AiGate`，该文件不属于仓库且权限必须为 `0600`。
-- 需要调用云扉 OpenAPI 时，临时读取并去除首尾空白：`AIGATE_TOKEN="$(tr -d '\\r\\n' < ~/.AiGate)"`，请求头使用 `Authorization: Bearer $AIGATE_TOKEN`。
+- 需要临时读取原始 Token 时，使用：`AIGATE_TOKEN="$(tr -d '\r\n' < ~/.AiGate)"`。
+- 调用时添加请求头：`Authorization: Bearer $AIGATE_TOKEN`。
 - 禁止打印 Token、将其写入日志、提交到 Git、放进 `bridge/config.json`、插件 localStorage、`.env` 或测试数据。
 - 此文件仅供开发者和代理使用；Photoshop 插件与本地桥仍使用其现有的显式 Token 传递流程。
 ```

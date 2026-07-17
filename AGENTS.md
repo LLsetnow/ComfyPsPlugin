@@ -99,6 +99,14 @@ Photoshop UXP 面板的 JS 引擎不完整，必须兼容 ES5：
 - 依赖：`pip install git+https://github.com/LLsetnow/RH_CLI.git`
 - `bridge/config.json` 在 .gitignore 中（含私有 workflowId）
 
+### 开发者 / 代理专用的云扉 AI Gate 密钥
+
+- `~/.AiGate` 仅供开发者和代理在本机调用云扉 OpenAPI 时读取；文件权限必须为 `0600`。
+- 需要临时读取原始 Token 时，使用：`AIGATE_TOKEN="$(tr -d '\r\n' < ~/.AiGate)"`。
+- 调用时添加请求头：`Authorization: Bearer $AIGATE_TOKEN`。
+- 严禁打印、记录日志、提交到 Git，或写入 `bridge/config.json`、`localStorage`、`.env`、测试文件。
+- 插件与桥接服务的 Token 行为不变：两者都不会读取或使用 `~/.AiGate`。
+
 ### 工作流定义
 
 每个工作流在 main.js 的 `WORKFLOWS` 数组中定义：
