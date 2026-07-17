@@ -99,6 +99,30 @@ test("settings include AIGate token and instance controls", function () {
   assert.match(html, /id="aigateInstanceList"/);
 });
 
+test("settings expose AIGate account and conditional-create anchors", function () {
+  var html = fs.readFileSync("plugin/index.html", "utf8");
+  var css = fs.readFileSync("plugin/styles.css", "utf8");
+  var accountCard = html.match(
+    /<div id="aigateAccountStatus" class="aigate-account-card">([\s\S]*?)<\/div>\s*<\/div>/
+  );
+
+  assert.ok(accountCard, "AIGate account status must use the account card");
+  assert.match(accountCard[1], /id="btnRefreshAigateAccount"/);
+  assert.match(html, /id="aigateInstanceList"/);
+  assert.match(css, /\.aigate-account-card/);
+  assert.match(css, /\.aigate-account-balance/);
+  assert.match(css, /\.aigate-account-meta/);
+  assert.match(css, /\.aigate-account-refresh/);
+  assert.match(css, /\.aigate-create-card/);
+  assert.match(css, /\.aigate-sku-row/);
+  assert.match(css, /\.aigate-sku-row\.selected/);
+  assert.match(css, /\.aigate-sku-meta/);
+  assert.match(css, /\.aigate-sku-price/);
+  assert.match(css, /\.aigate-create-actions/);
+  assert.match(css, /\.aigate-create-notice/);
+  assert.match(css, /\.aigate-create-progress/);
+});
+
 test("records runtime only after first observed running state", function () {
   var context = loadAigateContext();
   context.Date.now = function () { return 1000; };
