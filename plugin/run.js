@@ -85,12 +85,21 @@ function getInpaintResolution(value) {
   return resolution;
 }
 
+function getImageEnhanceScale(value) {
+  var scale = parseFloat(value);
+  if (!isFinite(scale) || scale < 1 || scale > 8) return 2;
+  return Math.round(scale * 10) / 10;
+}
+
 function getWorkflowRunConfig(workflow, inputs, backend) {
   var runConfig = {
     workflowId: workflow.workflowId,
     workflowFile: workflow.workflowFile || "",
     imageNodeId: workflow.imageNodeId || "",
     maskNodeId: workflow.maskNodeId || "",
+    outputNodeId: workflow.outputNodeId || "",
+    promptNodeId: workflow.promptNodeId || "",
+    promptField: workflow.promptField || "",
     resolutionNodeId: "",
     inpaintVariant: "",
   };
@@ -102,8 +111,19 @@ function getWorkflowRunConfig(workflow, inputs, backend) {
     runConfig.workflowFile = variant.workflowFile;
     runConfig.imageNodeId = variant.imageNodeId;
     runConfig.maskNodeId = variant.maskNodeId;
+    runConfig.outputNodeId = variant.outputNodeId || "";
+    runConfig.promptNodeId = variant.promptNodeId || "";
+    runConfig.promptField = variant.promptField || "";
     runConfig.resolutionNodeId = variant.resolutionNodeId;
     runConfig.inpaintVariant = variantId;
+  }
+  if (workflow.id === "image-enhance" && workflow.variants) {
+    var mode = inputs && inputs.wfImageEnhanceMode === "upscale" ? "upscale" : "clarity";
+    var imageEnhanceVariant = workflow.variants[mode] || workflow.variants.clarity;
+    runConfig.workflowId = imageEnhanceVariant.workflowId;
+    runConfig.workflowFile = imageEnhanceVariant.workflowFile;
+    runConfig.imageNodeId = imageEnhanceVariant.imageNodeId;
+    runConfig.outputNodeId = imageEnhanceVariant.outputNodeId;
   }
   return runConfig;
 }
@@ -112,7 +132,7 @@ function isWorkflowAvailableForBackend(workflow, backend) {
   if (!workflow || workflow.active === false) return false;
   if (backend !== "aigate") return true;
   if (workflow.gptImage) return true;
-  return workflow.id === "inpaint";
+  return workflow.id === "inpaint" || workflow.aigateSupported === true;
 }
 
 async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workflow, inputs, taskId, onProgress) {
@@ -126,16 +146,16 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
     workflowId: runConfig.workflowId,
     workflowFile: runConfig.workflowFile,
     imageNodeId: runConfig.imageNodeId,
+    outputNodeId: runConfig.outputNodeId,
+    promptNodeId: runConfig.promptNodeId,
+    promptField: runConfig.promptField,
+    extraSetArgs: typeof workflow.setArgs === "function" ? workflow.setArgs(inputs, runConfig) : [],
     needsMask: workflow.needsMask,
     taskId: taskId || "",
   };
   if (runConfig.maskNodeId) body.maskNodeId = runConfig.maskNodeId;
   if (workflow.needsMask) {
     body.mask = maskB64;
-  }
-  // 工作流自定义参数注入 (如 denoise 等)
-  if (settings.backend !== "aigate" && typeof workflow.setArgs === "function") {
-    body.extraSetArgs = workflow.setArgs(inputs, runConfig);
   }
   if (settings.backend === "aigate") {
     body.aigateToken = _getAigateToken();
@@ -360,4 +380,3 @@ async function removeSelectionSnapshotChannel(channelName) {
     );
   } catch (_) {}
 }
-

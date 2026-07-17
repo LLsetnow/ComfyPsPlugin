@@ -545,6 +545,74 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[5].name, "inpaint_boogu_api.json")
         self.assertEqual(len(args), 8)
 
+    async def test_runs_cleanup_without_mask_on_aigate(self):
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
+        with patch.object(
+            bridge, "run_native_workflow", new=AsyncMock(return_value=b"\x89PNG\r\n\x1a\nresult"),
+            create=True,
+        ) as native_run:
+            response = await bridge.handle_run(JsonRequest({
+                "backend": "aigate",
+                "aigateToken": "demo-token",
+                "image": png_b64,
+                "needsMask": False,
+                "workflowFile": "../workflows/cleanup_api.json",
+                "imageNodeId": "41",
+                "outputNodeId": "220",
+                "promptNodeId": "68",
+                "promptField": "prompt",
+                "prompt": "移除路人",
+                "taskId": "cleanup42",
+            }))
+
+        self.assertEqual(response.status, 200)
+        args = native_run.await_args.args
+        self.assertEqual(args[0], "demo-token")
+        self.assertIsNone(args[2])
+        self.assertEqual(args[3], "移除路人")
+        self.assertEqual(args[4], "cleanup42")
+        self.assertEqual(args[5], (bridge.BRIDGE_DIR / "../workflows/cleanup_api.json").resolve())
+        self.assertEqual(args[6:12], ("41", "", "220", "68", "prompt", []))
+
+    async def test_forwards_image_upscale_factor_to_aigate(self):
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
+        with patch.object(
+            bridge, "run_native_workflow", new=AsyncMock(return_value=b"\x89PNG\r\n\x1a\nresult"),
+            create=True,
+        ) as native_run:
+            response = await bridge.handle_run(JsonRequest({
+                "backend": "aigate",
+                "aigateToken": "demo-token",
+                "image": png_b64,
+                "needsMask": False,
+                "workflowFile": "../workflows/image_upscale_api.json",
+                "imageNodeId": "90",
+                "outputNodeId": "100",
+                "extraSetArgs": ["95:value=4"],
+                "taskId": "upscale42",
+            }))
+
+        self.assertEqual(response.status, 200)
+        args = native_run.await_args.args
+        self.assertEqual(args[5], (bridge.BRIDGE_DIR / "../workflows/image_upscale_api.json").resolve())
+        self.assertEqual(args[6:12], ("90", "", "100", "", "", ["95:value=4"]))
+
+    async def test_rejects_invalid_image_enhance_factor(self):
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
+        response = await bridge.handle_run(JsonRequest({
+            "backend": "aigate",
+            "aigateToken": "demo-token",
+            "image": png_b64,
+            "needsMask": False,
+            "workflowFile": "../workflows/image_clarity_api.json",
+            "imageNodeId": "90",
+            "outputNodeId": "100",
+            "extraSetArgs": ["95:value=8.1"],
+        }))
+
+        self.assertEqual(response.status, 400)
+        self.assertEqual(json.loads(response.body.decode("utf-8"))["error"], "COMFYUI_WORKFLOW_INVALID")
+
     async def test_uses_repository_boogu_workflow_not_client_path(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
         with patch.object(

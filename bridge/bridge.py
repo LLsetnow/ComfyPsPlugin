@@ -40,12 +40,14 @@ try:
         AigateNativeError, close_aigate_instances, control_aigate_instance,
         create_aigate_instance, get_aigate_account, list_aigate_skus,
         list_instance_summaries, resolve_aigate_create_image, run_native_inpaint,
+        run_native_workflow,
     )
 except ImportError:
     from bridge.aigate_native import (
         AigateNativeError, close_aigate_instances, control_aigate_instance,
         create_aigate_instance, get_aigate_account, list_aigate_skus,
         list_instance_summaries, resolve_aigate_create_image, run_native_inpaint,
+        run_native_workflow,
     )
 
 try:
@@ -72,6 +74,52 @@ except ImportError:
 
 _aigate_managed_tokens: dict[str, str] = {}
 _aigate_create_lock = asyncio.Lock()
+_REPOSITORY_WORKFLOWS_DIR = (BRIDGE_DIR / "../workflows").resolve()
+_IMAGE_ENHANCE_WORKFLOW_NAMES = {
+    "image_clarity_api.json",
+    "image_upscale_api.json",
+}
+
+
+def resolve_repository_workflow_path(workflow_file):
+    """Return a verified workflow file located inside this repository."""
+    requested = str(workflow_file or "").strip()
+    if not requested:
+        raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "工作流文件无效", 400)
+    candidate = Path(requested).expanduser()
+    if candidate.is_absolute():
+        raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "工作流文件无效", 400)
+    resolved = (BRIDGE_DIR / candidate).resolve()
+    try:
+        resolved.relative_to(_REPOSITORY_WORKFLOWS_DIR)
+    except ValueError as exc:
+        raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "工作流文件无效", 400) from exc
+    if resolved.suffix.lower() != ".json" or not resolved.is_file():
+        raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "工作流文件无效", 400)
+    return resolved
+
+
+def validate_image_enhance_args(workflow_path, extra_set_args):
+    """Enforce the public 1-8 factor contract before any backend runs it."""
+    if workflow_path.name not in _IMAGE_ENHANCE_WORKFLOW_NAMES:
+        return
+    if not isinstance(extra_set_args, list) or len(extra_set_args) != 1:
+        raise AigateNativeError(
+            "COMFYUI_WORKFLOW_INVALID", "放大比例必须在 1 到 8 之间", 400
+        )
+    raw_arg = str(extra_set_args[0])
+    if not raw_arg.startswith("95:value="):
+        raise AigateNativeError(
+            "COMFYUI_WORKFLOW_INVALID", "放大比例必须在 1 到 8 之间", 400
+        )
+    try:
+        scale = float(raw_arg[len("95:value="):])
+    except (TypeError, ValueError):
+        scale = float("nan")
+    if not math.isfinite(scale) or scale < 1 or scale > 8:
+        raise AigateNativeError(
+            "COMFYUI_WORKFLOW_INVALID", "放大比例必须在 1 到 8 之间", 400
+        )
 
 async def handle_options(request):
     return cors(web.Response(status=204))
@@ -502,6 +550,9 @@ async def handle_run(request):
     extra_set_args = body.get("extraSetArgs") or []
     image_node_id = body.get("imageNodeId") or None
     mask_node_id = body.get("maskNodeId") or None
+    output_node_id = body.get("outputNodeId") or None
+    prompt_node_id = body.get("promptNodeId") or None
+    prompt_field = body.get("promptField") or None
 
     task_id = body.get("taskId") or str(uuid.uuid4())[:8]
 
@@ -511,13 +562,23 @@ async def handle_run(request):
     if needs_mask and not mask_b64:
         return cors(web.json_response(
             {"error": "MISSING", "message": "此工作流需要 mask (选区蒙版)"}, status=400))
+
+    declared_workflow_path = None
+    if not needs_mask:
+        try:
+            declared_workflow_path = resolve_repository_workflow_path(workflow_file)
+            validate_image_enhance_args(declared_workflow_path, extra_set_args)
+        except AigateNativeError as e:
+            return cors(web.json_response(
+                {"error": e.code, "message": e.message}, status=e.status))
+
     if backend == "aigate":
         if not str(aigate_token).strip():
             return cors(web.json_response(
                 {"error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"}, status=400))
-        if not needs_mask:
+        if not needs_mask and (not image_node_id or not output_node_id):
             return cors(web.json_response(
-                {"error": "AIGATE_WORKFLOW_UNSUPPORTED", "message": "云扉原生后端目前仅支持 Boogu 局部编辑"},
+                {"error": "COMFYUI_WORKFLOW_INVALID", "message": "工作流缺少图像或输出节点"},
                 status=400))
 
     bridge_log(
@@ -544,20 +605,33 @@ async def handle_run(request):
         task_cost = None
 
         if backend == "aigate":
-            workflow_path = (BRIDGE_DIR / "../workflows/inpaint_boogu_api.json").resolve()
-
             def aigate_progress(message):
                 _task_progress[task_id] = {"percent": 50, "message": str(message)}
 
             async with ClientSession(timeout=ClientTimeout(total=195)) as session:
-                result_bytes = await run_native_inpaint(
-                    aigate_token, img_path, mask_path, prompt, task_id, workflow_path,
-                    aigate_progress, session,
-                )
+                if needs_mask:
+                    workflow_path = (BRIDGE_DIR / "../workflows/inpaint_boogu_api.json").resolve()
+                    result_bytes = await run_native_inpaint(
+                        aigate_token, img_path, mask_path, prompt, task_id, workflow_path,
+                        aigate_progress, session,
+                    )
+                else:
+                    result_bytes = await run_native_workflow(
+                        aigate_token, img_path, None, prompt, task_id,
+                        declared_workflow_path, str(image_node_id), "",
+                        str(output_node_id), str(prompt_node_id or ""),
+                        str(prompt_field or ""), extra_set_args, aigate_progress, session,
+                    )
         elif backend == "comfyui":
             result_bytes = await loop.run_in_executor(
                 None,
-                lambda: run_comfyui_blocking(img_path, mask_path if needs_mask else None, out_dir, prompt, comfyui_url),
+                lambda: run_comfyui_blocking(
+                    img_path, mask_path if needs_mask else None, out_dir, prompt,
+                    comfyui_url,
+                    str(declared_workflow_path) if declared_workflow_path else workflow_file,
+                    extra_set_args, image_node_id, mask_node_id, output_node_id,
+                    prompt_node_id, prompt_field,
+                ),
             )
         else:
             cancel_event = threading.Event()

@@ -742,7 +742,7 @@ async def handle_run(request: web.Request) -> web.Response:
         )
 
     image_b64 = body.get("image")
-    mask_b64 = body.get("mask")
+    mask_b64 = body.get("mask") or ""
     prompt = body.get("prompt", "")
     backend = body.get("backend", "runninghub")
     site = body.get("site", "")
@@ -751,7 +751,7 @@ async def handle_run(request: web.Request) -> web.Response:
     aigate_token = body.get("aigateToken", "")
     extra_set_args = body.get("extraSetArgs") or []
 
-    if not image_b64 or not mask_b64:
+    if not image_b64 or (body.get("needsMask", True) and not mask_b64):
         return web.json_response(
             {"error": "MISSING", "message": "缺少 image 或 mask 字段"}, status=400
         )

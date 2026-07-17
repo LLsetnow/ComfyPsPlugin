@@ -233,6 +233,13 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                                 "type": "output",
                             }],
                         },
+                        "100": {
+                            "images": [{
+                                "filename": "image_enhance_00001_.png",
+                                "subfolder": "",
+                                "type": "output",
+                            }],
+                        },
                     },
                 },
             })
@@ -534,6 +541,37 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(native_requests[2]["body"]["client_id"], "comfyps_aigate_job42")
         self.assertEqual(native_requests[4]["query"]["type"], "output")
+        self.assertIn("正在提交 ComfyUI 工作流…", progress)
+
+    async def test_runs_generic_single_image_workflow(self):
+        from bridge.aigate_native import run_native_workflow_on_instance
+
+        workflow = {
+            "90": {"inputs": {"image": "old.png"}},
+            "95": {"inputs": {"value": 2.0}},
+            "100": {"inputs": {"filename_prefix": "ComfyUI"}},
+        }
+        progress = []
+        with TemporaryDirectory() as directory:
+            image_path = Path(directory) / "image.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nsource")
+            actual = await run_native_workflow_on_instance(
+                self.api_base, image_path, None, "", "job-up", workflow,
+                "90", "", "100", "", "", ["95:value=4.5"], progress.append,
+                self.session, max_attempts=2, poll_interval=0,
+            )
+
+        native_requests = [item for item in self.requests if item.get("kind")]
+        upload_requests = [item for item in native_requests if item["kind"] == "upload"]
+        prompt_request = [item for item in native_requests if item["kind"] == "prompt"][0]
+        self.assertEqual(actual, b"\x89PNG\r\n\x1a\nmock")
+        self.assertEqual(len(upload_requests), 1)
+        for request in native_requests:
+            self.assertNotIn("Authorization", request["headers"])
+        native_workflow = prompt_request["body"]["prompt"]
+        self.assertEqual(native_workflow["90"]["inputs"]["image"], "comfyps_job-up_source.png")
+        self.assertEqual(native_workflow["95"]["inputs"]["value"], 4.5)
+        self.assertEqual(native_workflow["100"]["inputs"]["filename_prefix"], "comfyps_aigate_job-up")
         self.assertIn("正在提交 ComfyUI 工作流…", progress)
 
     async def test_reports_failed_history_without_waiting_for_timeout(self):

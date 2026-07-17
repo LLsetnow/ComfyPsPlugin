@@ -29,8 +29,10 @@ from rh_cli.workflow.client import run_workflow
 
 try:
     from bridge_common import bridge_log, _task_progress, _rh_cancel_events, BRIDGE_DIR, get_rh_base_url, CONFIG
+    from workflow_runtime import apply_set_args
 except ImportError:
     from bridge.bridge_common import bridge_log, _task_progress, _rh_cancel_events, BRIDGE_DIR, get_rh_base_url, CONFIG
+    from bridge.workflow_runtime import apply_set_args
 
 
 _RUN_WORKFLOW_SUPPORTS_CANCEL = "cancel_event" in inspect.signature(run_workflow).parameters
@@ -244,36 +246,54 @@ def run_inpaint_blocking(
 
 def run_comfyui_blocking(
     image_path: Path,
-    mask_path: Path,
+    mask_path: Path | None,
     out_dir: Path,
     prompt: str = "",
     comfyui_url: str = "http://127.0.0.1:8188",
+    workflow_file: str | None = None,
+    extra_set_args: list[str] | None = None,
+    image_node_id: str | None = None,
+    mask_node_id: str | None = None,
+    output_node_id: str | None = None,
+    prompt_node_id: str | None = None,
+    prompt_field: str | None = None,
 ) -> bytes:
     """本地 ComfyUI 模式: 加载工作流 JSON → 注入 image/mask → 提交 → 轮询 → 返回结果图。"""
     import urllib.request
     import urllib.error
 
     cfg = CONFIG
-    wf = json.loads(Path(cfg["workflowFile"]).read_text(encoding="utf-8"))
+    if workflow_file and str(workflow_file).strip():
+        requested_file = Path(str(workflow_file).strip()).expanduser()
+        wf_file = requested_file if requested_file.is_absolute() else (BRIDGE_DIR / requested_file).resolve()
+    else:
+        wf_file = Path(cfg["workflowFile"])
+    wf = json.loads(wf_file.read_text(encoding="utf-8"))
 
-    # 编码 image 和 mask 为 base64 并注入到对应节点
+    # 编码 image 和可选 mask 为 base64 并注入到对应节点
     img_b64 = base64.b64encode(image_path.read_bytes()).decode()
-    mask_b64 = base64.b64encode(mask_path.read_bytes()).decode()
+    img_node = str(image_node_id or cfg["imageNodeId"])
 
-    img_node = str(cfg["imageNodeId"])
-    mask_node = str(cfg["maskNodeId"])
-
-    # 尝试注入 image/mask (适配 LoadImage 节点的常见字段名)
+    # 尝试注入 image (适配 LoadImage 节点的常见字段名)
     _inject_image_input(wf, img_node, img_b64)
-    _inject_image_input(wf, mask_node, mask_b64)
+    if mask_path is not None and mask_node_id:
+        mask_b64 = base64.b64encode(mask_path.read_bytes()).decode()
+        _inject_image_input(wf, str(mask_node_id), mask_b64)
 
     # 注入 prompt
     if prompt and prompt.strip():
-        target = resolve_prompt_target(cfg, wf)
+        if prompt_node_id and prompt_field:
+            target = (str(prompt_node_id), str(prompt_field))
+        else:
+            target = resolve_prompt_target(cfg, wf)
         if target:
             node_id, field = target
             if node_id in wf and "inputs" in wf[node_id]:
                 wf[node_id]["inputs"][field] = prompt.strip()
+            else:
+                raise RuntimeError("ComfyUI 工作流缺少提示词节点或字段")
+
+    apply_set_args(wf, extra_set_args)
 
     # 提交 prompt
     api_url = comfyui_url.rstrip("/") + "/prompt"
@@ -304,17 +324,23 @@ def run_comfyui_blocking(
             continue
         outputs = hist.get(prompt_id, {}).get("outputs")
         if outputs:
-            # 找第一个 SaveImage 输出
-            for node_out in outputs.values():
+            if output_node_id:
+                node_outputs = [outputs.get(str(output_node_id))]
+            else:
+                node_outputs = outputs.values()
+            for node_out in node_outputs:
+                if not isinstance(node_out, dict):
+                    continue
                 images = node_out.get("images")
                 if images and len(images) > 0:
                     img_file = images[0]
                     file_name = img_file.get("filename", "result.png")
                     subfolder = img_file.get("subfolder", "")
-                    dl_path = f"{subfolder}/{file_name}" if subfolder else file_name
                     dl_url = f"{comfyui_url.rstrip('/')}/view?filename={file_name}&subfolder={subfolder}"
                     with urllib.request.urlopen(dl_url, timeout=10) as dl_resp:
                         return dl_resp.read()
+            if output_node_id:
+                raise RuntimeError("ComfyUI 未返回指定输出节点的图片")
     raise RuntimeError("ComfyUI 工作流超时:未在 2 分钟内返回结果")
 
 

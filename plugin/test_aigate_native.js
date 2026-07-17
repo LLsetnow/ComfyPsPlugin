@@ -75,20 +75,33 @@ test("AIGate backend forces Boogu inpaint config", function () {
   assert.equal(config.workflowFile, "../workflows/inpaint_boogu_api.json");
 });
 
-test("AIGate backend blocks unsupported native workflows", function () {
+test("image enhance selects each workflow variant", function () {
   var context = loadAigateContext();
-  assert.equal(
-    context.isWorkflowAvailableForBackend(context.findWorkflow("cleanup"), "aigate"),
-    false
-  );
-  assert.equal(
-    context.isWorkflowAvailableForBackend(context.findWorkflow("face"), "aigate"),
-    false
-  );
-  assert.equal(
-    context.isWorkflowAvailableForBackend(context.findWorkflow("gpt-image"), "aigate"),
-    true
-  );
+  var workflow = context.findWorkflow("image-enhance");
+  var clarity = context.getWorkflowRunConfig(workflow, {
+    wfImageEnhanceMode: "clarity", wfImageEnhanceScale: "2.5"
+  }, "runninghub");
+  var upscale = context.getWorkflowRunConfig(workflow, {
+    wfImageEnhanceMode: "upscale", wfImageEnhanceScale: "6"
+  }, "aigate");
+
+  assert.equal(clarity.workflowId, "2078092574119964674");
+  assert.equal(clarity.workflowFile, "../workflows/image_clarity_api.json");
+  assert.equal(clarity.imageNodeId, "90");
+  assert.equal(clarity.outputNodeId, "100");
+  assert.equal(upscale.workflowId, "2078099177921589250");
+  assert.equal(upscale.workflowFile, "../workflows/image_upscale_api.json");
+  assert.equal(context.getImageEnhanceScale("2.5"), 2.5);
+  assert.equal(context.getImageEnhanceScale("8.1"), 2);
+});
+
+test("AIGate enables declared native workflows", function () {
+  var context = loadAigateContext();
+  assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("inpaint"), "aigate"), true);
+  assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("cleanup"), "aigate"), true);
+  assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("face"), "aigate"), true);
+  assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("image-enhance"), "aigate"), true);
+  assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("gpt-image"), "aigate"), true);
 });
 
 test("settings include AIGate token and instance controls", function () {
