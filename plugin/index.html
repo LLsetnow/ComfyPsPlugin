@@ -197,6 +197,12 @@
               <div class="setting-hint">仅用于读取、启动和关闭云扉实例；原生 ComfyUI 工作流请求不会携带该凭证。 <a id="linkGetAigateToken" class="link-sm" href="https://waas.aigate.cc/user/setting" target="_blank">如何获取 Bearer Token</a></div>
             </div>
             <div class="setting-row">
+              <label class="setting-checkbox">
+                <input id="settingAigateAutoCloseOnExit" type="checkbox" checked />
+                <span id="aigateAutoCloseStatus">已开启：关闭 Photoshop 时会向本地桥发送关闭请求。</span>
+              </label>
+            </div>
+            <div class="setting-row">
               <div class="setting-label">云扉账户</div>
               <div id="aigateAccountStatus" class="aigate-account-card">
                 <span class="aigate-account-pending">输入 Token 后读取余额</span>
