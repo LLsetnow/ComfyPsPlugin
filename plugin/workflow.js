@@ -589,6 +589,7 @@ async function onRunClick() {
     var resultBuffer;
     var placement = null;
     var gptMaskB64 = "";
+    var outputMaskB64 = "";
     var selectionSnapshotChannel = "";
     var revealSelection = false;
     if (wf.gptImage) {
@@ -687,6 +688,10 @@ async function onRunClick() {
           runState.taskId, runState.onProgress
         );
         resultBuffer = bridgeResult.resultBuffer;
+        if (bridgeResult.maskBuffer) {
+          // 工作流额外返回的蒙版图(如背景去杂物节点 239)，贴回时作为图层蒙版。
+          outputMaskB64 = bytesToBase64(bridgeResult.maskBuffer);
+        }
         if (queueItem) {
           queueItem.taskCostType = bridgeResult.taskCostType;
           queueItem.taskCost = bridgeResult.taskCost;
@@ -706,7 +711,8 @@ async function onRunClick() {
     }
     throwIfGptTaskCancelled(runState);
 
-    var saveMaskB64 = (wf.gptImage && gptMaskB64) ? gptMaskB64
+    var saveMaskB64 = outputMaskB64 ? outputMaskB64
+      : (wf.gptImage && gptMaskB64) ? gptMaskB64
       : (settings.rhLocalDebug) ? ""
       : (!wf.gptImage && wf.needsMask && maskB64) ? maskB64 : "";
 
@@ -718,6 +724,9 @@ async function onRunClick() {
       queueItem.resultFile = saveResult.resultFile;
       queueItem.maskFile = saveResult.maskFile;
       queueItem.hasMask = !!(saveMaskB64 && saveResult.maskFile);
+      // outputMask: 贴回时把这张蒙版图作为返回图层的图层蒙版(而非选区快照)。
+      queueItem.outputMask = !!(outputMaskB64 && saveResult.maskFile);
+      queueItem.outputMaskInvert = wf.outputMaskInvert !== false;
       queueItem.revealSelection = revealSelection;
       queueItem.selectionSnapshotChannel = selectionSnapshotChannel;
       queueItem.placement = placement;

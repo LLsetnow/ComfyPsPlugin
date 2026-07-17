@@ -98,6 +98,7 @@ function getWorkflowRunConfig(workflow, inputs, backend) {
     imageNodeId: workflow.imageNodeId || "",
     maskNodeId: workflow.maskNodeId || "",
     outputNodeId: workflow.outputNodeId || "",
+    maskOutputNodeId: workflow.maskOutputNodeId || "",
     promptNodeId: workflow.promptNodeId || "",
     promptField: workflow.promptField || "",
     resolutionNodeId: "",
@@ -154,6 +155,7 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
     taskId: taskId || "",
   };
   if (runConfig.maskNodeId) body.maskNodeId = runConfig.maskNodeId;
+  if (runConfig.maskOutputNodeId) body.maskOutputNodeId = runConfig.maskOutputNodeId;
   if (workflow.needsMask) {
     body.mask = maskB64;
   }
@@ -189,6 +191,7 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
 
   // 提取任务 ID 并启动进度轮询
   var taskId = resp.headers.get("X-Task-Id");
+  var hasOutputMask = resp.headers.get("X-ComfyPS-Has-Mask") === "1";
   var taskCostType = resp.headers.get("X-ComfyPS-Task-Cost-Type") || "";
   var taskCost = resp.headers.get("X-ComfyPS-Task-Cost") || "";
   if (taskCostType !== "coins" && taskCostType !== "money") {
@@ -210,8 +213,19 @@ async function callBridge(bridgeUrl, imageB64, maskB64, prompt, settings, workfl
   }
 
   try {
+    var resultBuffer = await resp.arrayBuffer();
+    // 若工作流额外返回了蒙版图(如背景去杂物节点 239)，按 taskId 拉取，供贴回时
+    // 作为返回图层的图层蒙版。拉取失败不阻断主结果，仅退化为不加蒙版。
+    var maskBuffer = null;
+    if (hasOutputMask && taskId) {
+      try {
+        var mr = await fetch(bridgeUrl.replace(/\/+$/, "") + "/result-mask?taskId=" + taskId);
+        if (mr.ok) maskBuffer = await mr.arrayBuffer();
+      } catch (_) {}
+    }
     return {
-      resultBuffer: await resp.arrayBuffer(),
+      resultBuffer: resultBuffer,
+      maskBuffer: maskBuffer,
       taskCostType: taskCostType,
       taskCost: taskCost
     };

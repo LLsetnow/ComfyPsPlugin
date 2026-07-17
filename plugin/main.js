@@ -102,6 +102,8 @@ var WORKFLOWS = [
     imageNodeId: "41",
     aigateSupported: true,
     outputNodeId: "220",
+    maskOutputNodeId: "239",
+    outputMaskInvert: true,
     promptNodeId: "68",
     promptField: "prompt",
     description: "去除背景的所有杂物与路人。修改提示词可以实现不同的去除效果。",

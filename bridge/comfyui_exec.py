@@ -28,10 +28,10 @@ from rh_cli.http import BASE_URL, RhHttpClient
 from rh_cli.workflow.client import run_workflow
 
 try:
-    from bridge_common import bridge_log, _task_progress, _rh_cancel_events, BRIDGE_DIR, get_rh_base_url, CONFIG
+    from bridge_common import bridge_log, _task_progress, _task_result_masks, _rh_cancel_events, BRIDGE_DIR, get_rh_base_url, CONFIG, is_grayscale_png
     from workflow_runtime import apply_set_args
 except ImportError:
-    from bridge.bridge_common import bridge_log, _task_progress, _rh_cancel_events, BRIDGE_DIR, get_rh_base_url, CONFIG
+    from bridge.bridge_common import bridge_log, _task_progress, _task_result_masks, _rh_cancel_events, BRIDGE_DIR, get_rh_base_url, CONFIG, is_grayscale_png
     from bridge.workflow_runtime import apply_set_args
 
 
@@ -138,8 +138,13 @@ def run_inpaint_blocking(
     mask_node_id: str | None = None,
     task_id: str | None = None,
     cancel_event: threading.Event | None = None,
+    mask_output_node_id: str | None = None,
 ) -> tuple[bytes, str | None, str | None]:
-    """RunningHub 模式: 上传蒙版(可选) → 注入提示词 → 跑工作流 → 读结果字节。"""
+    """RunningHub 模式: 上传蒙版(可选) → 注入提示词 → 跑工作流 → 读结果字节。
+
+    当 mask_output_node_id 提供时，工作流会额外保存一张蒙版图（如背景去杂物的
+    节点 239）。RunningHub 的输出只按顺序返回文件、不带节点号，故用灰度检测从
+    多个输出中挑出蒙版图，暂存到 _task_result_masks[task_id] 供插件拉取。"""
     cfg = CONFIG
     wf_id = str(workflow_id or cfg["workflowId"])
     # 选择工作流文件: 请求传入的相对路径 > 配置的默认文件
@@ -241,7 +246,25 @@ def run_inpaint_blocking(
         cost_type, cost = None, None
     else:
         cost = str(cost).strip()
-    return Path(result.files[0]).read_bytes(), cost_type, cost
+
+    all_bytes = [Path(f).read_bytes() for f in result.files]
+    result_bytes = all_bytes[0]
+    if mask_output_node_id and len(all_bytes) >= 2:
+        # RunningHub 不带节点号：结果图是彩色照片、蒙版图是灰度，用灰度检测区分。
+        mask_bytes = None
+        result_bytes = None
+        for b in all_bytes:
+            if mask_bytes is None and is_grayscale_png(b):
+                mask_bytes = b
+            elif result_bytes is None:
+                result_bytes = b
+        if result_bytes is None:  # 检测失败（都判为灰度/都非灰度）→ 退回顺序
+            result_bytes = all_bytes[0]
+            mask_bytes = all_bytes[1]
+        if task_id and mask_bytes is not None:
+            _task_result_masks[task_id] = mask_bytes
+            bridge_log("# 已捕获返回蒙版 → task=" + str(task_id))
+    return result_bytes, cost_type, cost
 
 
 def run_comfyui_blocking(
@@ -257,8 +280,13 @@ def run_comfyui_blocking(
     output_node_id: str | None = None,
     prompt_node_id: str | None = None,
     prompt_field: str | None = None,
+    mask_output_node_id: str | None = None,
+    task_id: str | None = None,
 ) -> bytes:
-    """本地 ComfyUI 模式: 加载工作流 JSON → 注入 image/mask → 提交 → 轮询 → 返回结果图。"""
+    """本地 ComfyUI 模式: 加载工作流 JSON → 注入 image/mask → 提交 → 轮询 → 返回结果图。
+
+    当 mask_output_node_id 提供时，额外按节点号读取该节点输出的蒙版图，暂存到
+    _task_result_masks[task_id] 供插件作为返回图层的图层蒙版。"""
     import urllib.request
     import urllib.error
 
@@ -324,21 +352,35 @@ def run_comfyui_blocking(
             continue
         outputs = hist.get(prompt_id, {}).get("outputs")
         if outputs:
-            if output_node_id:
-                node_outputs = [outputs.get(str(output_node_id))]
-            else:
-                node_outputs = outputs.values()
-            for node_out in node_outputs:
+            def _download_node_image(node_id):
+                node_out = outputs.get(str(node_id)) if node_id else None
                 if not isinstance(node_out, dict):
-                    continue
+                    return None
                 images = node_out.get("images")
-                if images and len(images) > 0:
-                    img_file = images[0]
-                    file_name = img_file.get("filename", "result.png")
-                    subfolder = img_file.get("subfolder", "")
-                    dl_url = f"{comfyui_url.rstrip('/')}/view?filename={file_name}&subfolder={subfolder}"
-                    with urllib.request.urlopen(dl_url, timeout=10) as dl_resp:
-                        return dl_resp.read()
+                if not images:
+                    return None
+                img_file = images[0]
+                file_name = img_file.get("filename", "result.png")
+                subfolder = img_file.get("subfolder", "")
+                dl_url = f"{comfyui_url.rstrip('/')}/view?filename={file_name}&subfolder={subfolder}"
+                with urllib.request.urlopen(dl_url, timeout=10) as dl_resp:
+                    return dl_resp.read()
+
+            if output_node_id:
+                result_bytes = _download_node_image(output_node_id)
+            else:
+                result_bytes = None
+                for node_id in outputs:
+                    result_bytes = _download_node_image(node_id)
+                    if result_bytes is not None:
+                        break
+            if result_bytes is not None:
+                if mask_output_node_id and task_id:
+                    mask_bytes = _download_node_image(mask_output_node_id)
+                    if mask_bytes is not None:
+                        _task_result_masks[task_id] = mask_bytes
+                        bridge_log("# 已捕获返回蒙版 → task=" + str(task_id))
+                return result_bytes
             if output_node_id:
                 raise RuntimeError("ComfyUI 未返回指定输出节点的图片")
     raise RuntimeError("ComfyUI 工作流超时:未在 2 分钟内返回结果")

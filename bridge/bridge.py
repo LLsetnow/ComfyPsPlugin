@@ -63,11 +63,11 @@ from rh_cli.errors import RhCliError
 from rh_cli.http import BASE_URL, RhHttpClient
 
 try:
-    from bridge_common import bridge_log, _task_progress, _rh_cancel_events, log_snapshot, cors, BRIDGE_DIR, RH_SITES, DEFAULT_RH_SITE, get_rh_base_url, write_b64_png, CONFIG, load_config
+    from bridge_common import bridge_log, _task_progress, _task_result_masks, _rh_cancel_events, log_snapshot, cors, BRIDGE_DIR, RH_SITES, DEFAULT_RH_SITE, get_rh_base_url, write_b64_png, CONFIG, load_config
     from comfyui_exec import run_inpaint_blocking, run_comfyui_blocking
     from gpt_image import GPT_IMAGE_REQUEST_MAX_BYTES, handle_codex_status, handle_codex_image, handle_gpt_image, handle_gpt_image_cancel, handle_gpt_image_status
 except ImportError:
-    from bridge.bridge_common import bridge_log, _task_progress, _rh_cancel_events, log_snapshot, cors, BRIDGE_DIR, RH_SITES, DEFAULT_RH_SITE, get_rh_base_url, write_b64_png, CONFIG, load_config
+    from bridge.bridge_common import bridge_log, _task_progress, _task_result_masks, _rh_cancel_events, log_snapshot, cors, BRIDGE_DIR, RH_SITES, DEFAULT_RH_SITE, get_rh_base_url, write_b64_png, CONFIG, load_config
     from bridge.comfyui_exec import run_inpaint_blocking, run_comfyui_blocking
     from bridge.gpt_image import GPT_IMAGE_REQUEST_MAX_BYTES, handle_codex_status, handle_codex_image, handle_gpt_image, handle_gpt_image_cancel, handle_gpt_image_status
 
@@ -134,6 +134,19 @@ async def handle_progress(request):
     if not task_id or task_id not in _task_progress:
         return cors(web.json_response({"percent": 0, "message": "未知任务"}, status=404))
     return cors(web.json_response(_task_progress[task_id]))
+
+
+async def handle_result_mask(request):
+    """返回某任务的额外输出蒙版 PNG（如背景去杂物节点 239）。
+
+    /run 响应带 X-ComfyPS-Has-Mask 头时，插件用本端点按 taskId 拉取蒙版，
+    作为返回图层的图层蒙版。蒙版在 handle_run 之后短暂保留（120s）。"""
+    task_id = request.query.get("taskId", "")
+    mask_bytes = _task_result_masks.get(task_id) if task_id else None
+    if not mask_bytes:
+        return cors(web.json_response(
+            {"error": "MASK_NOT_FOUND", "message": "没有该任务的蒙版"}, status=404))
+    return cors(web.Response(body=mask_bytes, content_type="image/png"))
 
 
 async def handle_logs(request):
@@ -551,6 +564,7 @@ async def handle_run(request):
     image_node_id = body.get("imageNodeId") or None
     mask_node_id = body.get("maskNodeId") or None
     output_node_id = body.get("outputNodeId") or None
+    mask_output_node_id = body.get("maskOutputNodeId") or None
     prompt_node_id = body.get("promptNodeId") or None
     prompt_field = body.get("promptField") or None
 
@@ -621,6 +635,7 @@ async def handle_run(request):
                         declared_workflow_path, str(image_node_id), "",
                         str(output_node_id), str(prompt_node_id or ""),
                         str(prompt_field or ""), extra_set_args, aigate_progress, session,
+                        mask_output_node_id=mask_output_node_id,
                     )
         elif backend == "comfyui":
             result_bytes = await loop.run_in_executor(
@@ -631,6 +646,7 @@ async def handle_run(request):
                     str(declared_workflow_path) if declared_workflow_path else workflow_file,
                     extra_set_args, image_node_id, mask_node_id, output_node_id,
                     prompt_node_id, prompt_field,
+                    mask_output_node_id, task_id,
                 ),
             )
         else:
@@ -643,6 +659,7 @@ async def handle_run(request):
                         img_path, mask_path if needs_mask else None, out_dir,
                         prompt, api_key, site, needs_mask, workflow_id, workflow_file,
                         extra_set_args, image_node_id, mask_node_id, task_id, cancel_event,
+                        mask_output_node_id,
                     ),
                 )
             finally:
@@ -653,6 +670,11 @@ async def handle_run(request):
         if task_cost_type in ("coins", "money") and task_cost:
             resp.headers["X-ComfyPS-Task-Cost-Type"] = task_cost_type
             resp.headers["X-ComfyPS-Task-Cost"] = task_cost
+        # 若本次工作流额外返回了蒙版图（如背景去杂物节点 239），标记之，插件随后
+        # 通过 GET /result-mask?taskId= 拉取，并作为返回图层的图层蒙版。
+        if _task_result_masks.get(task_id):
+            resp.headers["X-ComfyPS-Has-Mask"] = "1"
+            threading.Timer(120, lambda: _task_result_masks.pop(task_id, None)).start()
         bridge_log("# 工作流完成 ← task=" + str(task_id))
         return cors(resp)
     except AigateNativeError as e:
@@ -699,6 +721,7 @@ def main():
     app.router.add_post("/run", handle_run)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/progress", handle_progress)
+    app.router.add_get("/result-mask", handle_result_mask)
     app.router.add_get("/logs", handle_logs)
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
