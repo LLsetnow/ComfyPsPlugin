@@ -520,7 +520,7 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         cleanup.assert_awaited_once_with(None)
         execv.assert_called_once_with(bridge.sys.executable, [bridge.sys.executable] + bridge.sys.argv)
 
-    async def test_runs_aigate_native_adapter_without_extra_set_args(self):
+    async def test_forwards_aigate_inpaint_runtime_overrides(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
         with patch.object(
             bridge, "run_native_inpaint", new=AsyncMock(return_value=b"\x89PNG\r\n\x1a\nresult")
@@ -544,6 +544,10 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[4], "job42")
         self.assertEqual(args[5].name, "inpaint_boogu_api.json")
         self.assertEqual(len(args), 8)
+        self.assertEqual(
+            native_run.await_args.kwargs["extra_set_args"],
+            ["212:output_target_width=2048"],
+        )
 
     async def test_runs_cleanup_without_mask_on_aigate(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")

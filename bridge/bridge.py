@@ -613,7 +613,7 @@ async def handle_run(request):
                     workflow_path = (BRIDGE_DIR / "../workflows/inpaint_boogu_api.json").resolve()
                     result_bytes = await run_native_inpaint(
                         aigate_token, img_path, mask_path, prompt, task_id, workflow_path,
-                        aigate_progress, session,
+                        aigate_progress, session, extra_set_args=extra_set_args,
                     )
                 else:
                     result_bytes = await run_native_workflow(

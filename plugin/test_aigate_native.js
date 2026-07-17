@@ -75,6 +75,11 @@ test("AIGate backend forces Boogu inpaint config", function () {
   assert.equal(config.workflowFile, "../workflows/inpaint_boogu_api.json");
 });
 
+test("AIGate inpaint does not hide the resolution input", function () {
+  var source = fs.readFileSync("plugin/workflow.js", "utf8");
+  assert.doesNotMatch(source, /inp\.id === "wfResolution"\) return/);
+});
+
 test("image enhance selects each workflow variant", function () {
   var context = loadAigateContext();
   var workflow = context.findWorkflow("image-enhance");
