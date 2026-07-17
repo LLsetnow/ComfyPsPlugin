@@ -63,6 +63,9 @@ var WORKFLOWS = [
         imageNodeId: "71",
         maskNodeId: "214",
         resolutionNodeId: "212",
+        outputNodeId: "224",
+        promptNodeId: "36",
+        promptField: "prompt",
       },
     },
     description: "对选区范围内的像素进行图像编辑。先画一个选区，再点运行。",
@@ -97,6 +100,10 @@ var WORKFLOWS = [
     workflowId: "2075237897401360385",
     workflowFile: "../workflows/cleanup_api.json",
     imageNodeId: "41",
+    aigateSupported: true,
+    outputNodeId: "220",
+    promptNodeId: "68",
+    promptField: "prompt",
     description: "去除背景的所有杂物与路人。修改提示词可以实现不同的去除效果。",
     inputs: [
       { id: "wfPrompt", type: "textarea", label: "提示词", placeholder: "", default: "去除主体以外的其他人物，有着干净空旷的背景，并保留原背景的景深和天花板。保留人物的物品" },
@@ -111,6 +118,10 @@ var WORKFLOWS = [
     workflowId: "2075255153690759170",
     workflowFile: "../workflows/facefix_api.json",
     imageNodeId: "27",
+    aigateSupported: true,
+    outputNodeId: "72",
+    promptNodeId: "2",
+    promptField: "text",
     description: "自动检测并修复面部细节，使皮肤更细腻、五官更立体。无需选区。",
     inputs: [
       { id: "wfPrompt", type: "textarea", label: "提示词", placeholder: "", default: "光滑细腻的皮肤质感，立体的五官" },
@@ -118,6 +129,41 @@ var WORKFLOWS = [
     ],
     setArgs: function (inputs) {
       return ["9:denoise=" + (inputs.wfDenoise || 0.1)];
+    },
+  },
+  {
+    id: "image-enhance",
+    name: "图像高清",
+    icon: "✦",
+    active: true,
+    needsMask: false,
+    aigateSupported: true,
+    description: "图像清晰保持原始分辨率；图像放大会按比例提升分辨率。",
+    inputs: [
+      {
+        id: "wfImageEnhanceMode", type: "select", label: "模式", default: "clarity", options: [
+          { value: "clarity", label: "图像清晰（保持分辨率）" },
+          { value: "upscale", label: "图像放大" },
+        ],
+      },
+      { id: "wfImageEnhanceScale", type: "range", label: "放大比例", default: 2, min: 1, max: 8, step: 0.1 },
+    ],
+    variants: {
+      clarity: {
+        workflowId: "2078092574119964674",
+        workflowFile: "../workflows/image_clarity_api.json",
+        imageNodeId: "90",
+        outputNodeId: "100",
+      },
+      upscale: {
+        workflowId: "2078099177921589250",
+        workflowFile: "../workflows/image_upscale_api.json",
+        imageNodeId: "90",
+        outputNodeId: "100",
+      },
+    },
+    setArgs: function (inputs) {
+      return ["95:value=" + getImageEnhanceScale(inputs.wfImageEnhanceScale)];
     },
   },
   {
@@ -667,4 +713,3 @@ function base64ToBytes(b64str) {
   }
   return bytes;
 }
-
