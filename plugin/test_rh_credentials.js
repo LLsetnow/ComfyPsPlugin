@@ -3,8 +3,29 @@ var fs = require("node:fs");
 var test = require("node:test");
 var vm = require("node:vm");
 
+// main.js 已按依赖顺序拆成多个全局脚本（见 index.html / CLAUDE.md）。
+// 这里按同样顺序拼回完整源码，等价于原单一 main.js，再按标记切片。
+var MODULE_FILES = [
+  "plugin/main.js",
+  "plugin/png.js",
+  "plugin/imaging.js",
+  "plugin/run.js",
+  "plugin/queue.js",
+  "plugin/workflow.js",
+  "plugin/settings.js",
+  "plugin/init.js",
+];
+
+function readModuleSource() {
+  var out = "";
+  for (var i = 0; i < MODULE_FILES.length; i++) {
+    out += fs.readFileSync(MODULE_FILES[i], "utf8");
+  }
+  return out;
+}
+
 function loadCredentialContext(storage) {
-  var source = fs.readFileSync("plugin/main.js", "utf8");
+  var source = readModuleSource();
   var end = source.indexOf("function refreshRunButton");
   var values = storage || {};
   var mockPs = {

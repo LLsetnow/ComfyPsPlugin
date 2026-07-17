@@ -3,8 +3,29 @@ var fs = require("node:fs");
 var test = require("node:test");
 var vm = require("node:vm");
 
+// main.js 已按依赖顺序拆成多个全局脚本（见 index.html / CLAUDE.md）。
+// 这里按同样顺序拼回完整源码，等价于原单一 main.js，再按标记切片。
+var MODULE_FILES = [
+  "plugin/main.js",
+  "plugin/png.js",
+  "plugin/imaging.js",
+  "plugin/run.js",
+  "plugin/queue.js",
+  "plugin/workflow.js",
+  "plugin/settings.js",
+  "plugin/init.js",
+];
+
+function readModuleSource() {
+  var out = "";
+  for (var i = 0; i < MODULE_FILES.length; i++) {
+    out += fs.readFileSync(MODULE_FILES[i], "utf8");
+  }
+  return out;
+}
+
 function loadAigateContext() {
-  var source = fs.readFileSync("plugin/main.js", "utf8");
+  var source = readModuleSource();
   var initAt = source.indexOf("(function init() {");
   assert.ok(initAt > 0, "main.js must keep its init IIFE boundary");
   var values = {};
@@ -114,7 +135,7 @@ test("removes a released instance from local lifecycle", function () {
 
 test("settings expose AIGate lifecycle controls and normal-exit cleanup", function () {
   var html = fs.readFileSync("plugin/index.html", "utf8");
-  var source = fs.readFileSync("plugin/main.js", "utf8");
+  var source = readModuleSource();
   assert.match(html, /运行/);
   assert.match(source, /启动/);
   assert.match(source, /关闭/);
@@ -128,5 +149,5 @@ test("resets the AIGate close guard when a UXP panel is shown again", function (
   context._aigateLifecycleCloseRequested = true;
   context.resetAigateManagedCloseForPanelShow();
   assert.equal(context._aigateLifecycleCloseRequested, false);
-  assert.match(fs.readFileSync("plugin/main.js", "utf8"), /uxpshowpanel/);
+  assert.match(readModuleSource(), /uxpshowpanel/);
 });

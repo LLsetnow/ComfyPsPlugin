@@ -1190,6 +1190,18 @@
   <!-- 短暂提示弹窗（提交/完成/失败等消息，几秒后自动消失，可点击关闭） -->
   <div id="toast"></div>
 
+  <!--
+    模块按依赖顺序加载（UXP 无打包器，全部共享全局作用域，等价于原单一 main.js）。
+    顺序不可乱：main.js(基础) → png → imaging → run → queue → workflow → settings → init(引导)。
+    新增/调整模块时同步更新 CLAUDE.md 的模块表与安装目录符号链接。
+  -->
   <script src="main.js"></script>
+  <script src="png.js"></script>
+  <script src="imaging.js"></script>
+  <script src="run.js"></script>
+  <script src="queue.js"></script>
+  <script src="workflow.js"></script>
+  <script src="settings.js"></script>
+  <script src="init.js"></script>
 </body>
 </html>
