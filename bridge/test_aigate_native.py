@@ -126,8 +126,38 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                 return web.json_response({"code": 1, "message": "not available"})
             return web.json_response({"code": 0, "data": {"instanceId": instance_id}})
 
+        async def account_balance(request):
+            self.requests.append({
+                "kind": "balance",
+                "headers": dict(request.headers),
+            })
+            return web.json_response({"code": 0, "data": {"balance": "12898"}})
+
+        async def sku_list(request):
+            self.requests.append({
+                "kind": "sku",
+                "headers": dict(request.headers),
+                "areaName": request.query.get("areaName"),
+            })
+            return web.json_response({"code": 0, "data": [{
+                "skuName": "4090-24GB-DDR5", "price": "199", "vmSize": "24",
+            }]})
+
+        async def start_instance(request):
+            self.requests.append({
+                "kind": "create",
+                "headers": dict(request.headers),
+                "body": await request.json(),
+            })
+            return web.json_response({"code": 0, "data": {
+                "instanceId": "new-1", "instanceName": "", "operationStatus": "1",
+            }})
+
         app.router.add_post("/instance/page", list_instances)
         app.router.add_get("/instance/get", get_instance)
+        app.router.add_post("/user/balance", account_balance)
+        app.router.add_get("/instance/skuList", sku_list)
+        app.router.add_post("/instance/start", start_instance)
         app.router.add_get("/instance/{action}", control_instance)
 
         async def upload_image(request):
@@ -202,6 +232,47 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.session.close()
         await self.runner.cleanup()
+
+    async def test_reads_balance_and_formats_cents(self):
+        from bridge.aigate_native import get_aigate_account
+
+        actual = await get_aigate_account("demo-token", self.session, self.api_base)
+
+        self.assertEqual(actual, {"balance": "12898", "balanceLabel": "¥ 128.98"})
+        self.assertEqual(
+            self.requests[-1]["headers"]["Authorization"], "Bearer demo-token"
+        )
+
+    async def test_lists_skus_with_price_label_and_area(self):
+        from bridge.aigate_native import list_aigate_skus
+
+        actual = await list_aigate_skus(
+            "demo-token", "华东一区", self.session, self.api_base
+        )
+
+        self.assertEqual(actual, [{
+            "skuName": "4090-24GB-DDR5",
+            "vmSize": "24",
+            "price": "199",
+            "priceLabel": "¥ 1.99 / 小时",
+        }])
+        self.assertEqual(self.requests[-1]["areaName"], "华东一区")
+
+    async def test_creates_configured_instance_without_echoing_token(self):
+        from bridge.aigate_native import create_aigate_instance
+
+        actual = await create_aigate_instance("demo-token", "4090-24GB-DDR5", {
+            "areaName": "华东一区", "imageId": "42", "imageType": "2",
+        }, self.session, self.api_base)
+
+        self.assertEqual(actual["instanceId"], "new-1")
+        self.assertEqual(self.requests[-1]["body"], {
+            "skuName": "4090-24GB-DDR5",
+            "areaName": "华东一区",
+            "count": 1,
+            "imageId": "42",
+            "imageType": "2",
+        })
 
     async def test_lists_running_instances_with_bearer_token(self):
         from bridge.aigate_native import list_running_instances
