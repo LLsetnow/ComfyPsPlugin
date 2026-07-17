@@ -32,7 +32,7 @@ function loadAigateContext() {
       removeItem: function (key) { delete values[key]; },
     },
     Math: Math,
-    Date: Date,
+    Date: { now: function () { return 0; } },
     JSON: JSON,
     console: { log: function () {}, error: function () {}, warn: function () {} },
     setTimeout: function () { return 0; },
@@ -76,4 +76,49 @@ test("settings include AIGate token and instance controls", function () {
   assert.match(html, /id="settingAigateToken"/);
   assert.match(html, /id="btnRefreshAigateInstances"/);
   assert.match(html, /id="aigateInstanceList"/);
+});
+
+test("records runtime only after first observed running state", function () {
+  var context = loadAigateContext();
+  context.Date.now = function () { return 1000; };
+  context.saveAigateLifecycle({
+    "i-1": { managed: true, pendingStart: true, startedAt: 0 },
+  });
+
+  context.reconcileAigateLifecycle([{ instanceId: "i-1", operationStatus: "2" }]);
+  context.Date.now = function () { return 3000; };
+  context.reconcileAigateLifecycle([{ instanceId: "i-1", operationStatus: "2" }]);
+
+  assert.deepEqual(context.loadAigateLifecycle()["i-1"], {
+    managed: true,
+    pendingStart: false,
+    startedAt: 1000,
+  });
+  assert.equal(context.formatAigateRuntime("i-1", 62000), "运行 00:01:01");
+});
+
+test("does not invent runtime for an unmanaged running instance", function () {
+  var context = loadAigateContext();
+  context.reconcileAigateLifecycle([{ instanceId: "external", operationStatus: "2" }]);
+  assert.equal(context.formatAigateRuntime("external", 2000), "开始时间未知");
+});
+
+test("removes a released instance from local lifecycle", function () {
+  var context = loadAigateContext();
+  context.saveAigateLifecycle({
+    "i-1": { managed: true, pendingStart: false, startedAt: 1000 },
+  });
+  context.removeAigateLifecycle("i-1");
+  assert.equal(context.loadAigateLifecycle()["i-1"], undefined);
+});
+
+test("settings expose AIGate lifecycle controls and normal-exit cleanup", function () {
+  var html = fs.readFileSync("plugin/index.html", "utf8");
+  var source = fs.readFileSync("plugin/main.js", "utf8");
+  assert.match(html, /运行/);
+  assert.match(source, /启动/);
+  assert.match(source, /关闭/);
+  assert.match(source, /释放/);
+  assert.match(source, /uxpcommand/);
+  assert.match(source, /\/aigate\/close-managed/);
 });
