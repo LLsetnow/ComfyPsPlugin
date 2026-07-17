@@ -108,12 +108,12 @@ def validate_image_enhance_args(workflow_path, extra_set_args):
             "COMFYUI_WORKFLOW_INVALID", "放大比例必须在 1 到 8 之间", 400
         )
     raw_arg = str(extra_set_args[0])
-    if not raw_arg.startswith("95:value="):
+    if not raw_arg.startswith("95:Number="):
         raise AigateNativeError(
             "COMFYUI_WORKFLOW_INVALID", "放大比例必须在 1 到 8 之间", 400
         )
     try:
-        scale = float(raw_arg[len("95:value="):])
+        scale = float(raw_arg[len("95:Number="):])
     except (TypeError, ValueError):
         scale = float("nan")
     if not math.isfinite(scale) or scale < 1 or scale > 8:

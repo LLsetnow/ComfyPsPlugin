@@ -588,14 +588,14 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
                 "workflowFile": "../workflows/image_upscale_api.json",
                 "imageNodeId": "90",
                 "outputNodeId": "100",
-                "extraSetArgs": ["95:value=4"],
+                "extraSetArgs": ["95:Number=4"],
                 "taskId": "upscale42",
             }))
 
         self.assertEqual(response.status, 200)
         args = native_run.await_args.args
         self.assertEqual(args[5], (bridge.BRIDGE_DIR / "../workflows/image_upscale_api.json").resolve())
-        self.assertEqual(args[6:12], ("90", "", "100", "", "", ["95:value=4"]))
+        self.assertEqual(args[6:12], ("90", "", "100", "", "", ["95:Number=4"]))
 
     async def test_rejects_invalid_image_enhance_factor(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
@@ -607,7 +607,7 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
             "workflowFile": "../workflows/image_clarity_api.json",
             "imageNodeId": "90",
             "outputNodeId": "100",
-            "extraSetArgs": ["95:value=8.1"],
+            "extraSetArgs": ["95:Number=8.1"],
         }))
 
         self.assertEqual(response.status, 400)

@@ -163,7 +163,7 @@ var WORKFLOWS = [
       },
     },
     setArgs: function (inputs) {
-      return ["95:value=" + getImageEnhanceScale(inputs.wfImageEnhanceScale)];
+      return ["95:Number=" + getImageEnhanceScale(inputs.wfImageEnhanceScale)];
     },
   },
   {
