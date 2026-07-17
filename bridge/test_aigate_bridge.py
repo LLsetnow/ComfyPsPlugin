@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import base64
@@ -147,6 +148,58 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         })
         listed.assert_awaited_once()
         created.assert_not_awaited()
+
+    async def test_serializes_concurrent_creates_for_an_empty_console(self):
+        instances = []
+        created_instances = []
+
+        async def list_current_instances(token, session):
+            await asyncio.sleep(0)
+            return list(instances)
+
+        async def create_instance(token, sku_name, config, session):
+            await asyncio.sleep(0)
+            instance = {
+                "instanceId": "new-" + str(len(created_instances) + 1),
+                "instanceName": "",
+                "operationStatus": "1",
+                "hasComfyui": True,
+            }
+            created_instances.append(instance)
+            instances.append(instance)
+            return instance
+
+        with patch.object(
+            bridge, "list_instance_summaries",
+            new=AsyncMock(side_effect=list_current_instances),
+        ) as listed, patch.object(
+            bridge, "create_aigate_instance",
+            new=AsyncMock(side_effect=create_instance),
+        ) as create:
+            responses = await asyncio.gather(
+                bridge.handle_aigate_create_instance(JsonRequest({
+                    "aigateToken": "demo-token",
+                    "skuName": "4090-24GB-DDR5",
+                })),
+                bridge.handle_aigate_create_instance(JsonRequest({
+                    "aigateToken": "demo-token",
+                    "skuName": "4090-24GB-DDR5",
+                })),
+            )
+
+        responses_by_status = {response.status: response for response in responses}
+        self.assertEqual(sorted(response.status for response in responses), [200, 409])
+        self.assertEqual(json.loads(
+            responses_by_status[409].body.decode("utf-8")
+        ), {
+            "ok": False,
+            "error": "AIGATE_INSTANCE_EXISTS",
+            "message": "云扉控制台已有实例，不能重复创建",
+        })
+        self.assertEqual(len(created_instances), 1)
+        self.assertEqual(create.await_count, 1)
+        self.assertEqual(listed.await_count, 2)
+        self.assertEqual(bridge._aigate_managed_tokens, {"new-1": "demo-token"})
 
     async def test_creates_empty_console_instance_with_configured_image_and_registers_it(self):
         created_instance = {

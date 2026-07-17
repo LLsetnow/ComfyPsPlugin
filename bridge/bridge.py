@@ -71,6 +71,7 @@ except ImportError:
 
 
 _aigate_managed_tokens: dict[str, str] = {}
+_aigate_create_lock = asyncio.Lock()
 
 async def handle_options(request):
     return cors(web.Response(status=204))
@@ -292,16 +293,17 @@ async def handle_aigate_create_instance(request):
         return error_response
     try:
         config = get_aigate_create_config()
-        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
-            instances = await list_instance_summaries(token, session)
-            if instances:
-                raise AigateNativeError(
-                    "AIGATE_INSTANCE_EXISTS", "云扉控制台已有实例，不能重复创建", 409
+        async with _aigate_create_lock:
+            async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+                instances = await list_instance_summaries(token, session)
+                if instances:
+                    raise AigateNativeError(
+                        "AIGATE_INSTANCE_EXISTS", "云扉控制台已有实例，不能重复创建", 409
+                    )
+                result = await create_aigate_instance(
+                    token, body.get("skuName"), config, session
                 )
-            result = await create_aigate_instance(
-                token, body.get("skuName"), config, session
-            )
-        _sync_aigate_managed_instances(token, [result["instanceId"]])
+            _sync_aigate_managed_instances(token, [result["instanceId"]])
         return cors(web.json_response({"ok": True, "instance": result}))
     except AigateNativeError as error:
         return cors(web.json_response(
