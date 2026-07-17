@@ -350,6 +350,28 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             ["3"],
         )
 
+    async def test_honors_configured_community_before_personal_image_order(self):
+        from bridge.aigate_native import resolve_aigate_create_image
+
+        self.personal_images = [{
+            "worksId": "301", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+        self.community_images = [{
+            "worksId": "302", "name": "comfyui-boogu-edit-int8-20260716",
+        }]
+
+        actual = await resolve_aigate_create_image("demo-token", "4090-24GB-DDR5", {
+            "areaName": "华东一区", "imageId": "", "imageTypes": ["2", "3"],
+            "imageName": "comfyui-boogu-edit-int8-20260716",
+        }, self.session, self.api_base)
+
+        self.assertEqual(actual, {"imageId": 302, "imageType": "2"})
+        self.assertEqual(
+            [item["body"]["imageType"] for item in self.requests
+             if item.get("kind") == "image-page"],
+            ["2"],
+        )
+
     async def test_searches_later_personal_image_pages_before_community_fallback(self):
         from bridge.aigate_native import resolve_aigate_create_image
 

@@ -114,7 +114,7 @@ def _aigate_image_page_data(data):
 
 async def resolve_aigate_create_image(token, sku_name, create_config, session,
                                       api_base=AIGATE_API_BASE):
-    """解析创建所需镜像：显式 ID 优先，随后个人镜像、社区镜像。"""
+    """解析创建所需镜像：显式 ID 优先，随后按配置顺序查找镜像。"""
     explicit_id = _configured_aigate_image_id(create_config)
     if explicit_id is not None:
         return {
@@ -128,39 +128,45 @@ async def resolve_aigate_create_image(token, sku_name, create_config, session,
     configured_types = create_config.get("imageTypes") or ["3", "2"]
     if not isinstance(configured_types, list):
         configured_types = ["3", "2"]
-    image_types = [str(value) for value in configured_types]
+    image_types = []
+    for value in configured_types:
+        image_type = str(value)
+        if image_type in ("3", "2") and image_type not in image_types:
+            image_types.append(image_type)
     image_url = api_base.rstrip("/") + "/image/page"
 
-    if "3" in image_types:
-        current = 1
-        while True:
+    for image_type in image_types:
+        if image_type == "3":
+            current = 1
+            while True:
+                data = await _aigate_json(session, "POST", image_url, token, {
+                    "current": current,
+                    "pageSize": 20,
+                    "imageType": "3",
+                })
+                records, total = _aigate_image_page_data(data)
+                image_id = _image_id_from_records(records, image_name)
+                if image_id is not None:
+                    return {"imageId": image_id, "imageType": "3"}
+                if current * 20 >= total:
+                    break
+                current += 1
+            continue
+
+        if image_type == "2":
             data = await _aigate_json(session, "POST", image_url, token, {
-                "current": current,
+                "current": 1,
                 "pageSize": 20,
-                "imageType": "3",
+                "imageType": "2",
+                "areaName": str(create_config.get("areaName") or "").strip(),
+                "skuName": str(sku_name or "").strip(),
+                "imageName": image_name,
+                "imageVersion": "",
             })
-            records, total = _aigate_image_page_data(data)
+            records, _ = _aigate_image_page_data(data)
             image_id = _image_id_from_records(records, image_name)
             if image_id is not None:
-                return {"imageId": image_id, "imageType": "3"}
-            if current * 20 >= total:
-                break
-            current += 1
-
-    if "2" in image_types:
-        data = await _aigate_json(session, "POST", image_url, token, {
-            "current": 1,
-            "pageSize": 20,
-            "imageType": "2",
-            "areaName": str(create_config.get("areaName") or "").strip(),
-            "skuName": str(sku_name or "").strip(),
-            "imageName": image_name,
-            "imageVersion": "",
-        })
-        records, _ = _aigate_image_page_data(data)
-        image_id = _image_id_from_records(records, image_name)
-        if image_id is not None:
-            return {"imageId": image_id, "imageType": "2"}
+                return {"imageId": image_id, "imageType": "2"}
 
     raise AigateNativeError(
         "AIGATE_IMAGE_NOT_FOUND", "未找到默认 ComfyUI 镜像（已尝试个人和社区镜像）", 409
