@@ -99,7 +99,7 @@ test("settings include AIGate token and instance controls", function () {
   assert.match(html, /id="aigateInstanceList"/);
 });
 
-test("README documents private AIGate create configuration and raw UI values", function () {
+test("README documents private AIGate create configuration and yuan UI values", function () {
   var readme = fs.readFileSync("README.md", "utf8");
 
   assert.match(readme, /aigateCreate/);
@@ -109,9 +109,9 @@ test("README documents private AIGate create configuration and raw UI values", f
   assert.match(readme, /bridge\/config\.example\.json/);
   assert.match(readme, /成功刷新.*没有.*实例|没有.*实例.*成功刷新/);
   assert.match(readme, /停止.*隐藏|已有实例.*隐藏/);
-  assert.match(readme, /余额.*原始.*值|原始.*余额/);
-  assert.match(readme, /GPU.*价格.*原始.*值|原始.*GPU.*价格/);
-  assert.match(readme, /不.*推断.*单位|不.*推断.*周期/);
+  assert.match(readme, /余额.*分.*人民币元|余额.*分.*元/);
+  assert.match(readme, /GPU.*价格.*分.*人民币元|GPU.*价格.*分.*元/);
+  assert.match(readme, /bridge.*原始.*数值|原始.*数值.*bridge/);
 });
 
 test("settings expose AIGate account and conditional-create anchors", function () {
@@ -156,14 +156,16 @@ test("shows the AIGate create card only for a confirmed empty array", function (
   assert.equal(context.shouldShowAigateCreate({ length: 0 }), false);
 });
 
-test("uses the raw AIGate SKU price without inferring a unit", function () {
+test("formats AIGate cent amounts as yuan for balance and GPU prices", function () {
   var context = loadAigateContext();
 
-  assert.equal(context.aigateSkuPriceText({ price: "199" }), "199");
-  assert.equal(context.aigateSkuPriceText({ price: 0 }), "0");
+  assert.equal(context.formatAigateCents("205", "余额暂不可用"), "¥ 2.05");
+  assert.equal(context.formatAigateCents(0, "余额暂不可用"), "¥ 0.00");
+  assert.equal(context.formatAigateCents("5", "余额暂不可用"), "¥ 0.05");
+  assert.equal(context.formatAigateCents("-1", "余额暂不可用"), "余额暂不可用");
+  assert.equal(context.formatAigateCents("2.05", "余额暂不可用"), "余额暂不可用");
+  assert.equal(context.aigateSkuPriceText({ price: "199" }), "¥ 1.99");
   assert.equal(context.aigateSkuPriceText({ price: "" }), "价格暂不可用");
-  assert.equal(context.aigateSkuPriceText({}), "价格暂不可用");
-  assert.equal(context.aigateSkuPriceText(null), "价格暂不可用");
 });
 
 test("a stale successful AIGate account response cannot show Token A balance for Token B", async function () {
