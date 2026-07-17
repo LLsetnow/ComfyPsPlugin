@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import base64
@@ -55,8 +56,252 @@ class JsonRequest:
 
 class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.original_config = dict(bridge.CONFIG)
+        bridge.CONFIG["aigateCreate"] = {
+            "areaName": "华东一区",
+            "imageId": "42",
+            "imageType": "2",
+        }
         if hasattr(bridge, "_aigate_managed_tokens"):
             bridge._aigate_managed_tokens.clear()
+
+    def tearDown(self):
+        bridge.CONFIG.clear()
+        bridge.CONFIG.update(self.original_config)
+
+    async def test_returns_raw_account_balance_without_echoing_token(self):
+        with patch.object(
+            bridge, "get_aigate_account", new=AsyncMock(
+                return_value={"balance": "12898"}
+            )
+        ) as get_account, patch.object(bridge.time, "time", return_value=123.456):
+            response = await bridge.handle_aigate_account(JsonRequest({
+                "aigateToken": "demo-token",
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": True,
+            "balance": "12898",
+            "updatedAt": 123456,
+        })
+        self.assertNotIn("demo-token", response.body.decode("utf-8"))
+        get_account.assert_awaited_once()
+        self.assertEqual(get_account.await_args.args[0], "demo-token")
+
+    async def test_returns_create_options_with_raw_prices(self):
+        options = [{
+            "skuName": "4090-24GB-DDR5",
+            "vmSize": "24",
+            "price": "199",
+        }]
+        with patch.object(
+            bridge, "list_aigate_skus", new=AsyncMock(return_value=options)
+        ) as list_skus, patch.object(bridge.time, "time", return_value=123.456):
+            response = await bridge.handle_aigate_create_options(JsonRequest({
+                "aigateToken": "demo-token",
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": True,
+            "options": options,
+            "updatedAt": 123456,
+        })
+        self.assertNotIn("demo-token", response.body.decode("utf-8"))
+        list_skus.assert_awaited_once()
+        self.assertEqual(list_skus.await_args.args[0], "demo-token")
+        self.assertEqual(list_skus.await_args.args[1], "华东一区")
+
+    async def test_rejects_create_options_without_local_image_config(self):
+        bridge.CONFIG.pop("aigateCreate")
+
+        response = await bridge.handle_aigate_create_options(JsonRequest({
+            "aigateToken": "demo-token",
+        }))
+
+        self.assertEqual(response.status, 409)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": False,
+            "error": "AIGATE_CREATE_CONFIG_REQUIRED",
+            "message": "本机尚未配置预设 ComfyUI 镜像",
+        })
+
+    async def test_rejects_create_when_any_instance_exists(self):
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[{
+                "instanceId": "existing", "operationStatus": "7",
+            }])
+        ) as listed, patch.object(
+            bridge, "create_aigate_instance", new=AsyncMock()
+        ) as created:
+            response = await bridge.handle_aigate_create_instance(JsonRequest({
+                "aigateToken": "demo-token",
+                "skuName": "4090-24GB-DDR5",
+            }))
+
+        self.assertEqual(response.status, 409)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": False,
+            "error": "AIGATE_INSTANCE_EXISTS",
+            "message": "云扉控制台已有实例，不能重复创建",
+        })
+        listed.assert_awaited_once()
+        created.assert_not_awaited()
+
+    async def test_serializes_concurrent_creates_for_an_empty_console(self):
+        instances = []
+        created_instances = []
+
+        async def list_current_instances(token, session):
+            await asyncio.sleep(0)
+            return list(instances)
+
+        async def create_instance(token, sku_name, config, session):
+            await asyncio.sleep(0)
+            instance = {
+                "instanceId": "new-" + str(len(created_instances) + 1),
+                "instanceName": "",
+                "operationStatus": "1",
+                "hasComfyui": True,
+            }
+            created_instances.append(instance)
+            instances.append(instance)
+            return instance
+
+        with patch.object(
+            bridge, "list_instance_summaries",
+            new=AsyncMock(side_effect=list_current_instances),
+        ) as listed, patch.object(
+            bridge, "create_aigate_instance",
+            new=AsyncMock(side_effect=create_instance),
+        ) as create:
+            responses = await asyncio.gather(
+                bridge.handle_aigate_create_instance(JsonRequest({
+                    "aigateToken": "demo-token",
+                    "skuName": "4090-24GB-DDR5",
+                })),
+                bridge.handle_aigate_create_instance(JsonRequest({
+                    "aigateToken": "demo-token",
+                    "skuName": "4090-24GB-DDR5",
+                })),
+            )
+
+        responses_by_status = {response.status: response for response in responses}
+        self.assertEqual(sorted(response.status for response in responses), [200, 409])
+        self.assertEqual(json.loads(
+            responses_by_status[409].body.decode("utf-8")
+        ), {
+            "ok": False,
+            "error": "AIGATE_INSTANCE_EXISTS",
+            "message": "云扉控制台已有实例，不能重复创建",
+        })
+        self.assertEqual(len(created_instances), 1)
+        self.assertEqual(create.await_count, 1)
+        self.assertEqual(listed.await_count, 2)
+        self.assertEqual(bridge._aigate_managed_tokens, {"new-1": "demo-token"})
+
+    async def test_creates_empty_console_instance_with_configured_image_and_registers_it(self):
+        created_instance = {
+            "instanceId": "new-1",
+            "instanceName": "",
+            "operationStatus": "1",
+            "hasComfyui": True,
+        }
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
+        ) as listed, patch.object(
+            bridge, "create_aigate_instance", new=AsyncMock(
+                return_value=created_instance
+            )
+        ) as create:
+            response = await bridge.handle_aigate_create_instance(JsonRequest({
+                "aigateToken": "demo-token",
+                "skuName": "4090-24GB-DDR5",
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {
+            "ok": True,
+            "instance": created_instance,
+        })
+        listed.assert_awaited_once()
+        create.assert_awaited_once()
+        self.assertEqual(create.await_args.args[0], "demo-token")
+        self.assertEqual(create.await_args.args[1], "4090-24GB-DDR5")
+        self.assertEqual(create.await_args.args[2], {
+            "areaName": "华东一区",
+            "imageId": "42",
+            "imageType": "2",
+        })
+        self.assertEqual(bridge._aigate_managed_tokens, {"new-1": "demo-token"})
+
+    async def test_passes_configured_image_id_to_native_adapter_unchanged(self):
+        bridge.CONFIG["aigateCreate"]["imageId"] = 42
+        created_instance = {
+            "instanceId": "new-1",
+            "instanceName": "",
+            "operationStatus": "1",
+            "hasComfyui": True,
+        }
+        with patch.object(
+            bridge, "list_instance_summaries", new=AsyncMock(return_value=[])
+        ), patch.object(
+            bridge, "create_aigate_instance", new=AsyncMock(
+                return_value=created_instance
+            )
+        ) as create:
+            response = await bridge.handle_aigate_create_instance(JsonRequest({
+                "aigateToken": "demo-token",
+                "skuName": "4090-24GB-DDR5",
+            }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(create.await_args.args[2]["imageId"], 42)
+
+    def test_registers_account_and_instance_creation_routes(self):
+        class FakeRouter:
+            def __init__(self):
+                self.post_routes = []
+
+            def add_post(self, path, handler):
+                self.post_routes.append((path, handler))
+
+            def add_get(self, path, handler):
+                pass
+
+            def add_route(self, method, path, handler):
+                pass
+
+        class FakeApp:
+            def __init__(self):
+                self.router = FakeRouter()
+                self.on_shutdown = []
+
+        app = FakeApp()
+        with patch.object(bridge.web, "Application", return_value=app), patch.object(
+            bridge.web, "run_app"
+        ), patch.object(
+            bridge, "load_config", return_value={
+                "workflowId": "workflow", "imageNodeId": "41", "maskNodeId": "42",
+                "workflowFile": "workflow.json", "port": 8765,
+            }
+        ), patch.object(bridge, "bridge_log"):
+            bridge.main()
+
+        routes = dict(app.router.post_routes)
+        self.assertIn("/aigate/account", routes)
+        self.assertIn("/aigate/create-options", routes)
+        self.assertIn("/aigate/create-instance", routes)
+        self.assertEqual(routes["/aigate/account"], bridge.handle_aigate_account)
+        self.assertEqual(
+            routes["/aigate/create-options"],
+            bridge.handle_aigate_create_options,
+        )
+        self.assertEqual(
+            routes["/aigate/create-instance"],
+            bridge.handle_aigate_create_instance,
+        )
 
     async def test_lists_sanitized_instances(self):
         expected = [{

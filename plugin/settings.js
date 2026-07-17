@@ -69,48 +69,321 @@ function _getAigateToken() {
   return (input ? input.value : loadSettings().aigateToken).trim();
 }
 
+function shouldShowAigateCreate(instances) {
+  return Array.isArray(instances) && instances.length === 0;
+}
+
+function aigateSkuPriceText(sku) {
+  if (!sku || sku.price === undefined || sku.price === null
+    || String(sku.price).trim() === "") return "价格暂不可用";
+  return String(sku.price);
+}
+
 var _aigateInstances = [];
 var _aigateRefreshTimer = 0;
 var _aigateRuntimeTimer = 0;
 var _aigateRefreshInFlight = false;
 var _aigateLifecycleCloseRequested = false;
+var _aigateAccount = null;
+var _aigateAccountUpdatedAt = 0;
+var _aigateAccountError = "";
+var _aigateAccountRefreshInFlight = false;
+var _aigateSkuOptions = null;
+var _aigateSkuOptionsError = "";
+var _aigateCreateOptionsInFlight = false;
+var _aigateSelectedSkuName = "";
+var _aigateCreateState = "idle";
+var _aigateCreateError = "";
+var _aigateInstancesConfirmed = false;
+var _aigateConfirmedToken = "";
+var _aigateListGeneration = 0;
+var _aigateInstanceReadError = "";
 
-function _clearAigateLifecycleTimers() {
-  if (_aigateRefreshTimer) {
-    clearInterval(_aigateRefreshTimer);
-    _aigateRefreshTimer = 0;
+function _hasCurrentAigateEmptyConsole(token, generation) {
+  return _aigateInstancesConfirmed && _aigateConfirmedToken === token
+    && _aigateListGeneration === generation && _getAigateToken() === token
+    && shouldShowAigateCreate(_aigateInstances);
+}
+
+function _hasCurrentAigateInstanceList() {
+  return _aigateInstancesConfirmed && _aigateConfirmedToken === _getAigateToken();
+}
+
+function _invalidateAigateInstanceList(message) {
+  _aigateInstancesConfirmed = false;
+  _aigateConfirmedToken = "";
+  _aigateListGeneration += 1;
+  _aigateInstanceReadError = message || "读取云扉实例失败";
+  _aigateSkuOptions = null;
+  _aigateSkuOptionsError = "";
+  _aigateSelectedSkuName = "";
+  _aigateCreateState = "idle";
+  _aigateCreateError = "";
+}
+
+function _clearAigateContainer(container) {
+  while (container.firstChild) container.removeChild(container.firstChild);
+}
+
+function _appendAigateText(parent, className, value) {
+  var element = document.createElement("div");
+  element.className = className;
+  element.textContent = value;
+  parent.appendChild(element);
+  return element;
+}
+
+function _aigateErrorText(error, fallback) {
+  return error && error.message ? error.message : (error || fallback);
+}
+
+function _formatAigateUpdatedAt(updatedAt) {
+  var updated = new Date(Number(updatedAt) || Date.now());
+  var hours = String(updated.getHours());
+  var minutes = String(updated.getMinutes());
+  if (hours.length < 2) hours = "0" + hours;
+  if (minutes.length < 2) minutes = "0" + minutes;
+  return "上次更新 " + hours + ":" + minutes;
+}
+
+function _invalidateAigateAccountForChangedToken() {
+  _aigateAccount = null;
+  _aigateAccountUpdatedAt = 0;
+  _aigateAccountError = "云扉凭证已变更，请刷新余额";
+}
+
+function _renderAigateAccount() {
+  var container = $("aigateAccountStatus");
+  if (!container) return;
+  _clearAigateContainer(container);
+
+  var hasBalance = _aigateAccount && _aigateAccount.balance !== undefined
+    && _aigateAccount.balance !== null && String(_aigateAccount.balance).trim() !== "";
+  if (hasBalance) {
+    var balance = document.createElement("div");
+    balance.className = "aigate-account-balance";
+    _appendAigateText(balance, "setting-hint", "余额");
+    _appendAigateText(balance, "aigate-account-balance-value", String(_aigateAccount.balance));
+    _appendAigateText(balance, "aigate-account-meta", _formatAigateUpdatedAt(_aigateAccountUpdatedAt));
+    container.appendChild(balance);
+  } else {
+    _appendAigateText(
+      container,
+      "aigate-account-pending",
+      _aigateAccountError || (_aigateAccountRefreshInFlight ? "正在读取余额…" : "输入 Token 后读取余额")
+    );
   }
-  if (_aigateRuntimeTimer) {
-    clearInterval(_aigateRuntimeTimer);
-    _aigateRuntimeTimer = 0;
+
+  var refresh = document.createElement("button");
+  refresh.id = "btnRefreshAigateAccount";
+  refresh.className = "btn-sm aigate-account-refresh";
+  refresh.type = "button";
+  refresh.disabled = _aigateAccountRefreshInFlight;
+  refresh.textContent = _aigateAccountRefreshInFlight ? "读取中…" : "↻ 更新余额";
+  refresh.addEventListener("click", refreshAigateAccount);
+  container.appendChild(refresh);
+}
+
+async function refreshAigateAccount() {
+  if (_aigateAccountRefreshInFlight) return;
+  var token = _getAigateToken();
+  if (!token) {
+    _aigateAccount = null;
+    _aigateAccountError = "请输入云扉 Bearer Token";
+    _renderAigateAccount();
+    return;
+  }
+  _aigateAccountRefreshInFlight = true;
+  _aigateAccountError = "";
+  _renderAigateAccount();
+  var settings = loadSettings();
+  try {
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/account",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aigateToken: token })
+      },
+      15000
+    );
+    if (!response.ok) throw new Error("桥服务返回 HTTP " + response.status);
+    var data = await response.json();
+    if (!data || !data.ok || data.balance === undefined || data.balance === null
+      || String(data.balance).trim() === "") {
+      throw new Error((data && data.message) || "读取云扉余额失败");
+    }
+    if (_getAigateToken() !== token) {
+      _invalidateAigateAccountForChangedToken();
+      return;
+    }
+    _aigateAccount = { balance: data.balance };
+    _aigateAccountUpdatedAt = Number(data.updatedAt) || Date.now();
+  } catch (e) {
+    if (_getAigateToken() !== token) {
+      _invalidateAigateAccountForChangedToken();
+      return;
+    }
+    _aigateAccount = null;
+    _aigateAccountError = "读取云扉余额失败：" + _aigateErrorText(e, "未知错误");
+  } finally {
+    _aigateAccountRefreshInFlight = false;
+    _renderAigateAccount();
   }
 }
 
-function _syncAigateLifecycleTimers() {
-  var shouldRun = _currentPage === "settings" && _segGet("segBackend") === "aigate"
-    && managedAigateInstanceIds().length > 0;
-  if (!shouldRun) {
-    _clearAigateLifecycleTimers();
+function _findAigateSku(skuName) {
+  if (!Array.isArray(_aigateSkuOptions)) return null;
+  for (var i = 0; i < _aigateSkuOptions.length; i++) {
+    if (_aigateSkuOptions[i] && _aigateSkuOptions[i].skuName === skuName) return _aigateSkuOptions[i];
+  }
+  return null;
+}
+
+function _renderAigateCreate(container) {
+  var card = document.createElement("div");
+  card.className = "aigate-create-card";
+  _appendAigateText(card, "aigate-instance-title", "创建 ComfyUI 实例");
+
+  if (_aigateCreateOptionsInFlight) {
+    _appendAigateText(card, "aigate-create-progress", "正在读取可用 GPU 规格…");
+    container.appendChild(card);
     return;
   }
-  if (!_aigateRefreshTimer) {
-    _aigateRefreshTimer = setInterval(function () {
-      refreshAigateInstances();
-    }, 10000);
+
+  if (_aigateSkuOptionsError) {
+    _appendAigateText(card, "aigate-create-notice", _aigateSkuOptionsError);
+    var retryActions = document.createElement("div");
+    retryActions.className = "aigate-create-actions";
+    var retry = document.createElement("button");
+    retry.className = "btn-sm";
+    retry.type = "button";
+    retry.textContent = "重试读取";
+    retry.addEventListener("click", refreshAigateCreateOptions);
+    retryActions.appendChild(retry);
+    card.appendChild(retryActions);
+    container.appendChild(card);
+    return;
   }
-  if (!_aigateRuntimeTimer) {
-    _aigateRuntimeTimer = setInterval(function () {
-      if (_aigateInstances.length) _renderAigateInstances(_aigateInstances);
-    }, 1000);
+
+  if (!Array.isArray(_aigateSkuOptions)) {
+    _appendAigateText(card, "aigate-create-notice", "正在准备可用 GPU 规格…");
+    container.appendChild(card);
+    return;
   }
+
+  if (_aigateCreateState === "creating") {
+    var creatingSku = _findAigateSku(_aigateSelectedSkuName);
+    _appendAigateText(card, "aigate-create-progress", "正在创建云扉 ComfyUI 实例…");
+    if (creatingSku) {
+      _appendAigateText(card, "aigate-create-notice", "云扉报价：" + aigateSkuPriceText(creatingSku));
+    }
+    container.appendChild(card);
+    return;
+  }
+
+  if (_aigateCreateState === "confirm") {
+    var selectedSku = _findAigateSku(_aigateSelectedSkuName);
+    if (!selectedSku) {
+      _aigateCreateState = "idle";
+      _aigateSelectedSkuName = "";
+      _renderAigateCreate(container);
+      return;
+    }
+    _appendAigateText(card, "aigate-create-notice", "确认创建 " + selectedSku.skuName
+      + "（" + (selectedSku.vmSize || "规格待确认") + "）的 ComfyUI 实例？");
+    _appendAigateText(card, "aigate-create-notice", "云扉报价：" + aigateSkuPriceText(selectedSku));
+    if (_aigateCreateError) _appendAigateText(card, "aigate-create-notice", _aigateCreateError);
+    var confirmActions = document.createElement("div");
+    confirmActions.className = "aigate-create-actions";
+    var back = document.createElement("button");
+    back.className = "btn-sm";
+    back.type = "button";
+    back.textContent = "返回";
+    back.addEventListener("click", function () {
+      _aigateCreateState = "idle";
+      _aigateCreateError = "";
+      _renderAigateInstances(_aigateInstances);
+    });
+    confirmActions.appendChild(back);
+    var confirmCreate = document.createElement("button");
+    confirmCreate.className = "btn-sm";
+    confirmCreate.type = "button";
+    confirmCreate.textContent = _aigateCreateError ? "重试创建" : "确认创建";
+    confirmCreate.addEventListener("click", submitAigateCreate);
+    confirmActions.appendChild(confirmCreate);
+    card.appendChild(confirmActions);
+    container.appendChild(card);
+    return;
+  }
+
+  _appendAigateText(card, "aigate-create-notice", "当前云扉控制台没有实例。选择 GPU 规格后创建预设 ComfyUI 实例。");
+  if (!_aigateSkuOptions.length) {
+    _appendAigateText(card, "aigate-create-notice", "当前区域没有可用的 GPU 规格。");
+    var unavailableActions = document.createElement("div");
+    unavailableActions.className = "aigate-create-actions";
+    var retryUnavailable = document.createElement("button");
+    retryUnavailable.className = "btn-sm";
+    retryUnavailable.type = "button";
+    retryUnavailable.textContent = "重试读取";
+    retryUnavailable.addEventListener("click", refreshAigateCreateOptions);
+    unavailableActions.appendChild(retryUnavailable);
+    card.appendChild(unavailableActions);
+    container.appendChild(card);
+    return;
+  }
+  for (var si = 0; si < _aigateSkuOptions.length; si++) {
+    (function (sku) {
+      if (!sku || typeof sku !== "object") return;
+      var row = document.createElement("button");
+      row.className = "aigate-sku-row";
+      if (_aigateSelectedSkuName === sku.skuName) row.className += " selected";
+      row.type = "button";
+      var meta = document.createElement("span");
+      meta.className = "aigate-sku-meta";
+      var skuName = document.createElement("span");
+      skuName.textContent = sku.skuName || "未命名 GPU 规格";
+      meta.appendChild(skuName);
+      var vmSize = document.createElement("span");
+      vmSize.className = "setting-hint";
+      vmSize.textContent = sku.vmSize || "规格待确认";
+      meta.appendChild(vmSize);
+      row.appendChild(meta);
+      var price = document.createElement("span");
+      price.className = "aigate-sku-price";
+      price.textContent = "云扉报价：" + aigateSkuPriceText(sku);
+      row.appendChild(price);
+      row.addEventListener("click", function () {
+        _aigateSelectedSkuName = sku.skuName;
+        _aigateCreateState = "confirm";
+        _aigateCreateError = "";
+        _renderAigateInstances(_aigateInstances);
+      });
+      card.appendChild(row);
+    })(_aigateSkuOptions[si]);
+  }
+  container.appendChild(card);
+}
+
+function _renderAigateCreateUnavailable(container, text) {
+  _appendAigateText(container, "setting-hint", text);
 }
 
 function _renderAigateInstances(instances) {
   var container = $("aigateInstanceList");
   if (!container) return;
-  container.innerHTML = "";
-  if (!instances || !instances.length) {
-    container.textContent = "未找到可显示的云扉实例";
+  _clearAigateContainer(container);
+  if (!_hasCurrentAigateInstanceList()) {
+    _renderAigateCreateUnavailable(container, _aigateInstanceReadError
+      || "请刷新云扉实例列表后再创建实例");
+    return;
+  }
+  if (shouldShowAigateCreate(instances)) {
+    _renderAigateCreate(container);
+    return;
+  }
+  if (!Array.isArray(instances)) {
+    _renderAigateCreateUnavailable(container, "读取云扉实例失败：实例数据格式无效");
     return;
   }
   for (var i = 0; i < instances.length; i++) {
@@ -163,11 +436,166 @@ function _renderAigateInstances(instances) {
   }
 }
 
+async function refreshAigateCreateOptions() {
+  if (_aigateCreateOptionsInFlight) return;
+  var token = _getAigateToken();
+  var generation = _aigateListGeneration;
+  if (!_hasCurrentAigateEmptyConsole(token, generation)) return;
+  if (!token) {
+    _aigateSkuOptionsError = "请输入云扉 Bearer Token";
+    _renderAigateInstances(_aigateInstances);
+    return;
+  }
+  _aigateCreateOptionsInFlight = true;
+  _aigateSkuOptionsError = "";
+  _renderAigateInstances(_aigateInstances);
+  var settings = loadSettings();
+  try {
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/create-options",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aigateToken: token })
+      },
+      15000
+    );
+    if (!response.ok) throw new Error("桥服务返回 HTTP " + response.status);
+    var data = await response.json();
+    if (!data || !data.ok || !Array.isArray(data.options)) {
+      throw new Error((data && data.message) || "读取 GPU 规格失败");
+    }
+    if (!_hasCurrentAigateEmptyConsole(token, generation)) return;
+    _aigateSkuOptions = data.options;
+    if (!_findAigateSku(_aigateSelectedSkuName)) _aigateSelectedSkuName = "";
+  } catch (e) {
+    _aigateSkuOptions = null;
+    _aigateSkuOptionsError = "读取 GPU 规格失败：" + _aigateErrorText(e, "未知错误");
+  } finally {
+    _aigateCreateOptionsInFlight = false;
+    if (_hasCurrentAigateEmptyConsole(token, generation)) {
+      _renderAigateInstances(_aigateInstances);
+    } else if (_hasCurrentAigateEmptyConsole(_getAigateToken(), _aigateListGeneration)) {
+      refreshAigateCreateOptions();
+    }
+  }
+}
+
+async function submitAigateCreate() {
+  if (_aigateCreateState === "creating") return;
+  var requestedToken = _getAigateToken();
+  if (!_hasCurrentAigateEmptyConsole(requestedToken, _aigateListGeneration)) {
+    if (_aigateInstancesConfirmed && _aigateConfirmedToken !== requestedToken) {
+      _invalidateAigateInstanceList("云扉凭证已变更，请刷新实例列表");
+    }
+    _renderAigateInstances(_aigateInstances);
+    return;
+  }
+  var selectedSku = _findAigateSku(_aigateSelectedSkuName);
+  if (!selectedSku) {
+    _aigateCreateState = "idle";
+    _aigateCreateError = "请选择可用的 GPU 规格";
+    _renderAigateInstances(_aigateInstances);
+    return;
+  }
+  var token = requestedToken;
+  var generation = _aigateListGeneration;
+  if (!token) {
+    _aigateCreateState = "confirm";
+    _aigateCreateError = "请输入云扉 Bearer Token";
+    _renderAigateInstances(_aigateInstances);
+    return;
+  }
+  _aigateCreateState = "creating";
+  _aigateCreateError = "";
+  _renderAigateInstances(_aigateInstances);
+  var settings = loadSettings();
+  try {
+    var response = await fetchWithTimeout(
+      settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/create-instance",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aigateToken: token, skuName: selectedSku.skuName })
+      },
+      15000
+    );
+    var data = await response.json();
+    if (!response.ok) {
+      throw new Error((data && data.message) || ("桥服务返回 HTTP " + response.status));
+    }
+    if (!data || !data.ok || !data.instance || !data.instance.instanceId) {
+      throw new Error((data && data.message) || "创建云扉实例失败");
+    }
+    if (!_hasCurrentAigateEmptyConsole(token, generation)) {
+      _invalidateAigateInstanceList(_getAigateToken() !== token
+        ? "云扉凭证已变更，请刷新实例列表"
+        : "云扉实例状态已过期，请刷新实例列表");
+      _renderAigateInstances(_aigateInstances);
+      return;
+    }
+    _aigateInstances = [data.instance];
+    var records = loadAigateLifecycle();
+    records[String(data.instance.instanceId)] = {
+      managed: true, pendingStart: true, startedAt: 0
+    };
+    saveAigateLifecycle(records);
+    _aigateCreateState = "idle";
+    _aigateCreateError = "";
+    _aigateSelectedSkuName = "";
+    _renderAigateInstances(_aigateInstances);
+    _syncAigateLifecycleTimers();
+    showToast("云扉 ComfyUI 实例正在创建");
+  } catch (e) {
+    if (!_hasCurrentAigateEmptyConsole(token, generation)) {
+      _invalidateAigateInstanceList(_getAigateToken() !== token
+        ? "云扉凭证已变更，请刷新实例列表"
+        : "云扉实例状态已过期，请刷新实例列表");
+      _renderAigateInstances(_aigateInstances);
+      return;
+    }
+    _aigateCreateState = "confirm";
+    _aigateCreateError = "创建云扉实例失败：" + _aigateErrorText(e, "未知错误");
+    _renderAigateInstances(_aigateInstances);
+  }
+}
+
+function _clearAigateLifecycleTimers() {
+  if (_aigateRefreshTimer) {
+    clearInterval(_aigateRefreshTimer);
+    _aigateRefreshTimer = 0;
+  }
+  if (_aigateRuntimeTimer) {
+    clearInterval(_aigateRuntimeTimer);
+    _aigateRuntimeTimer = 0;
+  }
+}
+
+function _syncAigateLifecycleTimers() {
+  var shouldRun = _currentPage === "settings" && _segGet("segBackend") === "aigate"
+    && managedAigateInstanceIds().length > 0;
+  if (!shouldRun) {
+    _clearAigateLifecycleTimers();
+    return;
+  }
+  if (!_aigateRefreshTimer) {
+    _aigateRefreshTimer = setInterval(function () {
+      refreshAigateInstances();
+    }, 10000);
+  }
+  if (!_aigateRuntimeTimer) {
+    _aigateRuntimeTimer = setInterval(function () {
+      if (_aigateInstances.length) _renderAigateInstances(_aigateInstances);
+    }, 1000);
+  }
+}
+
 async function refreshAigateInstances() {
   if (_aigateRefreshInFlight) return;
   var token = _getAigateToken();
   var container = $("aigateInstanceList");
   if (!token) {
+    _invalidateAigateInstanceList("请输入云扉 Bearer Token");
     if (container) container.textContent = "请输入云扉 Bearer Token";
     return;
   }
@@ -185,13 +613,37 @@ async function refreshAigateInstances() {
     );
     if (!response.ok) throw new Error("桥服务返回 HTTP " + response.status);
     var data = await response.json();
-    if (!data || !data.ok) throw new Error((data && data.message) || "读取云扉实例失败");
-    _aigateInstances = data.instances || [];
+    if (!data || !data.ok || !Array.isArray(data.instances)) {
+      throw new Error((data && data.message) || "云扉实例数据格式无效");
+    }
+    if (_getAigateToken() !== token) {
+      _invalidateAigateInstanceList("云扉凭证已变更，请刷新实例列表");
+      if (container) container.textContent = "云扉凭证已变更，请刷新实例列表";
+      return;
+    }
+    _aigateInstances = data.instances;
+    _aigateInstancesConfirmed = true;
+    _aigateConfirmedToken = token;
+    _aigateListGeneration += 1;
+    _aigateInstanceReadError = "";
     reconcileAigateLifecycle(_aigateInstances);
     _renderAigateInstances(_aigateInstances);
+    refreshAigateAccount();
+    if (shouldShowAigateCreate(_aigateInstances)) {
+      refreshAigateCreateOptions();
+    } else {
+      _aigateSkuOptions = null;
+      _aigateSkuOptionsError = "";
+      _aigateSelectedSkuName = "";
+      _aigateCreateState = "idle";
+      _aigateCreateError = "";
+    }
     _syncAigateLifecycleTimers();
   } catch (e) {
-    if (container) container.textContent = "读取云扉实例失败：" + (e && e.message ? e.message : e);
+    var errorText = "读取云扉实例失败：" + (e && e.message ? e.message : e);
+    if (_getAigateToken() !== token) errorText = "云扉凭证已变更，请刷新实例列表";
+    _invalidateAigateInstanceList(errorText);
+    if (container) container.textContent = errorText;
   } finally {
     _aigateRefreshInFlight = false;
   }
@@ -771,6 +1223,7 @@ function saveAllSettings() {
   var bridgeUrl = ($("settingBridgeUrl") ? $("settingBridgeUrl").value : "").trim();
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
   var aigateToken = _getAigateToken();
+  var savedAigateToken = loadSettings().aigateToken;
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
@@ -781,6 +1234,11 @@ function saveAllSettings() {
 
   var theme = _segGet("segTheme") || "dark";
   applyTheme(theme);
+
+  if (aigateToken !== savedAigateToken) {
+    _invalidateAigateInstanceList("云扉凭证已变更，请刷新实例列表");
+    _renderAigateInstances(_aigateInstances);
+  }
 
   saveSetting("bridgeUrl", bridgeUrl);
   saveSetting("backend", backend);
@@ -795,4 +1253,3 @@ function saveAllSettings() {
   saveSetting("cacheMode", cacheMode);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }
-

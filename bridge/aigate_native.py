@@ -61,6 +61,84 @@ async def _aigate_json(session, method, url, token, payload=None):
         raise AigateNativeError("AIGATE_NETWORK_ERROR", "无法连接云扉实例服务") from exc
 
 
+def _has_nonempty_value(value):
+    """检查云扉返回的原始字段是否为空，而不改变其类型或金额单位。"""
+    return value is not None and (not isinstance(value, str) or bool(value.strip()))
+
+
+def _require_aigate_image_id(create_config):
+    """验证本机配置的云扉镜像 ID，并转为 OpenAPI 所需整数。"""
+    image_id = create_config.get("imageId") if isinstance(create_config, dict) else None
+    if isinstance(image_id, int) and not isinstance(image_id, bool) and image_id >= 0:
+        return image_id
+    if isinstance(image_id, str) and re.match(r"^\d+$", image_id.strip()):
+        return int(image_id.strip())
+    raise AigateNativeError(
+        "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置有效的云扉镜像", 409
+    )
+
+
+async def get_aigate_account(token, session, api_base=AIGATE_API_BASE):
+    """读取云扉账户的原始余额。"""
+    data = await _aigate_json(
+        session, "POST", api_base.rstrip("/") + "/user/balance", token
+    )
+    if not isinstance(data, dict) or not _has_nonempty_value(data.get("balance")):
+        raise AigateNativeError("AIGATE_BAD_RESPONSE", "云扉未返回账户余额")
+    return {"balance": data["balance"]}
+
+
+async def list_aigate_skus(token, area_name, session, api_base=AIGATE_API_BASE):
+    """读取指定区域可创建的 GPU 规格和云扉实时价格。"""
+    area = str(area_name or "").strip()
+    if not area:
+        raise AigateNativeError(
+            "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置云扉区域", 409
+        )
+    url = api_base.rstrip("/") + "/instance/skuList?" + urlencode({"areaName": area})
+    data = await _aigate_json(session, "GET", url, token)
+    if not isinstance(data, list):
+        raise AigateNativeError("AIGATE_BAD_RESPONSE", "云扉未返回可用 GPU 规格")
+    result = []
+    for record in data:
+        if isinstance(record, dict) and str(record.get("skuName") or "").strip():
+            price = record.get("price")
+            if not _has_nonempty_value(price):
+                raise AigateNativeError("AIGATE_BAD_RESPONSE", "云扉未返回有效价格")
+            result.append({
+                "skuName": str(record["skuName"]),
+                "vmSize": str(record.get("vmSize") or ""),
+                "price": price,
+            })
+    return result
+
+
+async def create_aigate_instance(token, sku_name, create_config, session,
+                                 api_base=AIGATE_API_BASE):
+    """使用本机配置的预设 ComfyUI 镜像创建一台云扉实例。"""
+    image_id = _require_aigate_image_id(create_config)
+    payload = {
+        "skuName": str(sku_name or "").strip(),
+        "areaName": create_config["areaName"],
+        "count": 1,
+        "imageId": image_id,
+        "imageType": create_config["imageType"],
+    }
+    if not payload["skuName"]:
+        raise AigateNativeError("AIGATE_SKU_REQUIRED", "请选择 GPU 规格", 400)
+    data = await _aigate_json(
+        session, "POST", api_base.rstrip("/") + "/instance/start", token, payload
+    )
+    if not isinstance(data, dict) or not str(data.get("instanceId") or "").strip():
+        raise AigateNativeError("AIGATE_BAD_RESPONSE", "云扉未返回新实例 ID")
+    return {
+        "instanceId": str(data["instanceId"]),
+        "instanceName": str(data.get("instanceName") or ""),
+        "operationStatus": str(data.get("operationStatus") or "1"),
+        "hasComfyui": True,
+    }
+
+
 async def list_running_instances(token, session, api_base=AIGATE_API_BASE):
     """读取运行中实例，供每次原生任务动态发现 ComfyUI 服务。"""
     data = await _aigate_json(

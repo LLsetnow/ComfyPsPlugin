@@ -197,6 +197,13 @@
               <div class="setting-hint">仅用于读取、启动和关闭云扉实例；原生 ComfyUI 工作流请求不会携带该凭证。</div>
             </div>
             <div class="setting-row">
+              <div class="setting-label">云扉账户</div>
+              <div id="aigateAccountStatus" class="aigate-account-card">
+                <span class="aigate-account-pending">输入 Token 后读取余额</span>
+                <button id="btnRefreshAigateAccount" class="btn-sm aigate-account-refresh" type="button">↻ 更新余额</button>
+              </div>
+            </div>
+            <div class="setting-row">
               <div class="setting-label">云扉实例</div>
               <div id="aigateInstanceList" class="setting-hint">输入 Token 后刷新实例列表</div>
             </div>

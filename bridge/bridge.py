@@ -38,11 +38,13 @@ import inspect
 try:
     from aigate_native import (
         AigateNativeError, close_aigate_instances, control_aigate_instance,
+        create_aigate_instance, get_aigate_account, list_aigate_skus,
         list_instance_summaries, run_native_inpaint,
     )
 except ImportError:
     from bridge.aigate_native import (
         AigateNativeError, close_aigate_instances, control_aigate_instance,
+        create_aigate_instance, get_aigate_account, list_aigate_skus,
         list_instance_summaries, run_native_inpaint,
     )
 
@@ -69,6 +71,7 @@ except ImportError:
 
 
 _aigate_managed_tokens: dict[str, str] = {}
+_aigate_create_lock = asyncio.Lock()
 
 async def handle_options(request):
     return cors(web.Response(status=204))
@@ -203,18 +206,117 @@ async def handle_test_comfyui(request):
     return cors(web.json_response({"ok": True, "status": status, "version": version}))
 
 
-async def handle_aigate_instances(request):
-    """返回云扉实例的最小安全摘要，供设置页显示和控制。"""
+async def read_aigate_request(request):
+    """读取云扉请求 JSON 与 Token，并保持统一的安全错误响应。"""
     try:
         body = await request.json()
     except Exception:
-        return cors(web.json_response(
-            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
-    token = (body.get("aigateToken") or "").strip()
+        return None, "", cors(web.json_response(
+            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"},
+            status=400,
+        ))
+    if not isinstance(body, dict):
+        return None, "", cors(web.json_response(
+            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"},
+            status=400,
+        ))
+    token = str(body.get("aigateToken") or "").strip()
     if not token:
+        return body, "", cors(web.json_response(
+            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED",
+             "message": "请输入云扉 Bearer Token"},
+            status=400,
+        ))
+    return body, token, None
+
+
+def get_aigate_create_config():
+    """读取本机预设 ComfyUI 镜像配置；不让它成为桥启动的必填项。"""
+    raw = CONFIG.get("aigateCreate")
+    if not isinstance(raw, dict):
+        raise AigateNativeError(
+            "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置预设 ComfyUI 镜像", 409
+        )
+    result = {
+        "areaName": str(raw.get("areaName") or "").strip(),
+        "imageId": raw.get("imageId"),
+        "imageType": str(raw.get("imageType") or "").strip(),
+    }
+    if not result["areaName"] or not result["imageType"]:
+        raise AigateNativeError(
+            "AIGATE_CREATE_CONFIG_REQUIRED", "本机尚未配置预设 ComfyUI 镜像", 409
+        )
+    return result
+
+
+async def handle_aigate_account(request):
+    """返回云扉账户的原始余额，绝不回显 Bearer Token。"""
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            account = await get_aigate_account(token, session)
+        return cors(web.json_response({
+            "ok": True, **account, "updatedAt": int(time.time() * 1000),
+        }))
+    except AigateNativeError as error:
         return cors(web.json_response(
-            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
-            status=400))
+            {"ok": False, "error": error.code, "message": error.message},
+            status=error.status,
+        ))
+
+
+async def handle_aigate_create_options(request):
+    """返回本机区域中云扉可用 GPU 规格及其原始价格。"""
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
+    try:
+        config = get_aigate_create_config()
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            options = await list_aigate_skus(token, config["areaName"], session)
+        return cors(web.json_response({
+            "ok": True, "options": options, "updatedAt": int(time.time() * 1000),
+        }))
+    except AigateNativeError as error:
+        return cors(web.json_response(
+            {"ok": False, "error": error.code, "message": error.message},
+            status=error.status,
+        ))
+
+
+async def handle_aigate_create_instance(request):
+    """仅当云扉控制台为空时，使用预设 ComfyUI 镜像创建实例。"""
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
+    try:
+        config = get_aigate_create_config()
+        async with _aigate_create_lock:
+            async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+                instances = await list_instance_summaries(token, session)
+                if instances:
+                    raise AigateNativeError(
+                        "AIGATE_INSTANCE_EXISTS", "云扉控制台已有实例，不能重复创建", 409
+                    )
+                result = await create_aigate_instance(
+                    token, body.get("skuName"), config, session
+                )
+            _sync_aigate_managed_instances(token, [result["instanceId"]])
+        return cors(web.json_response({"ok": True, "instance": result}))
+    except AigateNativeError as error:
+        return cors(web.json_response(
+            {"ok": False, "error": error.code, "message": error.message},
+            status=error.status,
+        ))
+
+
+async def handle_aigate_instances(request):
+    """返回云扉实例的最小安全摘要，供设置页显示和控制。"""
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
     _sync_aigate_managed_instances(token, body.get("managedInstanceIds"))
     try:
         async with ClientSession(timeout=ClientTimeout(total=15)) as session:
@@ -227,18 +329,11 @@ async def handle_aigate_instances(request):
 
 async def handle_aigate_instance_action(request):
     """启动、关闭或释放设置页指定的云扉实例。"""
-    try:
-        body = await request.json()
-    except Exception:
-        return cors(web.json_response(
-            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
-    token = (body.get("aigateToken") or "").strip()
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
     instance_id = (body.get("instanceId") or "").strip()
     action = (body.get("action") or "").strip().lower()
-    if not token:
-        return cors(web.json_response(
-            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
-            status=400))
     try:
         async with ClientSession(timeout=ClientTimeout(total=15)) as session:
             result = await control_aigate_instance(token, instance_id, action, session)
@@ -272,16 +367,9 @@ def _sync_aigate_managed_instances(token, instance_ids):
 
 async def handle_aigate_close_managed(request):
     """正常关闭插件时尽力关闭该面板登记的云扉实例，不释放实例。"""
-    try:
-        body = await request.json()
-    except Exception:
-        return cors(web.json_response(
-            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
-    token = (body.get("aigateToken") or "").strip()
-    if not token:
-        return cors(web.json_response(
-            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
-            status=400))
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
     instance_ids = _managed_aigate_ids(body.get("managedInstanceIds"))
     _sync_aigate_managed_instances(token, instance_ids)
     try:
@@ -515,6 +603,9 @@ def main():
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_post("/test-comfyui", handle_test_comfyui)
+    app.router.add_post("/aigate/account", handle_aigate_account)
+    app.router.add_post("/aigate/create-options", handle_aigate_create_options)
+    app.router.add_post("/aigate/create-instance", handle_aigate_create_instance)
     app.router.add_post("/aigate/instances", handle_aigate_instances)
     app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
     app.router.add_post("/aigate/close-managed", handle_aigate_close_managed)

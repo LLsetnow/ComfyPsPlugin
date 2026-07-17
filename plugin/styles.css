@@ -563,6 +563,112 @@ input[type="password"] { -webkit-text-security: disc; }
 }
 .aigate-runtime { margin-top: 3px; color: var(--accent); font-size: 10px; }
 .aigate-instance-actions { display: flex; flex-shrink: 0; gap: 5px; }
+.aigate-account-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.aigate-account-balance {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.aigate-account-pending,
+.aigate-account-meta {
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.aigate-account-meta { font-variant-numeric: tabular-nums; }
+.aigate-account-refresh { flex: 0 0 auto; }
+.aigate-create-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+  padding: 9px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.aigate-sku-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font);
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.aigate-sku-row:hover:not(:disabled) { border-color: var(--accent); }
+.aigate-sku-row:disabled { opacity: 0.55; cursor: default; }
+.aigate-sku-row.selected {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+.aigate-sku-meta {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.aigate-sku-price {
+  flex: 0 0 auto;
+  max-width: 48%;
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  text-align: right;
+  word-break: break-word;
+}
+.aigate-create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+.aigate-create-notice {
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.aigate-create-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--accent);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+@media (max-width: 320px) {
+  .aigate-account-card { align-items: stretch; flex-direction: column; }
+  .aigate-account-refresh { align-self: flex-end; }
+  .aigate-sku-row { align-items: flex-start; }
+  .aigate-create-actions .btn-sm { flex: 1 1 auto; }
+}
 
 /* ---- Segmented control (two-state selector) ---- */
 .segmented {
