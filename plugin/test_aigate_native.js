@@ -123,6 +123,139 @@ test("settings expose AIGate account and conditional-create anchors", function (
   assert.match(css, /\.aigate-create-progress/);
 });
 
+test("settings initialization binds the AIGate balance refresh and shortens the instance label", function () {
+  var initSource = fs.readFileSync("plugin/init.js", "utf8");
+
+  assert.match(initSource, /btnRefreshAigateAccount/);
+  assert.match(initSource, /refreshAigateAccount/);
+  assert.match(initSource, /btnRefreshAigateInstances\.textContent = "刷新"/);
+});
+
+test("shows the AIGate create card only for a confirmed empty array", function () {
+  var context = loadAigateContext();
+
+  assert.equal(context.shouldShowAigateCreate([]), true);
+  assert.equal(context.shouldShowAigateCreate([{ instanceId: "i-1" }]), false);
+  assert.equal(context.shouldShowAigateCreate(null), false);
+  assert.equal(context.shouldShowAigateCreate(undefined), false);
+  assert.equal(context.shouldShowAigateCreate({ length: 0 }), false);
+});
+
+test("uses the raw AIGate SKU price without inferring a unit", function () {
+  var context = loadAigateContext();
+
+  assert.equal(context.aigateSkuPriceText({ price: "199" }), "199");
+  assert.equal(context.aigateSkuPriceText({ price: 0 }), "0");
+  assert.equal(context.aigateSkuPriceText({ price: "" }), "价格暂不可用");
+  assert.equal(context.aigateSkuPriceText({}), "价格暂不可用");
+  assert.equal(context.aigateSkuPriceText(null), "价格暂不可用");
+});
+
+test("unavailable AIGate GPU options keep an in-card retry action", function () {
+  var source = fs.readFileSync("plugin/settings.js", "utf8");
+
+  assert.match(source, /if \(!_aigateSkuOptions\.length\) \{[\s\S]{0,700}重试读取/);
+});
+
+test("refreshing a confirmed empty AIGate console loads account and create options", async function () {
+  var context = loadAigateContext();
+  var renders = [];
+  var followUps = [];
+  context._aigateInstances = [{ instanceId: "old" }];
+  context._getAigateToken = function () { return "token"; };
+  context.$ = function () { return { textContent: "" }; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () {
+    return Promise.resolve({
+      ok: true,
+      json: function () { return Promise.resolve({ ok: true, instances: [] }); },
+    });
+  };
+  context.reconcileAigateLifecycle = function () {};
+  context._renderAigateInstances = function (instances) { renders.push(instances); };
+  context._syncAigateLifecycleTimers = function () {};
+  context.refreshAigateAccount = function () { followUps.push("account"); };
+  context.refreshAigateCreateOptions = function () { followUps.push("options"); };
+
+  await context.refreshAigateInstances();
+
+  assert.deepEqual(renders, [[]]);
+  assert.deepEqual(followUps, ["account", "options"]);
+});
+
+test("a malformed AIGate list response never reveals create options", async function () {
+  var context = loadAigateContext();
+  var container = { textContent: "" };
+  var initialInstances = [{ instanceId: "old" }];
+  var optionsRequests = 0;
+  context._aigateInstances = initialInstances;
+  context._getAigateToken = function () { return "token"; };
+  context.$ = function () { return container; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () {
+    return Promise.resolve({
+      ok: true,
+      json: function () { return Promise.resolve({ ok: true, instances: null }); },
+    });
+  };
+  context._renderAigateInstances = function () {
+    throw new Error("malformed data must not be rendered");
+  };
+  context.refreshAigateCreateOptions = function () { optionsRequests += 1; };
+
+  await context.refreshAigateInstances();
+
+  assert.strictEqual(context._aigateInstances, initialInstances);
+  assert.equal(optionsRequests, 0);
+  assert.match(container.textContent, /读取云扉实例失败/);
+});
+
+test("creating an AIGate instance adopts the response and starts managed lifecycle", async function () {
+  var context = loadAigateContext();
+  var rendered = [];
+  context._aigateInstances = [];
+  context._aigateSkuOptions = [{ skuName: "4090-24GB-DDR5", vmSize: "24", price: "199" }];
+  context._aigateSelectedSkuName = "4090-24GB-DDR5";
+  context._aigateCreateState = "confirm";
+  context._getAigateToken = function () { return "token"; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () {
+    return Promise.resolve({
+      ok: true,
+      json: function () {
+        return Promise.resolve({
+          ok: true,
+          instance: {
+            instanceId: "new-1",
+            instanceName: "ComfyUI",
+            operationStatus: "1",
+            hasComfyui: true,
+          },
+        });
+      },
+    });
+  };
+  context._renderAigateInstances = function (instances) { rendered.push(instances); };
+  context._syncAigateLifecycleTimers = function () {};
+
+  await context.submitAigateCreate();
+
+  assert.equal(JSON.stringify(context._aigateInstances), JSON.stringify([{
+    instanceId: "new-1",
+    instanceName: "ComfyUI",
+    operationStatus: "1",
+    hasComfyui: true,
+  }]));
+  assert.deepEqual(context.loadAigateLifecycle()["new-1"], {
+    managed: true,
+    pendingStart: true,
+    startedAt: 0,
+  });
+  assert.equal(context._aigateCreateState, "idle");
+  assert.equal(rendered.length, 2);
+  assert.equal(JSON.stringify(rendered[0]), "[]");
+});
+
 test("records runtime only after first observed running state", function () {
   var context = loadAigateContext();
   context.Date.now = function () { return 1000; };

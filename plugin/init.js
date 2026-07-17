@@ -192,7 +192,12 @@
   var btnTestComfyui = $("btnTestComfyui");
   if (btnTestComfyui) btnTestComfyui.addEventListener("click", testComfyuiConnection);
   var btnRefreshAigateInstances = $("btnRefreshAigateInstances");
-  if (btnRefreshAigateInstances) btnRefreshAigateInstances.addEventListener("click", refreshAigateInstances);
+  if (btnRefreshAigateInstances) {
+    btnRefreshAigateInstances.textContent = "刷新";
+    btnRefreshAigateInstances.addEventListener("click", refreshAigateInstances);
+  }
+  var btnRefreshAigateAccount = $("btnRefreshAigateAccount");
+  if (btnRefreshAigateAccount) btnRefreshAigateAccount.addEventListener("click", refreshAigateAccount);
 
   // ---- 设置页: 缓存路径 ----
   var btnBrowseCachePath = $("btnBrowseCachePath");
