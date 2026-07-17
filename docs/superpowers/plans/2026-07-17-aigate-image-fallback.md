@@ -361,3 +361,54 @@
   git add bridge/config.example.json dev/dev_server.py dev/test_aigate_native.py README.md plugin/test_aigate_native.js
   git commit -m "docs: describe aigate image fallback"
   ```
+
+### Task 4: 添加云扉 Bearer Token 获取链接
+
+**Files:**
+
+- Modify: `plugin/index.html:190-198`
+- Modify: `plugin/test_aigate_native.js:94-100`
+
+- [ ] **Step 1: 写 Token 链接的失败静态测试**
+
+  在 `settings include AIGate token and instance controls` 测试中加入：
+
+  ```js
+  assert.match(
+    html,
+    /<a id="linkGetAigateToken" class="link-sm" href="https:\/\/waas\.aigate\.cc\/user\/setting" target="_blank">如何获取 Bearer Token<\/a>/
+  );
+  ```
+
+- [ ] **Step 2: 运行测试并确认链接尚不存在**
+
+  Run: `node --test plugin/test_aigate_native.js`
+
+  Expected: FAIL，因为 `linkGetAigateToken` 尚未出现在云扉 Token 设置区。
+
+- [ ] **Step 3: 在云扉 Token 提示中插入外部链接**
+
+  将云扉 Token 输入行后的提示改为：
+
+  ```html
+  <div class="setting-hint">仅用于读取、启动和关闭云扉实例；原生 ComfyUI 工作流请求不会携带该凭证。 <a id="linkGetAigateToken" class="link-sm" href="https://waas.aigate.cc/user/setting" target="_blank">如何获取 Bearer Token</a></div>
+  ```
+
+  复用现有 `.link-sm` 和 `target="_blank"` 模式；不增加 JavaScript、不会在面板内导航。
+
+- [ ] **Step 4: 运行静态测试和 UXP ES5 检查**
+
+  Run: `node --test plugin/test_rh_credentials.js plugin/test_aigate_native.js`
+
+  Expected: PASS。
+
+  Run: `rg -n '=>|\bconst\b|\blet\b|\.find\(|Object\.assign\(' plugin --glob '*.js' --glob '!test_*.js'`
+
+  Expected: 无输出。
+
+- [ ] **Step 5: 提交链接**
+
+  ```bash
+  git add plugin/index.html plugin/test_aigate_native.js
+  git commit -m "feat: link aigate bearer token settings"
+  ```
