@@ -561,7 +561,7 @@
 
 **Files:**
 
-- Modify: `README.md:52-60` 
+- Modify: `README.md:52-60`
 - Verify: `bridge/config.json` (仅本机，Git 忽略，不提交)
 - Verify: `plugin/index.html`, `plugin/settings.js`, `plugin/styles.css`, `dev/dev_server.py`
 
