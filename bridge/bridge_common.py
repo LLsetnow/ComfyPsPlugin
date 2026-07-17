@@ -40,6 +40,10 @@ DEFAULT_RH_SITE = "ai"
 
 # 任务进度 (task_id → {percent, status})
 _task_progress: dict[str, dict] = {}
+# 任务的额外输出蒙版 (task_id → PNG bytes)。某些工作流(如背景去杂物)除结果图外
+# 还会返回一张蒙版图(节点 239)，桥把它暂存于此，插件通过 GET /result-mask 拉取，
+# 再作为返回图层的图层蒙版。由 handle_run 设置、定时清理。
+_task_result_masks: dict[str, bytes] = {}
 # 当前桥进程的内存日志，供插件日志页按序号增量读取。
 _BRIDGE_LOG_MAX_ENTRIES = 300
 _bridge_log_entries: list[dict] = []
@@ -103,12 +107,93 @@ def strip_data_uri(b64: str) -> str:
 def write_b64_png(b64: str, path: Path):
     path.write_bytes(base64.b64decode(strip_data_uri(b64).strip()))
 
+def _png_unfilter(line: bytearray, prev: bytearray, filter_type: int, bpp: int) -> None:
+    """就地反滤波一行 PNG 扫描线（滤波类型 0-4，非隔行）。"""
+    stride = len(line)
+    if filter_type == 0:
+        return
+    for i in range(stride):
+        a = line[i - bpp] if i >= bpp else 0
+        b = prev[i]
+        c = prev[i - bpp] if i >= bpp else 0
+        x = line[i]
+        if filter_type == 1:      # Sub
+            line[i] = (x + a) & 0xFF
+        elif filter_type == 2:    # Up
+            line[i] = (x + b) & 0xFF
+        elif filter_type == 3:    # Average
+            line[i] = (x + ((a + b) >> 1)) & 0xFF
+        elif filter_type == 4:    # Paeth
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+            line[i] = (x + pr) & 0xFF
+        else:
+            raise ValueError("bad PNG filter")
+
+
+def is_grayscale_png(data: bytes, sample_rows: int = 96) -> bool:
+    """判断 PNG 是否为灰度图（每个像素 R==G==B）。仅支持 8-bit、非隔行的
+    灰度(0/4) 与 RGB(2)/RGBA(6)；无法解码或格式不支持时返回 False。
+    用于 RunningHub 多输出场景里区分「结果图(彩色照片)」与「蒙版图(灰度)」——
+    彩色图会在前几行就命中非灰度像素而快速返回，蒙版图则抽样前若干行确认。"""
+    try:
+        if len(data) < 33 or data[:8] != b"\x89PNG\r\n\x1a\n":
+            return False
+        width, height, bit_depth, color_type = struct.unpack(">IIBB", data[16:26])
+        if bit_depth != 8 or width <= 0 or height <= 0:
+            return False
+        if color_type in (0, 4):
+            return True  # 本身即灰度（可含 alpha）
+        if color_type not in (2, 6):
+            return False
+        channels = 4 if color_type == 6 else 3
+        idat = bytearray()
+        interlace = None
+        pos = 8
+        while pos + 8 <= len(data):
+            length = struct.unpack(">I", data[pos:pos + 4])[0]
+            ctype = data[pos + 4:pos + 8]
+            start = pos + 8
+            end = start + length
+            if end + 4 > len(data):
+                break
+            if ctype == b"IHDR" and length >= 13:
+                interlace = data[start + 12]
+            elif ctype == b"IDAT":
+                idat += data[start:end]
+            elif ctype == b"IEND":
+                break
+            pos = end + 4  # 数据 + CRC
+        if interlace not in (0, None):
+            return False
+        raw = zlib.decompress(bytes(idat))
+        stride = width * channels
+        rows = min(height, max(1, sample_rows))
+        if len(raw) < (stride + 1) * rows:
+            return False
+        prev = bytearray(stride)
+        offset = 0
+        for _y in range(rows):
+            f = raw[offset]
+            line = bytearray(raw[offset + 1:offset + 1 + stride])
+            offset += 1 + stride
+            _png_unfilter(line, prev, f, channels)
+            # 字节切片比较走 C 层，快；R/G/B 分量任一不等即非灰度。
+            if line[0::channels] != line[1::channels] or line[0::channels] != line[2::channels]:
+                return False
+            prev = line
+        return True
+    except Exception:
+        return False
+
+
 def cors(resp: web.StreamResponse) -> web.StreamResponse:
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     resp.headers["Access-Control-Expose-Headers"] = (
         "X-Task-Id, X-ComfyPS-Local-Validation, "
-        "X-ComfyPS-Task-Cost-Type, X-ComfyPS-Task-Cost"
+        "X-ComfyPS-Task-Cost-Type, X-ComfyPS-Task-Cost, X-ComfyPS-Has-Mask"
     )
     resp.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     return resp

@@ -192,15 +192,24 @@ com.llsetnow.comfyps_1.0.0/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 桥健康检查 |
-| POST | `/run` | 执行工作流 `{image, mask?, prompt, backend, site?, apiKey?, workflowId, workflowFile, imageNodeId, needsMask, extraSetArgs?}` |
+| POST | `/run` | 执行工作流 `{image, mask?, prompt, backend, site?, apiKey?, workflowId, workflowFile, imageNodeId, needsMask, outputNodeId?, maskOutputNodeId?, extraSetArgs?}`。响应头 `X-ComfyPS-Has-Mask: 1` 表示本次额外产出蒙版图 |
 | POST | `/restart` | 重启桥进程 |
 | POST | `/test-key` | 测试 API Key `{apiKey, site}` → `{ok, status, balance, coins, api_type}` |
 | GET | `/progress?taskId=xxx` | 任务进度轮询 `{percent, message}` |
+| GET | `/result-mask?taskId=xxx` | 拉取该任务的额外输出蒙版 PNG（工作流声明 `maskOutputNodeId` 时产出，短暂保留 120s） |
+
+### 输出蒙版（结果图 + 图层蒙版）
+
+工作流可声明 `maskOutputNodeId`，让桥在结果图之外再取一张蒙版图，插件把它作为**返回图层的图层蒙版**贴回（`plugin/queue.js` `_applyOutputMaskToLayer`）。背景去杂物即用此：节点 220=结果图、节点 239=主体蒙版；`outputMaskInvert:true` 时按 `hideSelection` 反转，使白=已清理背景、主体区域透出下方原图。
+
+- **本地 ComfyUI / 云扉 AIGate** 按节点号 `outputs[maskOutputNodeId]` 精确取蒙版。
+- **RunningHub** 的多输出不带节点号，桥用灰度检测（`bridge_common.is_grayscale_png`）从多张输出里挑出灰度那张作蒙版，失败时退回顺序。
+- 桥把蒙版暂存于 `bridge_common._task_result_masks[taskId]`，各后端运行器以副作用写入、不改变原返回签名。
 
 ## 工作流
 
-| id | 名称 | needsMask | imageNodeId |
-|----|------|-----------|-------------|
-| inpaint | 局部编辑 | yes | 41 |
-| cleanup | 背景去杂物 | no | 41 |
-| face | 面部重绘 | no | 27 |
+| id | 名称 | needsMask | imageNodeId | 输出节点 |
+|----|------|-----------|-------------|---------|
+| inpaint | 局部编辑 | yes | 41 | — |
+| cleanup | 背景去杂物 | no | 41 | 220 结果 / 239 蒙版 |
+| face | 面部重绘 | no | 27 | 72 |

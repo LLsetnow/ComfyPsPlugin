@@ -117,6 +117,8 @@ async function writeTaskMeta(task, psDocName) {
       taskCostType: task.taskCostType || "",
       taskCost: task.taskCost || "",
       hasMask: !!task.hasMask,
+      outputMask: !!task.outputMask,
+      outputMaskInvert: task.outputMaskInvert !== false,
       savedOk: !!task.savedOk,
       placement: task.placement || null,
       psDocName: psDocName || ""
@@ -184,6 +186,9 @@ async function _historyItemFromFolder(taskFolder, psDocName) {
     // 跨会话后选区快照通道已丢失：历史导入只按 placement 贴回，不再恢复选区蒙版。
     revealSelection: false,
     selectionSnapshotChannel: "",
+    // outputMask 是工作流返回的实体蒙版图(mask.png)，跨会话仍可作为图层蒙版应用。
+    outputMask: !!meta.outputMask && !!maskFile,
+    outputMaskInvert: meta.outputMaskInvert !== false,
     placement: meta.placement || null,
     thumbUrl: "",           // 缩略图在渲染时按需从 result.png 懒加载
     savedOk: true,
@@ -594,8 +599,19 @@ async function onQueueImportClick() {
   try {
     var resultBytes = await task.resultFile.read({ format: formats.binary });
     if (!resultBytes || !resultBytes.byteLength) throw new Error("结果文件为空");
+    // 工作流返回的实体蒙版(如背景去杂物节点 239)：读出后作为返回图层的图层蒙版。
+    var outputMask = null;
+    if (task.outputMask && task.maskFile) {
+      try {
+        var maskBytes = await task.maskFile.read({ format: formats.binary });
+        if (maskBytes && maskBytes.byteLength) {
+          outputMask = { bytes: maskBytes, invert: task.outputMaskInvert !== false };
+        }
+      } catch (_) {}
+    }
     await placeImageBytesAsLayer(
-      resultBytes, task.layerName, task.placement, task.revealSelection, task.selectionSnapshotChannel
+      resultBytes, task.layerName, task.placement, task.revealSelection,
+      task.selectionSnapshotChannel, outputMask
     );
     task.selectionSnapshotChannel = "";
     task.revealSelection = false;
@@ -803,15 +819,41 @@ async function _alignPlacedLayerToPosition(layer, targetLeft, targetTop) {
   }], {});
 }
 
-function placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName) {
+function placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName, outputMask) {
   var queuedPlacement = _placeImageQueue.then(function () {
-    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName);
+    return _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName, outputMask);
   });
   _placeImageQueue = queuedPlacement.catch(function () {});
   return queuedPlacement;
 }
 
-async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName) {
+// 把任意 PNG 字节写入临时文件并返回 UXP 会话令牌(供 placeEvent 使用)。
+// 兼容 string(base64) / Uint8Array / ArrayBuffer 三种入参，并校验 PNG 头。
+async function _writePngSessionToken(bytes, tag) {
+  var folder = await localFileSystem.getDataFolder();
+  _resultFileSequence++;
+  var file = await folder.createFile(
+    "comfyps_" + (tag || "img") + "_" + Date.now() + "_" + _resultFileSequence + ".png",
+    { overwrite: true }
+  );
+  var out;
+  if (typeof bytes === "string") {
+    out = base64ToBytes(bytes);
+  } else if (bytes instanceof Uint8Array) {
+    out = bytes;
+  } else {
+    out = new Uint8Array(bytes);
+  }
+  if (!out || out.length < 8 ||
+      out[0] !== 0x89 || out[1] !== 0x50 || out[2] !== 0x4e || out[3] !== 0x47 ||
+      out[4] !== 0x0d || out[5] !== 0x0a || out[6] !== 0x1a || out[7] !== 0x0a) {
+    throw new Error("待贴回图像不是有效 PNG");
+  }
+  await file.write(out, { format: formats.binary });
+  return await localFileSystem.createSessionToken(file);
+}
+
+async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, revealSelection, selectionChannelName, outputMask) {
   var folder = await localFileSystem.getDataFolder();
   _resultFileSequence++;
   var file = await folder.createFile(
@@ -838,6 +880,13 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
   }
   await file.write(resultBytes, { format: formats.binary });
   var token = await localFileSystem.createSessionToken(file);
+  // 工作流返回的实体蒙版(如背景去杂物节点 239)：先落盘拿到令牌，稍后作为图层蒙版。
+  var maskToken = null;
+  var maskInvert = false;
+  if (outputMask && outputMask.bytes) {
+    maskToken = await _writePngSessionToken(outputMask.bytes, "outmask");
+    maskInvert = outputMask.invert !== false;
+  }
   var offsetX = 0;
   var offsetY = 0;
   if (placement) {
@@ -873,6 +922,8 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
         },
       ];
       await batchPlay(commands, {});
+      var placedResultLayer = app.activeDocument && app.activeDocument.activeLayers && app.activeDocument.activeLayers[0];
+      var placedResultLayerId = placedResultLayer && placedResultLayer.id;
       if (revealSelection) {
         // GPT Image and RunningHub inpaint may return a different resolution,
         // so scale the result to its intended Photoshop canvas before applying
@@ -939,8 +990,67 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
           }
         }
       }
+      if (maskToken) {
+        await _applyOutputMaskToLayer(placedResultLayerId, maskToken, offsetX, offsetY, maskInvert);
+      }
     },
     { commandName: "贴回结果图层" }
   );
+}
+
+// 把工作流返回的实体蒙版图作为指定图层的图层蒙版（在既有 executeAsModal 内调用）：
+//  1) 以与结果层相同的偏移贴入蒙版图为临时图层（两者重合、覆盖全画布）
+//  2) 载入其红通道（灰度图 R=G=B，即蒙版值）为选区
+//  3) 删除临时图层（选区已捕获，删除不影响选区）
+//  4) 选回结果层，用选区创建图层蒙版
+//     invert=true → hideSelection（白=未选中=已清理背景，符合背景去杂物语义）
+//     invert=false → revealSelection（白=选中=主体）
+// 注：载入红通道为选区依赖蒙版图为顶层不透明且覆盖全画布——背景去杂物的返回图与
+//    蒙版图同尺寸、居中贴回即满足；如宿主对该 AM 描述符行为有差异，此处最需复核。
+async function _applyOutputMaskToLayer(resultLayerId, maskToken, offsetX, offsetY, invert) {
+  var noDialog = { dialogOptions: "silent" };
+  await batchPlay([{
+    _obj: "placeEvent",
+    "null": { _path: maskToken, _kind: "local" },
+    freeTransformCenterState: { _enum: "quadCenterState", _value: "QCSAverage" },
+    offset: {
+      _obj: "offset",
+      horizontal: { _unit: "pixelsUnit", _value: offsetX },
+      vertical: { _unit: "pixelsUnit", _value: offsetY },
+    },
+    _options: { dialogOptions: "dontDisplay" },
+  }], {});
+  await batchPlay([{
+    _obj: "set",
+    _target: [{ _ref: "channel", _property: "selection" }],
+    to: { _ref: "channel", _enum: "channel", _value: "red" },
+    _options: noDialog,
+  }], {});
+  await batchPlay([{
+    _obj: "delete",
+    _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+    _options: noDialog,
+  }], {});
+  if (resultLayerId !== null && resultLayerId !== undefined && resultLayerId !== false) {
+    await batchPlay([{
+      _obj: "select",
+      _target: [{ _ref: "layer", _id: resultLayerId }],
+      makeVisible: false,
+      _options: noDialog,
+    }], {});
+  }
+  await batchPlay([{
+    _obj: "make",
+    new: { _class: "channel" },
+    at: { _ref: "channel", _enum: "channel", _value: "mask" },
+    using: { _enum: "userMaskEnabled", _value: invert ? "hideSelection" : "revealSelection" },
+    _options: noDialog,
+  }], {});
+  await batchPlay([{
+    _obj: "set",
+    _target: [{ _ref: "channel", _property: "selection" }],
+    to: { _enum: "ordinal", _value: "none" },
+    _options: noDialog,
+  }], {});
 }
 

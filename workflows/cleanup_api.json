@@ -12,7 +12,7 @@
     },
     "class_type": "VAEDecode",
     "_meta": {
-      "title": "VAE Decode"
+      "title": "VAE解码"
     }
   },
   "10": {
@@ -21,7 +21,7 @@
     },
     "class_type": "VAELoader",
     "_meta": {
-      "title": "Load VAE"
+      "title": "加载VAE"
     }
   },
   "12": {
@@ -31,7 +31,7 @@
     },
     "class_type": "UNETLoader",
     "_meta": {
-      "title": "Load Diffusion Model"
+      "title": "UNet加载器"
     }
   },
   "41": {
@@ -40,7 +40,7 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "加载图像"
     }
   },
   "61": {
@@ -51,7 +51,7 @@
     },
     "class_type": "CLIPLoader",
     "_meta": {
-      "title": "Load CLIP"
+      "title": "加载CLIP"
     }
   },
   "64": {
@@ -65,12 +65,12 @@
     },
     "class_type": "CFGNorm",
     "_meta": {
-      "title": "CFGNorm"
+      "title": "CFG归一化"
     }
   },
   "65": {
     "inputs": {
-      "seed": 732838762956979,
+      "seed": 820394295893273,
       "steps": 4,
       "cfg": 1,
       "sampler_name": "euler",
@@ -95,7 +95,7 @@
     },
     "class_type": "KSampler",
     "_meta": {
-      "title": "KSampler"
+      "title": "K采样器"
     }
   },
   "67": {
@@ -108,7 +108,7 @@
     },
     "class_type": "ModelSamplingAuraFlow",
     "_meta": {
-      "title": "ModelSamplingAuraFlow"
+      "title": "采样算法（AuraFlow）"
     }
   },
   "68": {
@@ -150,7 +150,7 @@
     },
     "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
-      "title": "TextEncodeQwenImageEditPlus"
+      "title": "文本编码（QwenImageEditPlus）"
     }
   },
   "70": {
@@ -163,7 +163,7 @@
     },
     "class_type": "FluxKontextMultiReferenceLatentMethod",
     "_meta": {
-      "title": "Edit Model Reference Method"
+      "title": "FluxKontext多参考潜在方法"
     }
   },
   "71": {
@@ -176,7 +176,7 @@
     },
     "class_type": "FluxKontextMultiReferenceLatentMethod",
     "_meta": {
-      "title": "Edit Model Reference Method"
+      "title": "FluxKontext多参考潜在方法"
     }
   },
   "74": {
@@ -192,7 +192,7 @@
     },
     "class_type": "VAEEncode",
     "_meta": {
-      "title": "VAE Encode"
+      "title": "VAE编码"
     }
   },
   "93": {
@@ -206,7 +206,7 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "_meta": {
-      "title": "Load LoRA"
+      "title": "LoRA加载器（仅模型）"
     }
   },
   "106": {
@@ -238,7 +238,7 @@
     },
     "class_type": "MaskPreview",
     "_meta": {
-      "title": "Preview Mask"
+      "title": "预览遮罩"
     }
   },
   "177": {
@@ -274,7 +274,7 @@
     },
     "class_type": "SetLatentNoiseMask",
     "_meta": {
-      "title": "Set Latent Noise Mask"
+      "title": "设置Latent噪波遮罩"
     }
   },
   "190": {
@@ -286,7 +286,7 @@
     },
     "class_type": "Mask Invert",
     "_meta": {
-      "title": "Mask Invert"
+      "title": "遮罩反转"
     }
   },
   "191": {
@@ -324,7 +324,7 @@
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {
-      "title": "UltralyticsDetectorProvider"
+      "title": "检测加载器"
     }
   },
   "193": {
@@ -349,74 +349,6 @@
       "title": "SEGS to MASK (combined)"
     }
   },
-  "195": {
-    "inputs": {
-      "rgthree_comparer": {
-        "images": [
-          {
-            "name": "A",
-            "selected": true,
-            "url": "/view?filename=rgthree.compare._temp_tqbcm_00001_qajbp_1783613285.jpg&type=temp&subfolder=&rand=0.3483342483205616&Rh-Comfy-Auth=eyJ1c2VySWQiOiI3Nzk4MWQ1MDc5ZmUzNGVkODkyYjM1ODkxNWQwNjg1ZCIsInNpZ25FeHBpcmUiOjE3ODQyMTY2MjI3MTYsInRzIjoxNzgzNjExODIyNzE2LCJzaWduIjoiZjE1MGVhZDQyOTZiMzk2ODhmNTgwYmYxOTMxOTkwNjUifQ==&Rh-Identify=77981d5079fe34ed892b358915d0685d"
-          },
-          {
-            "name": "B",
-            "selected": true,
-            "url": "/view?filename=rgthree.compare._temp_tqbcm_00002_hzlia_1783613286.jpg&type=temp&subfolder=&rand=0.11936895518095314&Rh-Comfy-Auth=eyJ1c2VySWQiOiI3Nzk4MWQ1MDc5ZmUzNGVkODkyYjM1ODkxNWQwNjg1ZCIsInNpZ25FeHBpcmUiOjE3ODQyMTY2MjI3MTYsInRzIjoxNzgzNjExODIyNzE2LCJzaWduIjoiZjE1MGVhZDQyOTZiMzk2ODhmNTgwYmYxOTMxOTkwNjUifQ==&Rh-Identify=77981d5079fe34ed892b358915d0685d"
-          }
-        ]
-      },
-      "image_a": [
-        "8",
-        0
-      ],
-      "image_b": [
-        "106",
-        0
-      ]
-    },
-    "class_type": "Image Comparer (rgthree)",
-    "_meta": {
-      "title": "Image Comparer (rgthree)"
-    }
-  },
-  "196": {
-    "inputs": {
-      "prompt": "",
-      "upscale_factor": 4,
-      "model_t": 200,
-      "coeff_t": 200,
-      "cfg_scale": 1,
-      "denoise_strength": 0.20000000000000004,
-      "scheduler_type": "DDPM",
-      "patch_size": 512,
-      "stride": 256,
-      "seed": 683470006203558,
-      "negative_prompt": "",
-      "model": [
-        "197",
-        0
-      ],
-      "image": [
-        "8",
-        0
-      ]
-    },
-    "class_type": "HYPIRUpscale",
-    "_meta": {
-      "title": "HYPIR 图像放大"
-    }
-  },
-  "197": {
-    "inputs": {
-      "lora_rank": 256,
-      "use_fp16": false,
-      "device": "cuda"
-    },
-    "class_type": "HYPIRModelLoader",
-    "_meta": {
-      "title": "HYPIR 模型加载器"
-    }
-  },
   "203": {
     "inputs": {
       "width": [
@@ -434,7 +366,7 @@
       "divisible_by": 2,
       "device": "cpu",
       "image": [
-        "196",
+        "226",
         0
       ],
       "mask": [
@@ -469,7 +401,7 @@
     },
     "class_type": "SaveImage",
     "_meta": {
-      "title": "Save Image"
+      "title": "保存图像"
     }
   },
   "221": {
@@ -492,7 +424,181 @@
     },
     "class_type": "ImageCompositeMasked",
     "_meta": {
-      "title": "Image Composite Masked"
+      "title": "合成图像（遮罩）"
+    }
+  },
+  "225": {
+    "inputs": {
+      "mask": [
+        "203",
+        3
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "遮罩转换为图像"
+    }
+  },
+  "226": {
+    "inputs": {
+      "seed": 1688711186,
+      "resolution": [
+        "229",
+        0
+      ],
+      "max_resolution": 4500,
+      "batch_size": 1,
+      "uniform_batch_size": false,
+      "color_correction": "lab",
+      "temporal_overlap": 0,
+      "prepend_frames": 0,
+      "input_noise_scale": 0,
+      "latent_noise_scale": 0,
+      "offload_device": "cpu",
+      "enable_debug": false,
+      "image": [
+        "232",
+        0
+      ],
+      "dit": [
+        "231",
+        0
+      ],
+      "vae": [
+        "230",
+        0
+      ]
+    },
+    "class_type": "SeedVR2VideoUpscaler",
+    "_meta": {
+      "title": "SeedVR2 Video Upscaler (v2.5.24)"
+    }
+  },
+  "227": {
+    "inputs": {
+      "Number": 2.0000000000000004
+    },
+    "class_type": "Float",
+    "_meta": {
+      "title": "比例"
+    }
+  },
+  "228": {
+    "inputs": {
+      "input1": [
+        "234",
+        0
+      ],
+      "input2": [
+        "227",
+        0
+      ]
+    },
+    "class_type": "MultiplyNode",
+    "_meta": {
+      "title": "Multiply"
+    }
+  },
+  "229": {
+    "inputs": {
+      "a": [
+        "228",
+        0
+      ]
+    },
+    "class_type": "CM_FloatToInt",
+    "_meta": {
+      "title": "FloatToInt"
+    }
+  },
+  "230": {
+    "inputs": {
+      "model": "ema_vae_fp16.safetensors",
+      "device": "cuda:0",
+      "encode_tiled": true,
+      "encode_tile_size": 512,
+      "encode_tile_overlap": 64,
+      "decode_tiled": true,
+      "decode_tile_size": 512,
+      "decode_tile_overlap": 64,
+      "tile_debug": "false",
+      "offload_device": "cpu",
+      "cache_model": false
+    },
+    "class_type": "SeedVR2LoadVAEModel",
+    "_meta": {
+      "title": "SeedVR2 (Down)Load VAE Model"
+    }
+  },
+  "231": {
+    "inputs": {
+      "model": "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+      "device": "cuda:0",
+      "blocks_to_swap": 32,
+      "swap_io_components": true,
+      "offload_device": "cpu",
+      "cache_model": "sdpa",
+      "attention_mode": "sdpa"
+    },
+    "class_type": "SeedVR2LoadDiTModel",
+    "_meta": {
+      "title": "SeedVR2 (Down)Load DiT Model"
+    }
+  },
+  "232": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1.16,
+      "resolution_steps": 1,
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "缩放图像（像素）"
+    }
+  },
+  "234": {
+    "inputs": {
+      "input1": [
+        "235",
+        0
+      ],
+      "input2": [
+        "235",
+        1
+      ]
+    },
+    "class_type": "MinNode",
+    "_meta": {
+      "title": "Min"
+    }
+  },
+  "235": {
+    "inputs": {
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "GetImageSize",
+    "_meta": {
+      "title": "获取图像尺寸"
+    }
+  },
+  "239": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "225",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存蒙版"
     }
   }
 }

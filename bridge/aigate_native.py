@@ -11,8 +11,10 @@ from aiohttp import ClientError, FormData
 
 try:
     from workflow_runtime import WorkflowInputError, apply_set_args
+    from bridge_common import _task_result_masks
 except ImportError:
     from bridge.workflow_runtime import WorkflowInputError, apply_set_args
+    from bridge.bridge_common import _task_result_masks
 
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -511,8 +513,12 @@ async def run_native_workflow_on_instance(
     base_url, image_path, mask_path, prompt, task_id, workflow,
     image_node_id, mask_node_id, output_node_id, prompt_node_id, prompt_field,
     extra_set_args, on_progress, session, max_attempts=180, poll_interval=1,
+    mask_output_node_id=None,
 ):
-    """在指定云扉实例执行具有显式节点契约的原生 ComfyUI 工作流。"""
+    """在指定云扉实例执行具有显式节点契约的原生 ComfyUI 工作流。
+
+    当 mask_output_node_id 提供时，额外按节点号下载该节点输出的蒙版图，暂存到
+    _task_result_masks[task_id] 供插件作为返回图层的图层蒙版。"""
     try:
         on_progress("正在上传原图…")
         source_name = await _upload_native_image(
@@ -569,6 +575,13 @@ async def run_native_workflow_on_instance(
         images = node_output.get("images") if isinstance(node_output, dict) else None
         if isinstance(images, list) and images:
             result = await _download_native_result(session, base_url, images[0])
+            if mask_output_node_id and task_id:
+                mask_node_output = outputs.get(str(mask_output_node_id)) if isinstance(outputs, dict) else None
+                mask_images = mask_node_output.get("images") if isinstance(mask_node_output, dict) else None
+                if isinstance(mask_images, list) and mask_images:
+                    _task_result_masks[task_id] = await _download_native_result(
+                        session, base_url, mask_images[0]
+                    )
             on_progress("完成")
             return result
         if attempt + 1 < max_attempts:
@@ -580,6 +593,7 @@ async def run_native_workflow(
     token, image_path, mask_path, prompt, task_id, workflow_path,
     image_node_id, mask_node_id, output_node_id, prompt_node_id, prompt_field,
     extra_set_args, on_progress, session, api_base=AIGATE_API_BASE,
+    mask_output_node_id=None,
 ):
     """发现云扉实例、读取指定工作流并执行通用原生 ComfyUI 任务。"""
     on_progress("正在发现云扉实例…")
@@ -594,6 +608,7 @@ async def run_native_workflow(
         instance["baseUrl"], image_path, mask_path, prompt, task_id, workflow,
         image_node_id, mask_node_id, output_node_id, prompt_node_id, prompt_field,
         extra_set_args, on_progress, session,
+        mask_output_node_id=mask_output_node_id,
     )
 
 

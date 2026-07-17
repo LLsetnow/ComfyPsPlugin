@@ -45,6 +45,10 @@ SPEC = importlib.util.spec_from_file_location(
 bridge = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bridge)
 
+# bridge.py 加载时会导入 bridge_common（脚本或包模式）；取回同一模块对象以便直接
+# 测试其纯函数（如 is_grayscale_png）与共享状态（_task_result_masks）。
+bridge_common = sys.modules.get("bridge_common") or sys.modules.get("bridge.bridge_common")
+
 
 class JsonRequest:
     def __init__(self, body):
@@ -52,6 +56,32 @@ class JsonRequest:
 
     async def json(self):
         return self.body
+
+
+class QueryRequest:
+    def __init__(self, query):
+        self.query = query
+
+
+def _make_png(width, height, color_type, pixels, filter_type=0):
+    """构造一张最小 PNG（8-bit，非隔行）用于灰度检测测试。"""
+    channels = 4 if color_type == 6 else (3 if color_type == 2 else 1)
+    raw = bytearray()
+    stride = width * channels
+    for y in range(height):
+        raw.append(filter_type)
+        raw.extend(pixels[y * stride:(y + 1) * stride])
+    comp = __import__("zlib").compress(bytes(raw))
+
+    def chunk(tag, data):
+        import struct
+        import zlib
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(
+            ">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    import struct
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", comp) + chunk(b"IEND", b"")
 
 
 class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -573,6 +603,54 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[4], "cleanup42")
         self.assertEqual(args[5], (bridge.BRIDGE_DIR / "../workflows/cleanup_api.json").resolve())
         self.assertEqual(args[6:12], ("41", "", "220", "68", "prompt", []))
+        # 未声明 maskOutputNodeId：不应透传蒙版输出节点，响应也不带蒙版标记。
+        self.assertIsNone(native_run.await_args.kwargs.get("mask_output_node_id"))
+        self.assertNotIn("X-ComfyPS-Has-Mask", response.headers)
+
+    async def test_cleanup_exposes_output_mask_on_aigate(self):
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
+        mask_png = b"\x89PNG\r\n\x1a\nmask-239-bytes"
+
+        async def fake_run(*args, **kwargs):
+            # 模拟原生工作流把节点 239 蒙版暂存到共享状态（task_id 是第 5 个位置参数）。
+            bridge._task_result_masks[args[4]] = mask_png
+            return b"\x89PNG\r\n\x1a\nresult"
+
+        try:
+            with patch.object(
+                bridge, "run_native_workflow", new=AsyncMock(side_effect=fake_run),
+                create=True,
+            ) as native_run:
+                response = await bridge.handle_run(JsonRequest({
+                    "backend": "aigate",
+                    "aigateToken": "demo-token",
+                    "image": png_b64,
+                    "needsMask": False,
+                    "workflowFile": "../workflows/cleanup_api.json",
+                    "imageNodeId": "41",
+                    "outputNodeId": "220",
+                    "maskOutputNodeId": "239",
+                    "promptNodeId": "68",
+                    "promptField": "prompt",
+                    "prompt": "移除路人",
+                    "taskId": "cleanmask42",
+                }))
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.body, b"\x89PNG\r\n\x1a\nresult")
+            self.assertEqual(response.headers.get("X-ComfyPS-Has-Mask"), "1")
+            self.assertEqual(native_run.await_args.kwargs.get("mask_output_node_id"), "239")
+
+            # /result-mask 按 taskId 返回暂存蒙版。
+            mask_response = await bridge.handle_result_mask(QueryRequest({"taskId": "cleanmask42"}))
+            self.assertEqual(mask_response.status, 200)
+            self.assertEqual(mask_response.body, mask_png)
+            self.assertEqual(mask_response.content_type, "image/png")
+
+            missing = await bridge.handle_result_mask(QueryRequest({"taskId": "does-not-exist"}))
+            self.assertEqual(missing.status, 404)
+        finally:
+            bridge._task_result_masks.pop("cleanmask42", None)
 
     async def test_forwards_image_upscale_factor_to_aigate(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
@@ -631,6 +709,54 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
             native_run.await_args.args[5],
             (bridge.BRIDGE_DIR / "../workflows/inpaint_boogu_api.json").resolve(),
         )
+
+
+class GrayscalePngDetectionTests(unittest.TestCase):
+    """is_grayscale_png 用于 RunningHub 多输出里区分彩色结果图与灰度蒙版图。"""
+
+    def setUp(self):
+        import random
+        self.random = random
+        self.width = self.height = 64
+
+    def _gray_pixels(self, channels):
+        self.random.seed(7)
+        px = bytearray()
+        for _ in range(self.width * self.height):
+            v = self.random.randint(0, 255)
+            px += bytes([v, v, v]) if channels == 3 else bytes([v, v, v, 255])
+        return px
+
+    def _color_pixels(self):
+        self.random.seed(9)
+        px = bytearray()
+        for _ in range(self.width * self.height):
+            px += bytes([self.random.randint(0, 255), self.random.randint(0, 255),
+                         self.random.randint(1, 255)])
+        return px
+
+    def test_detects_grayscale_and_color_across_filters(self):
+        fn = bridge_common.is_grayscale_png
+        gray_rgb = self._gray_pixels(3)
+        color_rgb = self._color_pixels()
+        for filt in (0, 1, 2, 3, 4):
+            self.assertTrue(
+                fn(_make_png(self.width, self.height, 2, gray_rgb, filt)),
+                "灰度 RGB 应判为 True (filter %d)" % filt)
+            self.assertFalse(
+                fn(_make_png(self.width, self.height, 2, color_rgb, filt)),
+                "彩色 RGB 应判为 False (filter %d)" % filt)
+
+    def test_detects_grayscale_rgba_and_native_grayscale(self):
+        fn = bridge_common.is_grayscale_png
+        self.assertTrue(fn(_make_png(self.width, self.height, 6, self._gray_pixels(4), 0)))
+        self.assertTrue(fn(_make_png(self.width, self.height, 0,
+                                     bytes(self.width * self.height), 0)))
+
+    def test_rejects_non_png_and_garbage(self):
+        fn = bridge_common.is_grayscale_png
+        self.assertFalse(fn(b"not a png"))
+        self.assertFalse(fn(b""))
 
 
 if __name__ == "__main__":
