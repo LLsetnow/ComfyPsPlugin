@@ -5,7 +5,7 @@ var _bridgeOnline = false;
 var _healthPollTimer = 0;
 var _restarting = false;
 var _launchingBridge = false;
-var _bridgeAutoStartTried = false; // 本会话仅自动启动桥一次
+var _bridgePanelLoadStartTried = false;
 var _bridgeBtnMode = "restart"; // "restart"=桥在线时重启; "start"=桥离线时启动
 var _lastBridgeUiLog = "";
 
@@ -31,18 +31,14 @@ async function checkBridgeHealth() {
   } catch (_) {
     _setBridgeBarUI("off", "桥未运行", true);
     _bridgeOnline = false;
-    _maybeAutoStartBridge();
   }
 }
 
-// 打开插件时若桥离线，自动尝试启动一次(需设置开启且宿主支持 shell.openPath)。
-function _maybeAutoStartBridge() {
-  if (_bridgeAutoStartTried || _launchingBridge || _restarting) return;
-  var s = loadSettings();
-  if (!s.autoStartBridge || !s.bridgeUrl) return;
-  if (!uxpShell || typeof uxpShell.openPath !== "function") return;
-  _bridgeAutoStartTried = true;
-  addLogEntry("info", "检测到桥离线，正在自动启动桥…", "插件");
+// 每次面板加载时都请求启动脚本安全替换旧桥。
+function forceBridgeStartOnPanelLoad() {
+  if (_bridgePanelLoadStartTried || _launchingBridge || _restarting) return;
+  _bridgePanelLoadStartTried = true;
+  addLogEntry("info", "面板加载，正在替换本地桥…", "插件");
   startBridgeViaShell();
 }
 
@@ -762,4 +758,3 @@ async function onRunClick() {
     refreshRunButton();
   }
 }
-

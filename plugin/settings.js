@@ -37,8 +37,6 @@ function renderSettings() {
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
   var rhLocalDebugInput = $("settingRhLocalDebug");
   if (rhLocalDebugInput) rhLocalDebugInput.checked = s.rhLocalDebug;
-  var autoStartBridgeInput = $("settingAutoStartBridge");
-  if (autoStartBridgeInput) autoStartBridgeInput.checked = s.autoStartBridge;
   _segSelect("segBackend", s.backend);
   _segSelect("segTheme", s.theme);
   _segSelect("segGptImageAuth", s.gptImageAuth);
@@ -1250,7 +1248,6 @@ function saveAllSettings() {
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
-  var autoStartBridge = !($("settingAutoStartBridge")) || !!$("settingAutoStartBridge").checked;
   var aigateAutoCloseOnExit = !($("settingAigateAutoCloseOnExit")) || !!$("settingAigateAutoCloseOnExit").checked;
   var backend = _segGet("segBackend") || "runninghub";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
@@ -1273,7 +1270,6 @@ function saveAllSettings() {
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
   saveSetting("rhLocalDebug", rhLocalDebug ? "true" : "false");
-  saveSetting("autoStartBridge", autoStartBridge ? "true" : "false");
   saveSetting("theme", theme);
   saveSetting("cacheMode", cacheMode);
   updateAigateAutoCloseStatus(aigateAutoCloseOnExit);

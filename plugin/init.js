@@ -182,8 +182,6 @@
   if (gptImageLocalValidation) gptImageLocalValidation.addEventListener("change", saveAllSettings);
   var rhLocalDebugChk = $("settingRhLocalDebug");
   if (rhLocalDebugChk) rhLocalDebugChk.addEventListener("change", saveAllSettings);
-  var autoStartBridgeChk = $("settingAutoStartBridge");
-  if (autoStartBridgeChk) autoStartBridgeChk.addEventListener("change", saveAllSettings);
   var aigateAutoCloseOnExitChk = $("settingAigateAutoCloseOnExit");
   if (aigateAutoCloseOnExitChk) aigateAutoCloseOnExitChk.addEventListener("change", saveAllSettings);
 
@@ -214,6 +212,7 @@
   });
 
   // ---- 桥健康轮询 ----
+  forceBridgeStartOnPanelLoad();
   startHealthPolling();
 
   // ---- 默认进入工作流页 ----

@@ -84,7 +84,7 @@ python bridge/bridge.py
 # 监听 http://127.0.0.1:8765
 ```
 
-> 也可以在面板顶部桥状态栏点 **「▶ 启动桥」**(桥离线时显示)让插件替你拉起桥：它通过 `uxp.shell.openPath` 打开 `plugin/start_bridge.command`,自动定位仓库、优先用 `.venv`、清占用端口后运行 `bridge.py`。首次会弹一次系统授权确认,并打开一个终端窗口(关掉即停桥)。桥在线时该按钮变为「⟳ 重启桥」。
+> 每次打开或加载 ComfyPS 面板都会通过 `uxp.shell.openPath` 运行 `plugin/start_bridge.command`：它自动定位仓库、优先使用 `.venv`，安全结束旧的 ComfyPS `bridge.py` 后再启动新桥。若 8765 被其他程序占用，脚本会提示冲突且不会终止该程序。首次会弹一次系统授权确认,并打开一个终端窗口(关掉即停桥)。桥在线时顶部按钮仍可用于「⟳ 重启桥」。
 
 ### 加载插件到 Photoshop(2022+ / v23.0+)
 - **推荐**:装 **UXP Developer Tool**(通过 Creative Cloud)→ Add Plugin 选 `plugin/manifest.json` → Load。

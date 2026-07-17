@@ -27,12 +27,73 @@ if [ -z "$PY" ]; then
   echo "未找到 python，请先创建 .venv 或安装 python3"; exit 1
 fi
 
-# --- 若 8765 已被占用，先释放(可能是残留的桥或 dev 预览服务器) ---
-PIDS="$(lsof -ti tcp:8765 2>/dev/null || true)"
-if [ -n "$PIDS" ]; then
-  echo "端口 8765 被占用，先结束: $PIDS"
-  kill -9 $PIDS 2>/dev/null || true
-  sleep 1
+# --- 安全替换旧桥：只终止本仓库运行的 bridge.py，绝不杀掉其他服务 ---
+listener_pids() {
+  lsof -tiTCP:8765 -sTCP:LISTEN 2>/dev/null || true
+}
+
+is_comfyps_bridge_pid() {
+  PID_CWD="$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+  PID_COMMAND="$(ps -p "$1" -o command= 2>/dev/null || true)"
+  [ "$PID_CWD" = "$REPO" ] && case "$PID_COMMAND" in
+    *"bridge/bridge.py"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+current_comfyps_bridge_pids() {
+  MATCHED_PIDS=""
+  for PID in $(listener_pids); do
+    if is_comfyps_bridge_pid "$PID"; then
+      MATCHED_PIDS="$MATCHED_PIDS $PID"
+    fi
+  done
+  echo "$MATCHED_PIDS"
+}
+
+current_other_listener_pids() {
+  OTHER_PIDS=""
+  for PID in $(listener_pids); do
+    if ! is_comfyps_bridge_pid "$PID"; then
+      OTHER_PIDS="$OTHER_PIDS $PID"
+    fi
+  done
+  echo "$OTHER_PIDS"
+}
+
+OTHER_PIDS="$(current_other_listener_pids)"
+
+if [ -n "$OTHER_PIDS" ]; then
+  echo "端口 8765 被其他程序占用:$OTHER_PIDS"
+  exit 1
+fi
+
+BRIDGE_PIDS="$(current_comfyps_bridge_pids)"
+if [ -n "$BRIDGE_PIDS" ]; then
+  echo "正在结束旧的 ComfyPS 桥:$BRIDGE_PIDS"
+  kill $BRIDGE_PIDS 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    [ -z "$(listener_pids)" ] && break
+    sleep 1
+  done
+  if [ -n "$(listener_pids)" ]; then
+    OTHER_PIDS="$(current_other_listener_pids)"
+    if [ -n "$OTHER_PIDS" ]; then
+      echo "端口 8765 被其他程序占用:$OTHER_PIDS"
+      exit 1
+    fi
+    BRIDGE_PIDS="$(current_comfyps_bridge_pids)"
+    if [ -n "$BRIDGE_PIDS" ]; then
+      echo "旧桥未在 5 秒内退出，强制结束"
+      kill -9 $BRIDGE_PIDS 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+fi
+
+if [ -n "$(listener_pids)" ]; then
+  echo "端口 8765 未能释放，取消启动"
+  exit 1
 fi
 
 echo "=============================================="
