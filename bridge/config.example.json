@@ -8,5 +8,11 @@
   "promptNodeId": "",
   "promptField": "text",
   "workflowFile": "../workflows/inpaint_api.json",
+  "_aigateCreate_comment": "创建云扉 ComfyUI 实例时填写；imageId 为预设 ComfyUI 镜像 ID。",
+  "aigateCreate": {
+    "areaName": "",
+    "imageId": "",
+    "imageType": "2"
+  },
   "port": 8765
 }
