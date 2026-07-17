@@ -354,7 +354,6 @@ function selectWorkflow(wfId) {
 
   var isAigateInpaint = loadSettings().backend === "aigate" && wf.id === "inpaint";
   (wf.inputs || []).forEach(function (inp) {
-    if (isAigateInpaint && inp.id === "wfResolution") return;
     var label = document.createElement("label");
     label.textContent = inp.label;
     label.htmlFor = inp.id;

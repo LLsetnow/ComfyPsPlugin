@@ -18,7 +18,7 @@ class AigateNativeUrlTests(unittest.TestCase):
 
 
 class AigateNativeWorkflowTests(unittest.TestCase):
-    def test_changes_only_the_five_declared_node_inputs(self):
+    def test_applies_declared_inputs_and_runtime_overrides(self):
         from bridge.aigate_native import build_native_workflow
 
         workflow = {
@@ -26,12 +26,16 @@ class AigateNativeWorkflowTests(unittest.TestCase):
             "36": {"inputs": {"prompt": "old prompt"}},
             "71": {"inputs": {"image": "old-source.png"}},
             "214": {"inputs": {"image": "old-mask.png"}},
-            "212": {"inputs": {"output_target_width": 1024}},
+            "212": {"inputs": {
+                "output_target_width": 1024,
+                "output_target_height": 1024,
+            }},
             "224": {"inputs": {"filename_prefix": "ComfyUI"}},
         }
 
         actual = build_native_workflow(
-            workflow, "source.png", "mask.png", "蓝色头发", "job42"
+            workflow, "source.png", "mask.png", "蓝色头发", "job42",
+            ["212:output_target_width=1536", "212:output_target_height=768"],
         )
 
         self.assertEqual(actual["71"]["inputs"]["image"], "source.png")
@@ -44,7 +48,9 @@ class AigateNativeWorkflowTests(unittest.TestCase):
             actual["224"]["inputs"]["filename_prefix"],
             "boogu_blue_hair_api_job42",
         )
-        self.assertEqual(actual["212"]["inputs"]["output_target_width"], 1024)
+        self.assertEqual(actual["212"]["inputs"]["output_target_width"], 1536)
+        self.assertEqual(actual["212"]["inputs"]["output_target_height"], 768)
+        self.assertEqual(workflow["212"]["inputs"]["output_target_width"], 1024)
         self.assertEqual(workflow["71"]["inputs"]["image"], "old-source.png")
 
 
@@ -516,6 +522,10 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             "36": {"inputs": {"prompt": "old"}},
             "71": {"inputs": {"image": "old"}},
             "214": {"inputs": {"image": "old"}},
+            "212": {"inputs": {
+                "output_target_width": 1024,
+                "output_target_height": 1024,
+            }},
             "224": {"inputs": {"filename_prefix": "old"}},
         }
         progress = []
@@ -527,6 +537,10 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             actual = await run_native_inpaint_on_instance(
                 self.api_base, image_path, mask_path, "蓝色头发", "job42", workflow,
                 progress.append, self.session,
+                extra_set_args=[
+                    "212:output_target_width=1536",
+                    "212:output_target_height=768",
+                ],
             )
 
         native_requests = [item for item in self.requests if item.get("kind")]
@@ -538,6 +552,12 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Authorization", request["headers"])
         self.assertEqual(
             native_requests[2]["body"]["prompt"]["36"]["inputs"]["prompt"], "蓝色头发"
+        )
+        self.assertEqual(
+            native_requests[2]["body"]["prompt"]["212"]["inputs"]["output_target_width"], 1536
+        )
+        self.assertEqual(
+            native_requests[2]["body"]["prompt"]["212"]["inputs"]["output_target_height"], 768
         )
         self.assertEqual(native_requests[2]["body"]["client_id"], "comfyps_aigate_job42")
         self.assertEqual(native_requests[4]["query"]["type"], "output")

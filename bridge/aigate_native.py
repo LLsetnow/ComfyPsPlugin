@@ -433,7 +433,7 @@ async def _download_native_result(session, base_url, image):
 
 async def run_native_inpaint_on_instance(
     base_url, image_path, mask_path, prompt, task_id, workflow, on_progress, session,
-    max_attempts=180, poll_interval=1,
+    max_attempts=180, poll_interval=1, extra_set_args=None,
 ):
     """在已发现的实例上调用无认证的原生 ComfyUI API。"""
     on_progress("正在上传原图和蒙版…")
@@ -443,9 +443,14 @@ async def run_native_inpaint_on_instance(
     mask_name = await _upload_native_image(
         session, base_url, mask_path, "comfyps_" + str(task_id) + "_mask.png"
     )
-    native_workflow = build_native_workflow(
-        workflow, source_name, mask_name, prompt, task_id
-    )
+    try:
+        native_workflow = build_native_workflow(
+            workflow, source_name, mask_name, prompt, task_id, extra_set_args
+        )
+    except (TypeError, ValueError, WorkflowInputError) as exc:
+        raise AigateNativeError(
+            "COMFYUI_WORKFLOW_INVALID", "ComfyUI 工作流节点或参数无效", 400
+        ) from exc
     on_progress("正在提交 ComfyUI 工作流…")
     submitted = await _native_json(
         session,
@@ -482,7 +487,7 @@ async def run_native_inpaint_on_instance(
 
 async def run_native_inpaint(
     token, image_path, mask_path, prompt, task_id, workflow_path, on_progress, session,
-    api_base=AIGATE_API_BASE,
+    api_base=AIGATE_API_BASE, extra_set_args=None,
 ):
     """发现云扉实例、读取 Boogu 工作流并执行原生 ComfyUI 任务。"""
     on_progress("正在发现云扉实例…")
@@ -495,7 +500,7 @@ async def run_native_inpaint(
         raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "Boogu 工作流格式无效")
     return await run_native_inpaint_on_instance(
         instance["baseUrl"], image_path, mask_path, prompt, task_id, workflow,
-        on_progress, session,
+        on_progress, session, extra_set_args=extra_set_args,
     )
 
 
@@ -605,8 +610,9 @@ def make_comfyui_base_url(host):
     return "https://" + value
 
 
-def build_native_workflow(workflow, source_name, mask_name, prompt, task_id):
-    """复制 Boogu 工作流，并只覆盖云端原生运行所需的五个输入。"""
+def build_native_workflow(workflow, source_name, mask_name, prompt, task_id,
+                          extra_set_args=None):
+    """复制 Boogu 工作流，覆盖原生输入并应用已验证的运行时参数。"""
     result = copy.deepcopy(workflow)
     replacements = {
         "71": {"image": source_name},
@@ -621,6 +627,7 @@ def build_native_workflow(workflow, source_name, mask_name, prompt, task_id):
         if not isinstance(inputs, dict):
             raise ValueError("Boogu 工作流缺少节点 " + node_id + " 的输入")
         inputs.update(values)
+    apply_set_args(result, extra_set_args)
     return result
 
 
