@@ -166,6 +166,83 @@ test("uses the raw AIGate SKU price without inferring a unit", function () {
   assert.equal(context.aigateSkuPriceText(null), "价格暂不可用");
 });
 
+test("a stale successful AIGate account response cannot show Token A balance for Token B", async function () {
+  var context = loadAigateContext();
+  var currentToken = "token-a";
+  var resolveAccount;
+  var accountRequest = new Promise(function (resolve) { resolveAccount = resolve; });
+  var rendersAfterTokenChange = [];
+  var tokenChanged = false;
+  context._getAigateToken = function () { return currentToken; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () { return accountRequest; };
+  context._renderAigateAccount = function () {
+    if (tokenChanged) {
+      rendersAfterTokenChange.push({
+        balance: context._aigateAccount && context._aigateAccount.balance,
+        error: context._aigateAccountError,
+        inFlight: context._aigateAccountRefreshInFlight,
+      });
+    }
+  };
+
+  var request = context.refreshAigateAccount();
+  currentToken = "token-b";
+  tokenChanged = true;
+  resolveAccount({
+    ok: true,
+    json: function () { return Promise.resolve({ ok: true, balance: "999", updatedAt: 1000 }); },
+  });
+  await request;
+
+  assert.equal(context._aigateAccount, null);
+  assert.equal(context._aigateAccountUpdatedAt, 0);
+  assert.equal(context._aigateAccountError, "云扉凭证已变更，请刷新余额");
+  assert.equal(context._aigateAccountRefreshInFlight, false);
+  assert.deepEqual(rendersAfterTokenChange, [{
+    balance: null,
+    error: "云扉凭证已变更，请刷新余额",
+    inFlight: false,
+  }]);
+});
+
+test("a stale failed AIGate account response cannot show Token A error for Token B", async function () {
+  var context = loadAigateContext();
+  var currentToken = "token-a";
+  var rejectAccount;
+  var accountRequest = new Promise(function (resolve, reject) { rejectAccount = reject; });
+  var rendersAfterTokenChange = [];
+  var tokenChanged = false;
+  context._getAigateToken = function () { return currentToken; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () { return accountRequest; };
+  context._renderAigateAccount = function () {
+    if (tokenChanged) {
+      rendersAfterTokenChange.push({
+        balance: context._aigateAccount && context._aigateAccount.balance,
+        error: context._aigateAccountError,
+        inFlight: context._aigateAccountRefreshInFlight,
+      });
+    }
+  };
+
+  var request = context.refreshAigateAccount();
+  currentToken = "token-b";
+  tokenChanged = true;
+  rejectAccount(new Error("Token A 网络错误"));
+  await request;
+
+  assert.equal(context._aigateAccount, null);
+  assert.equal(context._aigateAccountUpdatedAt, 0);
+  assert.equal(context._aigateAccountError, "云扉凭证已变更，请刷新余额");
+  assert.equal(context._aigateAccountRefreshInFlight, false);
+  assert.deepEqual(rendersAfterTokenChange, [{
+    balance: null,
+    error: "云扉凭证已变更，请刷新余额",
+    inFlight: false,
+  }]);
+});
+
 test("unavailable AIGate GPU options keep an in-card retry action", function () {
   var source = fs.readFileSync("plugin/settings.js", "utf8");
 

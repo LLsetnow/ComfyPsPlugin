@@ -146,6 +146,12 @@ function _formatAigateUpdatedAt(updatedAt) {
   return "上次更新 " + hours + ":" + minutes;
 }
 
+function _invalidateAigateAccountForChangedToken() {
+  _aigateAccount = null;
+  _aigateAccountUpdatedAt = 0;
+  _aigateAccountError = "云扉凭证已变更，请刷新余额";
+}
+
 function _renderAigateAccount() {
   var container = $("aigateAccountStatus");
   if (!container) return;
@@ -207,9 +213,17 @@ async function refreshAigateAccount() {
       || String(data.balance).trim() === "") {
       throw new Error((data && data.message) || "读取云扉余额失败");
     }
+    if (_getAigateToken() !== token) {
+      _invalidateAigateAccountForChangedToken();
+      return;
+    }
     _aigateAccount = { balance: data.balance };
     _aigateAccountUpdatedAt = Number(data.updatedAt) || Date.now();
   } catch (e) {
+    if (_getAigateToken() !== token) {
+      _invalidateAigateAccountForChangedToken();
+      return;
+    }
     _aigateAccount = null;
     _aigateAccountError = "读取云扉余额失败：" + _aigateErrorText(e, "未知错误");
   } finally {
