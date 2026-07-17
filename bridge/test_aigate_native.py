@@ -548,7 +548,7 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
 
         workflow = {
             "90": {"inputs": {"image": "old.png"}},
-            "95": {"inputs": {"value": 2.0}},
+            "95": {"inputs": {"Number": 2.0}},
             "100": {"inputs": {"filename_prefix": "ComfyUI"}},
         }
         progress = []
@@ -557,7 +557,7 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nsource")
             actual = await run_native_workflow_on_instance(
                 self.api_base, image_path, None, "", "job-up", workflow,
-                "90", "", "100", "", "", ["95:value=4.5"], progress.append,
+                "90", "", "100", "", "", ["95:Number=4.5"], progress.append,
                 self.session, max_attempts=2, poll_interval=0,
             )
 
@@ -570,7 +570,7 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("Authorization", request["headers"])
         native_workflow = prompt_request["body"]["prompt"]
         self.assertEqual(native_workflow["90"]["inputs"]["image"], "comfyps_job-up_source.png")
-        self.assertEqual(native_workflow["95"]["inputs"]["value"], 4.5)
+        self.assertEqual(native_workflow["95"]["inputs"]["Number"], 4.5)
         self.assertEqual(native_workflow["100"]["inputs"]["filename_prefix"], "comfyps_aigate_job-up")
         self.assertIn("正在提交 ComfyUI 工作流…", progress)
 

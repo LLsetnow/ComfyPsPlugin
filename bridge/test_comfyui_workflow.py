@@ -80,11 +80,11 @@ class LocalComfyuiWorkflowTests(unittest.TestCase):
             with patch("urllib.request.urlopen", side_effect=fake_urlopen), patch("time.sleep"):
                 actual = run_comfyui_blocking(
                     image_path, None, output_dir, "", "http://127.0.0.1:8188",
-                    "../workflows/image_clarity_api.json", ["95:value=3.5"],
+                    "../workflows/image_clarity_api.json", ["95:Number=3.5"],
                     "90", "", "100", "", "",
                 )
 
         self.assertEqual(actual, png_bytes)
         workflow = submitted[0]["prompt"]
-        self.assertEqual(workflow["95"]["inputs"]["value"], 3.5)
+        self.assertEqual(workflow["95"]["inputs"]["Number"], 3.5)
         self.assertEqual(workflow["90"]["inputs"]["image"], "iVBORw0KGgpzb3VyY2U=")
