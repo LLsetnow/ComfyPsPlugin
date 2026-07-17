@@ -171,7 +171,6 @@ var SETTINGS_KEYS = {
   gptImageLocalValidation: "comfyps.gptImageLocalValidation",
   rhLocalDebug: "comfyps.rhLocalDebug",
   cacheMode: "comfyps.cacheMode",
-  autoStartBridge: "comfyps.autoStartBridge",
 };
 
 // 插件受管云扉实例的本地生命周期；只保存 ID 和本机观察到的开始时间，绝不保存 Token。
@@ -600,8 +599,6 @@ function loadSettings() {
     gptImageApiKey: localStorage.getItem(SETTINGS_KEYS.gptImageApiKey) || "",
     gptImageLocalValidation: localStorage.getItem(SETTINGS_KEYS.gptImageLocalValidation) === "true",
     rhLocalDebug: localStorage.getItem(SETTINGS_KEYS.rhLocalDebug) === "true",
-    // 默认开启：打开插件时若桥离线，自动尝试启动一次。
-    autoStartBridge: localStorage.getItem(SETTINGS_KEYS.autoStartBridge) !== "false",
     cacheMode: localStorage.getItem(SETTINGS_KEYS.cacheMode)
       || (localStorage.getItem("comfyps.cacheBasePath") ? "custom" : "default"),
   };
@@ -667,4 +664,3 @@ function base64ToBytes(b64str) {
   }
   return bytes;
 }
-
