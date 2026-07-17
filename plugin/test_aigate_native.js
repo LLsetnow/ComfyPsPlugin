@@ -156,14 +156,16 @@ test("shows the AIGate create card only for a confirmed empty array", function (
   assert.equal(context.shouldShowAigateCreate({ length: 0 }), false);
 });
 
-test("uses the raw AIGate SKU price without inferring a unit", function () {
+test("formats AIGate cent amounts as yuan for balance and GPU prices", function () {
   var context = loadAigateContext();
 
-  assert.equal(context.aigateSkuPriceText({ price: "199" }), "199");
-  assert.equal(context.aigateSkuPriceText({ price: 0 }), "0");
+  assert.equal(context.formatAigateCents("205", "余额暂不可用"), "¥ 2.05");
+  assert.equal(context.formatAigateCents(0, "余额暂不可用"), "¥ 0.00");
+  assert.equal(context.formatAigateCents("5", "余额暂不可用"), "¥ 0.05");
+  assert.equal(context.formatAigateCents("-1", "余额暂不可用"), "余额暂不可用");
+  assert.equal(context.formatAigateCents("2.05", "余额暂不可用"), "余额暂不可用");
+  assert.equal(context.aigateSkuPriceText({ price: "199" }), "¥ 1.99");
   assert.equal(context.aigateSkuPriceText({ price: "" }), "价格暂不可用");
-  assert.equal(context.aigateSkuPriceText({}), "价格暂不可用");
-  assert.equal(context.aigateSkuPriceText(null), "价格暂不可用");
 });
 
 test("a stale successful AIGate account response cannot show Token A balance for Token B", async function () {

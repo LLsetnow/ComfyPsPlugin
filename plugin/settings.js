@@ -73,10 +73,16 @@ function shouldShowAigateCreate(instances) {
   return Array.isArray(instances) && instances.length === 0;
 }
 
+function formatAigateCents(value, unavailableText) {
+  var text = value === undefined || value === null ? "" : String(value).trim();
+  if (!/^\d+$/.test(text)) return unavailableText;
+  text = text.replace(/^0+(?=\d)/, "");
+  while (text.length < 3) text = "0" + text;
+  return "¥ " + text.slice(0, -2) + "." + text.slice(-2);
+}
+
 function aigateSkuPriceText(sku) {
-  if (!sku || sku.price === undefined || sku.price === null
-    || String(sku.price).trim() === "") return "价格暂不可用";
-  return String(sku.price);
+  return formatAigateCents(sku && sku.price, "价格暂不可用");
 }
 
 var _aigateInstances = [];
@@ -163,7 +169,11 @@ function _renderAigateAccount() {
     var balance = document.createElement("div");
     balance.className = "aigate-account-balance";
     _appendAigateText(balance, "setting-hint", "余额");
-    _appendAigateText(balance, "aigate-account-balance-value", String(_aigateAccount.balance));
+    _appendAigateText(
+      balance,
+      "aigate-account-balance-value",
+      formatAigateCents(_aigateAccount.balance, "余额暂不可用")
+    );
     _appendAigateText(balance, "aigate-account-meta", _formatAigateUpdatedAt(_aigateAccountUpdatedAt));
     container.appendChild(balance);
   } else {
