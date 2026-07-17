@@ -99,6 +99,21 @@ test("settings include AIGate token and instance controls", function () {
   assert.match(html, /id="aigateInstanceList"/);
 });
 
+test("README documents private AIGate create configuration and raw UI values", function () {
+  var readme = fs.readFileSync("README.md", "utf8");
+
+  assert.match(readme, /aigateCreate/);
+  assert.match(readme, /areaName/);
+  assert.match(readme, /数值.*imageId|imageId.*数值/);
+  assert.match(readme, /imageType.*["']2["']/);
+  assert.match(readme, /bridge\/config\.example\.json/);
+  assert.match(readme, /成功刷新.*没有.*实例|没有.*实例.*成功刷新/);
+  assert.match(readme, /停止.*隐藏|已有实例.*隐藏/);
+  assert.match(readme, /余额.*原始.*值|原始.*余额/);
+  assert.match(readme, /GPU.*价格.*原始.*值|原始.*GPU.*价格/);
+  assert.match(readme, /不.*推断.*单位|不.*推断.*周期/);
+});
+
 test("settings expose AIGate account and conditional-create anchors", function () {
   var html = fs.readFileSync("plugin/index.html", "utf8");
   var css = fs.readFileSync("plugin/styles.css", "utf8");

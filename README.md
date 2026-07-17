@@ -57,6 +57,22 @@ cp bridge/config.example.json bridge/config.json
 # 编辑 config.json,填 workflowId / imageNodeId / maskNodeId
 ```
 
+#### 云扉 ComfyUI 实例（可选）
+
+如需从设置页创建云扉 ComfyUI 实例，也要在本机私有的 `bridge/config.json` 中填写 `aigateCreate`。可参考 `bridge/config.example.json`：
+
+```json
+"aigateCreate": {
+  "areaName": "你的云扉区域名称",
+  "imageId": 123456,
+  "imageType": "2"
+}
+```
+
+其中 `areaName` 是云扉区域名称，`imageId` 必须是已预设的 ComfyUI 镜像的数值 ID，`imageType` 固定为字符串 `"2"`。不要把真实区域或镜像配置提交到仓库；`bridge/config.json` 已被忽略。
+
+在设置页填写云扉 Bearer Token 后刷新实例。只有成功刷新并确认云扉控制台没有任何实例时，才会显示「创建实例」卡片；已有任意实例（包括已停止实例）都会隐藏该卡片。连接器中的余额与 GPU 规格价格直接展示云扉返回的原始值，界面不会推断其货币单位或计费周期。
+
 ## 使用
 
 ### 启动本地桥
