@@ -42,13 +42,16 @@ jobs:
           node-version: "22"
       - name: 禁止 ES6 语法 (UXP 不兼容)
         run: |
-          FILE=plugin/main.js
-          echo ":: Checking $FILE for ES6 features..."
+          # 扫描所有 UXP 运行时模块（main.js 已拆分为多个全局脚本）。
+          # 排除仅在 Node 下运行的 test_*.js —— 它们可用 ES6。
+          FILES=$(ls plugin/*.js | grep -v '/test_')
+          echo ":: Checking UXP modules for ES6 features..."
+          echo "$FILES"
           ISSUES=0
 
           check() {
-            if grep -n "$1" "$FILE"; then
-              echo "::error file=$FILE,title=ES6检测::$2"
+            if grep -nH "$1" $FILES; then
+              echo "::error title=ES6检测::$2"
               ISSUES=1
             fi
           }
