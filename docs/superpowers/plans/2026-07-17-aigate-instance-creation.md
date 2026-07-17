@@ -446,8 +446,8 @@
     <div class="setting-label">云扉账户</div>
     <div id="aigateAccountStatus" class="aigate-account-card">
       <span class="aigate-account-pending">输入 Token 后读取余额</span>
+      <button id="btnRefreshAigateAccount" class="aigate-account-refresh" type="button">↻ 更新余额</button>
     </div>
-    <button id="btnRefreshAigateAccount" class="btn-sm aigate-account-refresh" type="button">↻ 更新余额</button>
   </div>
   ```
 
@@ -521,7 +521,7 @@
   }
   ```
 
-  实现 `refreshAigateAccount()`，向 `/aigate/account` 发 JSON POST，成功时把 `data.updatedAt || Date.now()` 保存到 `_aigateAccount`，失败时保存 `{ error: message }`，再调用 `_renderAigateAccount()`；渲染函数使用 DOM API 创建“当前账户余额 / 原始 balance / 更新于 HH:mm / ↻ 更新余额”，不使用 `innerHTML` 拼接 Token。
+  实现 `refreshAigateAccount()`，向 `/aigate/account` 发 JSON POST，成功时把 `data.updatedAt || Date.now()` 保存到 `_aigateAccount`，失败时保存 `{ error: message }`，再调用 `_renderAigateAccount()`；渲染函数使用 DOM API 在余额方块内创建“当前账户余额 / 原始 balance / 上次更新于 HH:mm / ↻ 更新余额”，不使用 `innerHTML` 拼接 Token。
 
   将 `refreshAigateInstances()` 视为唯一的“列表可信状态”来源：成功后才赋值 `_aigateInstances`，再调用 `_renderAigateInstances(_aigateInstances)`。函数开始时不得清空旧成功列表；`catch` 只显示“读取云扉实例失败”，并让 `shouldShowAigateCreate(null)` 保持 false。成功时并行调用 `refreshAigateAccount()`；只有 `shouldShowAigateCreate(_aigateInstances)` 为 true 时调用 `refreshAigateCreateOptions()`。
 
