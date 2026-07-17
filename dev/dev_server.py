@@ -591,23 +591,43 @@ def _mock_aigate_ids(values):
     return result
 
 
-async def handle_aigate_account(request: web.Request) -> web.Response:
+async def read_mock_aigate_request(request):
+    """读取云扉开发 mock 的 JSON 与 Token，保持与 bridge 一致的错误契约。"""
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
-    if not (body.get("aigateToken") or "").strip():
-        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+        return None, "", web.json_response({
+            "ok": False,
+            "error": "BAD_JSON",
+            "message": "请求体不是 JSON",
+        }, status=400)
+    if not isinstance(body, dict):
+        return None, "", web.json_response({
+            "ok": False,
+            "error": "BAD_JSON",
+            "message": "请求体不是 JSON",
+        }, status=400)
+    token = str(body.get("aigateToken") or "").strip()
+    if not token:
+        return body, "", web.json_response({
+            "ok": False,
+            "error": "AIGATE_TOKEN_REQUIRED",
+            "message": "请输入云扉 Bearer Token",
+        }, status=400)
+    return body, token, None
+
+
+async def handle_aigate_account(request: web.Request) -> web.Response:
+    body, token, error_response = await read_mock_aigate_request(request)
+    if error_response:
+        return error_response
     return web.json_response({"ok": True, "balance": "12898", "updatedAt": 0})
 
 
 async def handle_aigate_create_options(request: web.Request) -> web.Response:
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
-    if not (body.get("aigateToken") or "").strip():
-        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    body, token, error_response = await read_mock_aigate_request(request)
+    if error_response:
+        return error_response
     return web.json_response({
         "ok": True,
         "options": [dict(item) for item in _MOCK_AIGATE_SKUS],
@@ -616,12 +636,9 @@ async def handle_aigate_create_options(request: web.Request) -> web.Response:
 
 
 async def handle_aigate_create_instance(request: web.Request) -> web.Response:
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
-    if not (body.get("aigateToken") or "").strip():
-        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    body, token, error_response = await read_mock_aigate_request(request)
+    if error_response:
+        return error_response
     if _mock_aigate_instances:
         return web.json_response({
             "ok": False,
@@ -677,14 +694,14 @@ async def handle_aigate_instance_action(request: web.Request) -> web.Response:
     action = str(body.get("action") or "").lower()
     if action not in ("open", "close", "release"):
         return web.json_response({"ok": False, "message": "云扉实例操作无效"}, status=400)
-    for instance in _mock_aigate_instances:
+    for index, instance in enumerate(_mock_aigate_instances):
         if instance["instanceId"] == instance_id:
             if action == "open":
                 instance["operationStatus"] = "2"
             elif action == "close":
                 instance["operationStatus"] = "7"
             else:
-                instance["operationStatus"] = "4"
+                del _mock_aigate_instances[index]
             dev_log("  [mock 云扉] 实例=" + instance_id + " action=" + action)
             return web.json_response({"ok": True, "instanceId": instance_id, "action": action})
     return web.json_response({"ok": False, "message": "未找到云扉实例"}, status=404)

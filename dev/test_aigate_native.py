@@ -12,6 +12,11 @@ class JsonRequest:
         return self.body
 
 
+class BadJsonRequest:
+    async def json(self):
+        raise ValueError("invalid json")
+
+
 class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         dev_server.reset_mock_aigate_instances([])
@@ -76,6 +81,70 @@ class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
             json.loads(response.body.decode("utf-8"))["error"],
             "AIGATE_SKU_INVALID",
         )
+
+    async def test_create_endpoints_reject_missing_token_consistently(self):
+        handlers = [
+            dev_server.handle_aigate_account,
+            dev_server.handle_aigate_create_options,
+            dev_server.handle_aigate_create_instance,
+        ]
+        for handler in handlers:
+            response = await handler(JsonRequest({}))
+            data = json.loads(response.body.decode("utf-8"))
+            self.assertEqual(response.status, 400)
+            self.assertEqual(data["ok"], False)
+            self.assertEqual(data["error"], "AIGATE_TOKEN_REQUIRED")
+            self.assertEqual(data["message"], "请输入云扉 Bearer Token")
+
+    async def test_create_endpoints_reject_nonobject_json_consistently(self):
+        handlers = [
+            dev_server.handle_aigate_account,
+            dev_server.handle_aigate_create_options,
+            dev_server.handle_aigate_create_instance,
+        ]
+        for handler in handlers:
+            response = await handler(JsonRequest([]))
+            data = json.loads(response.body.decode("utf-8"))
+            self.assertEqual(response.status, 400)
+            self.assertEqual(data["ok"], False)
+            self.assertEqual(data["error"], "BAD_JSON")
+            self.assertEqual(data["message"], "请求体不是 JSON")
+
+    async def test_create_endpoints_reject_malformed_json_consistently(self):
+        handlers = [
+            dev_server.handle_aigate_account,
+            dev_server.handle_aigate_create_options,
+            dev_server.handle_aigate_create_instance,
+        ]
+        for handler in handlers:
+            response = await handler(BadJsonRequest())
+            data = json.loads(response.body.decode("utf-8"))
+            self.assertEqual(response.status, 400)
+            self.assertEqual(data["ok"], False)
+            self.assertEqual(data["error"], "BAD_JSON")
+            self.assertEqual(data["message"], "请求体不是 JSON")
+
+    async def test_releasing_instance_allows_another_instance_to_be_created(self):
+        dev_server.reset_mock_aigate_instances([{
+            "instanceId": "mock-released",
+            "instanceName": "已释放实例（开发模拟）",
+            "operationStatus": "7",
+            "hasComfyui": False,
+        }])
+
+        released = await dev_server.handle_aigate_instance_action(JsonRequest({
+            "aigateToken": "demo-token",
+            "instanceId": "mock-released",
+            "action": "release",
+        }))
+        self.assertTrue(json.loads(released.body.decode("utf-8"))["ok"])
+
+        created = await dev_server.handle_aigate_create_instance(JsonRequest({
+            "aigateToken": "demo-token",
+            "skuName": "4090-24GB-DDR5",
+        }))
+        self.assertEqual(created.status, 200)
+        self.assertTrue(json.loads(created.body.decode("utf-8"))["ok"])
 
     async def test_models_open_close_managed_and_release_lifecycle(self):
         dev_server.reset_mock_aigate_instances([
