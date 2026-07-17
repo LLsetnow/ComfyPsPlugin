@@ -4,9 +4,15 @@ import asyncio
 import copy
 import json
 import re
+from pathlib import Path
 from urllib.parse import urlencode
 
 from aiohttp import ClientError, FormData
+
+try:
+    from workflow_runtime import WorkflowInputError, apply_set_args
+except ImportError:
+    from bridge.workflow_runtime import WorkflowInputError, apply_set_args
 
 
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -490,6 +496,104 @@ async def run_native_inpaint(
     return await run_native_inpaint_on_instance(
         instance["baseUrl"], image_path, mask_path, prompt, task_id, workflow,
         on_progress, session,
+    )
+
+
+def _set_native_workflow_input(workflow, node_id, field, value):
+    node = workflow.get(str(node_id))
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    if not isinstance(inputs, dict) or field not in inputs:
+        raise ValueError("工作流缺少节点或输入")
+    inputs[field] = value
+
+
+async def run_native_workflow_on_instance(
+    base_url, image_path, mask_path, prompt, task_id, workflow,
+    image_node_id, mask_node_id, output_node_id, prompt_node_id, prompt_field,
+    extra_set_args, on_progress, session, max_attempts=180, poll_interval=1,
+):
+    """在指定云扉实例执行具有显式节点契约的原生 ComfyUI 工作流。"""
+    try:
+        on_progress("正在上传原图…")
+        source_name = await _upload_native_image(
+            session, base_url, image_path, "comfyps_" + str(task_id) + "_source.png"
+        )
+        native_workflow = copy.deepcopy(workflow)
+        _set_native_workflow_input(native_workflow, image_node_id, "image", source_name)
+
+        if mask_path is not None and mask_node_id:
+            on_progress("正在上传蒙版…")
+            mask_name = await _upload_native_image(
+                session, base_url, mask_path, "comfyps_" + str(task_id) + "_mask.png"
+            )
+            _set_native_workflow_input(native_workflow, mask_node_id, "image", mask_name)
+
+        if prompt and str(prompt).strip() and prompt_node_id and prompt_field:
+            _set_native_workflow_input(
+                native_workflow, prompt_node_id, prompt_field, str(prompt).strip()
+            )
+        apply_set_args(native_workflow, extra_set_args)
+        _set_native_workflow_input(
+            native_workflow, output_node_id, "filename_prefix",
+            "comfyps_aigate_" + str(task_id),
+        )
+    except (TypeError, ValueError, WorkflowInputError) as exc:
+        raise AigateNativeError(
+            "COMFYUI_WORKFLOW_INVALID", "ComfyUI 工作流节点或参数无效", 400
+        ) from exc
+
+    on_progress("正在提交 ComfyUI 工作流…")
+    submitted = await _native_json(
+        session,
+        "POST",
+        base_url.rstrip("/") + "/prompt",
+        {"prompt": native_workflow, "client_id": "comfyps_aigate_" + str(task_id)},
+    )
+    prompt_id = str(submitted.get("prompt_id") or "").strip()
+    if not prompt_id:
+        raise AigateNativeError("COMFYUI_PROMPT_MISSING", "ComfyUI 未返回 prompt_id")
+
+    history_url = base_url.rstrip("/") + "/history/" + prompt_id
+    for attempt in range(max_attempts):
+        on_progress("正在生成…")
+        history = await _native_json(session, "GET", history_url)
+        task = history.get(prompt_id) if isinstance(history, dict) else None
+        status = task.get("status") if isinstance(task, dict) else None
+        status_name = status.get("status_str") if isinstance(status, dict) else ""
+        if str(status_name or "").lower() in ("error", "failed"):
+            raise AigateNativeError(
+                "COMFYUI_WORKFLOW_FAILED", "ComfyUI 工作流执行失败", 502
+            )
+        outputs = task.get("outputs") if isinstance(task, dict) else None
+        node_output = outputs.get(str(output_node_id)) if isinstance(outputs, dict) else None
+        images = node_output.get("images") if isinstance(node_output, dict) else None
+        if isinstance(images, list) and images:
+            result = await _download_native_result(session, base_url, images[0])
+            on_progress("完成")
+            return result
+        if attempt + 1 < max_attempts:
+            await asyncio.sleep(poll_interval)
+    raise AigateNativeError("AIGATE_TIMEOUT", "ComfyUI 工作流超时", 504)
+
+
+async def run_native_workflow(
+    token, image_path, mask_path, prompt, task_id, workflow_path,
+    image_node_id, mask_node_id, output_node_id, prompt_node_id, prompt_field,
+    extra_set_args, on_progress, session, api_base=AIGATE_API_BASE,
+):
+    """发现云扉实例、读取指定工作流并执行通用原生 ComfyUI 任务。"""
+    on_progress("正在发现云扉实例…")
+    instance = await discover_running_comfyui_instance(token, session, api_base)
+    try:
+        workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError) as exc:
+        raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "无法读取 ComfyUI 工作流") from exc
+    if not isinstance(workflow, dict):
+        raise AigateNativeError("COMFYUI_WORKFLOW_INVALID", "ComfyUI 工作流格式无效")
+    return await run_native_workflow_on_instance(
+        instance["baseUrl"], image_path, mask_path, prompt, task_id, workflow,
+        image_node_id, mask_node_id, output_node_id, prompt_node_id, prompt_field,
+        extra_set_args, on_progress, session,
     )
 
 
