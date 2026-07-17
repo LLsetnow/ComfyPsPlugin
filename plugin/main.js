@@ -4166,6 +4166,10 @@ function requestAigateManagedClose() {
   }, 1500).catch(function () {});
 }
 
+function resetAigateManagedCloseForPanelShow() {
+  _aigateLifecycleCloseRequested = false;
+}
+
 function _applyGptImageAuthVisibility() {
   var auth = _segGet("segGptImageAuth") || "codex";
   var codexSettings = $("gptImageCodexSettings");
@@ -4714,7 +4718,9 @@ function saveAllSettings() {
   // UXP 正常隐藏面板和浏览器/Photoshop 正常卸载时，尽力关闭插件受管实例。
   // 强制退出、崩溃或断电无法保证网络请求完成，桥的 shutdown hook 会再尝试一次。
   document.addEventListener("uxpcommand", function (event) {
-    if (event && event.commandId === "uxphidepanel") requestAigateManagedClose();
+    if (!event) return;
+    if (event.commandId === "uxpshowpanel") resetAigateManagedCloseForPanelShow();
+    if (event.commandId === "uxphidepanel") requestAigateManagedClose();
   });
   if (typeof window !== "undefined" && window.addEventListener) {
     window.addEventListener("beforeunload", requestAigateManagedClose);

@@ -1069,18 +1069,20 @@ async def handle_logs(request):
     }))
 
 
+async def restart_after_aigate_cleanup():
+    """等待重启响应送达后清理受管实例，再原地替换桥进程。"""
+    await asyncio.sleep(0.3)
+    try:
+        await cleanup_managed_aigate_instances(None)
+    except Exception:
+        bridge_log("# 云扉重启清理失败", "error")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 async def handle_restart(request):
-    """重启桥进程: 用 os.execv 原地替换当前进程。"""
-    resp = cors(web.json_response({"ok": True, "message": "bridge restarting"}))
-
-    def _restart():
-        import time as _time
-        _time.sleep(0.3)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    import threading
-    threading.Thread(target=_restart, daemon=True).start()
-    return resp
+    """重启桥进程前尽力关闭受管云扉实例。"""
+    asyncio.create_task(restart_after_aigate_cleanup())
+    return cors(web.json_response({"ok": True, "message": "bridge restarting"}))
 
 
 async def handle_test_key(request):

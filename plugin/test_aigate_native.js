@@ -122,3 +122,11 @@ test("settings expose AIGate lifecycle controls and normal-exit cleanup", functi
   assert.match(source, /uxpcommand/);
   assert.match(source, /\/aigate\/close-managed/);
 });
+
+test("resets the AIGate close guard when a UXP panel is shown again", function () {
+  var context = loadAigateContext();
+  context._aigateLifecycleCloseRequested = true;
+  context.resetAigateManagedCloseForPanelShow();
+  assert.equal(context._aigateLifecycleCloseRequested, false);
+  assert.match(fs.readFileSync("plugin/main.js", "utf8"), /uxpshowpanel/);
+});

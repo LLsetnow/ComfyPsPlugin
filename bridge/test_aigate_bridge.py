@@ -143,6 +143,17 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         })
         close_instances.assert_awaited_once()
 
+    async def test_restart_runs_managed_instance_cleanup_before_exec(self):
+        with patch.object(
+            bridge, "cleanup_managed_aigate_instances", new=AsyncMock()
+        ) as cleanup, patch.object(
+            bridge.asyncio, "sleep", new=AsyncMock()
+        ), patch.object(bridge.os, "execv") as execv:
+            await bridge.restart_after_aigate_cleanup()
+
+        cleanup.assert_awaited_once_with(None)
+        execv.assert_called_once_with(bridge.sys.executable, [bridge.sys.executable] + bridge.sys.argv)
+
     async def test_runs_aigate_native_adapter_without_extra_set_args(self):
         png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\ninput").decode("ascii")
         with patch.object(
