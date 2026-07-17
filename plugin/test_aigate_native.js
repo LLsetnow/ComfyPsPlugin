@@ -103,6 +103,30 @@ test("settings include AIGate token and instance controls", function () {
   assert.match(html, /id="aigateInstanceList"/);
 });
 
+test("settings expose the AIGate auto-close toggle", function () {
+  var html = fs.readFileSync("plugin/index.html", "utf8");
+  var context = loadAigateContext();
+
+  assert.match(html, /id="settingAigateAutoCloseOnExit"/);
+  assert.match(html, /id="aigateAutoCloseStatus"/);
+  assert.equal(context.loadSettings().aigateAutoCloseOnExit, true);
+
+  context.saveSetting("aigateAutoCloseOnExit", "false");
+  assert.equal(context.loadSettings().aigateAutoCloseOnExit, false);
+});
+
+test("AIGate auto-close toggle status reflects its enabled state", function () {
+  var context = loadAigateContext();
+  var status = { textContent: "" };
+  context.$ = function (id) { return id === "aigateAutoCloseStatus" ? status : null; };
+
+  assert.equal(typeof context.updateAigateAutoCloseStatus, "function");
+  context.updateAigateAutoCloseStatus(true);
+  assert.equal(status.textContent, "已开启：关闭 Photoshop 时会向本地桥发送关闭请求。");
+  context.updateAigateAutoCloseStatus(false);
+  assert.equal(status.textContent, "已关闭：退出 Photoshop 时不关闭任何受管实例。");
+});
+
 test("README documents private AIGate create configuration and yuan UI values", function () {
   var readme = fs.readFileSync("README.md", "utf8");
 
@@ -619,6 +643,28 @@ test("settings expose AIGate lifecycle controls and normal-exit cleanup", functi
   assert.match(source, /释放/);
   assert.match(source, /uxpcommand/);
   assert.match(source, /\/aigate\/close-managed/);
+});
+
+test("AIGate close request honors the persisted auto-close setting", function () {
+  var context = loadAigateContext();
+  var calls = [];
+  context._getAigateToken = function () { return "token"; };
+  context.saveAigateLifecycle({ "i-1": { managed: true, pendingStart: false, startedAt: 1 } });
+  context.fetchWithTimeout = function (url, options) {
+    calls.push({ url: url, options: options });
+    return { catch: function () {} };
+  };
+
+  context.saveSetting("aigateAutoCloseOnExit", "false");
+  context.requestAigateManagedClose();
+  assert.equal(calls.length, 0);
+  assert.equal(context._aigateLifecycleCloseRequested, false);
+
+  context.saveSetting("aigateAutoCloseOnExit", "true");
+  context.requestAigateManagedClose();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8765/aigate/close-managed");
+  assert.match(calls[0].options.body, /"managedInstanceIds":\["i-1"\]/);
 });
 
 test("resets the AIGate close guard when a UXP panel is shown again", function () {

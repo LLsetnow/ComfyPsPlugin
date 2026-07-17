@@ -184,6 +184,8 @@
   if (rhLocalDebugChk) rhLocalDebugChk.addEventListener("change", saveAllSettings);
   var autoStartBridgeChk = $("settingAutoStartBridge");
   if (autoStartBridgeChk) autoStartBridgeChk.addEventListener("change", saveAllSettings);
+  var aigateAutoCloseOnExitChk = $("settingAigateAutoCloseOnExit");
+  if (aigateAutoCloseOnExitChk) aigateAutoCloseOnExitChk.addEventListener("change", saveAllSettings);
 
   var btnTestCodex = $("btnTestCodex");
   if (btnTestCodex) btnTestCodex.addEventListener("click", testGptImageAuth);

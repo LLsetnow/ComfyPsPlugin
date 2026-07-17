@@ -24,12 +24,15 @@ function renderSettings() {
   var bridgeInput = $("settingBridgeUrl");
   var comfyuiInput = $("settingComfyuiUrl");
   var aigateTokenInput = $("settingAigateToken");
+  var aigateAutoCloseOnExitInput = $("settingAigateAutoCloseOnExit");
   var gptImageApiKeyInput = $("settingGptImageApiKey");
   var gptImageLocalValidationInput = $("settingGptImageLocalValidation");
 
   if (bridgeInput) bridgeInput.value = s.bridgeUrl;
   if (comfyuiInput) comfyuiInput.value = s.comfyuiUrl;
   if (aigateTokenInput) aigateTokenInput.value = s.aigateToken;
+  if (aigateAutoCloseOnExitInput) aigateAutoCloseOnExitInput.checked = s.aigateAutoCloseOnExit;
+  updateAigateAutoCloseStatus(s.aigateAutoCloseOnExit);
   if (gptImageApiKeyInput) gptImageApiKeyInput.value = s.gptImageApiKey;
   if (gptImageLocalValidationInput) gptImageLocalValidationInput.checked = s.gptImageLocalValidation;
   var rhLocalDebugInput = $("settingRhLocalDebug");
@@ -67,6 +70,15 @@ function _applyBackendVisibility() {
 function _getAigateToken() {
   var input = $("settingAigateToken");
   return (input ? input.value : loadSettings().aigateToken).trim();
+}
+
+function updateAigateAutoCloseStatus(enabled) {
+  var status = $("aigateAutoCloseStatus");
+  if (status) {
+    status.textContent = enabled
+      ? "已开启：关闭 Photoshop 时会向本地桥发送关闭请求。"
+      : "已关闭：退出 Photoshop 时不关闭任何受管实例。";
+  }
 }
 
 function shouldShowAigateCreate(instances) {
@@ -696,6 +708,7 @@ async function controlAigateInstance(instanceId, action) {
 }
 
 function requestAigateManagedClose() {
+  if (!loadSettings().aigateAutoCloseOnExit) return;
   if (_aigateLifecycleCloseRequested) return;
   var token = _getAigateToken();
   var ids = managedAigateInstanceIds();
@@ -1238,6 +1251,7 @@ function saveAllSettings() {
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
   var autoStartBridge = !($("settingAutoStartBridge")) || !!$("settingAutoStartBridge").checked;
+  var aigateAutoCloseOnExit = !($("settingAigateAutoCloseOnExit")) || !!$("settingAigateAutoCloseOnExit").checked;
   var backend = _segGet("segBackend") || "runninghub";
   var gptImageAuth = _segGet("segGptImageAuth") || "codex";
   var cacheMode = _segGet("segCachePath") || "default";
@@ -1254,6 +1268,7 @@ function saveAllSettings() {
   saveSetting("backend", backend);
   saveSetting("comfyuiUrl", comfyuiUrl);
   saveSetting("aigateToken", aigateToken);
+  saveSetting("aigateAutoCloseOnExit", aigateAutoCloseOnExit ? "true" : "false");
   saveSetting("gptImageAuth", gptImageAuth);
   saveSetting("gptImageApiKey", gptImageApiKey);
   saveSetting("gptImageLocalValidation", gptImageLocalValidation ? "true" : "false");
@@ -1261,5 +1276,6 @@ function saveAllSettings() {
   saveSetting("autoStartBridge", autoStartBridge ? "true" : "false");
   saveSetting("theme", theme);
   saveSetting("cacheMode", cacheMode);
+  updateAigateAutoCloseStatus(aigateAutoCloseOnExit);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }
