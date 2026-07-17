@@ -564,20 +564,19 @@ async def handle_gpt_image_status(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "message": "OpenAI GPT Image API Key 可用（开发模拟）"})
 
 
-_mock_aigate_instances = [
-    {
-        "instanceId": "mock-running",
-        "instanceName": "Boogu ComfyUI（开发模拟）",
-        "operationStatus": "2",
-        "hasComfyui": True,
-    },
-    {
-        "instanceId": "mock-stopped",
-        "instanceName": "已关闭实例（开发模拟）",
-        "operationStatus": "7",
-        "hasComfyui": False,
-    },
+_MOCK_AIGATE_SKUS = [
+    {"skuName": "4090-24GB-DDR5", "vmSize": "24", "price": "199"},
+    {"skuName": "A100-80GB", "vmSize": "80", "price": "899"},
 ]
+
+# Keep the browser preview on the same empty-console path as a new account.
+_mock_aigate_instances = []
+
+
+def reset_mock_aigate_instances(instances=None):
+    """Replace mock instance state with copies for deterministic tests."""
+    global _mock_aigate_instances
+    _mock_aigate_instances = [dict(item) for item in (instances or [])]
 
 
 def _mock_aigate_ids(values):
@@ -590,6 +589,67 @@ def _mock_aigate_ids(values):
         if instance_id and instance_id not in result:
             result.append(instance_id)
     return result
+
+
+async def handle_aigate_account(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("aigateToken") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    return web.json_response({"ok": True, "balance": "12898", "updatedAt": 0})
+
+
+async def handle_aigate_create_options(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("aigateToken") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    return web.json_response({
+        "ok": True,
+        "options": [dict(item) for item in _MOCK_AIGATE_SKUS],
+        "updatedAt": 0,
+    })
+
+
+async def handle_aigate_create_instance(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("aigateToken") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    if _mock_aigate_instances:
+        return web.json_response({
+            "ok": False,
+            "error": "AIGATE_INSTANCE_EXISTS",
+            "message": "云扉控制台已有实例，不能重复创建",
+        }, status=409)
+
+    sku_name = str(body.get("skuName") or "").strip()
+    known_sku = False
+    for sku in _MOCK_AIGATE_SKUS:
+        if sku["skuName"] == sku_name:
+            known_sku = True
+            break
+    if not known_sku:
+        return web.json_response({
+            "ok": False,
+            "error": "AIGATE_SKU_INVALID",
+            "message": "请选择可用的 GPU 规格",
+        }, status=400)
+
+    instance = {
+        "instanceId": "mock-created-" + str(len(_mock_aigate_instances) + 1),
+        "instanceName": "ComfyUI（开发模拟）",
+        "operationStatus": "1",
+        "hasComfyui": True,
+    }
+    _mock_aigate_instances.append(instance)
+    return web.json_response({"ok": True, "instance": dict(instance)})
 
 
 async def handle_aigate_instances(request: web.Request) -> web.Response:
@@ -759,6 +819,9 @@ def main():
     app.router.add_post("/restart", handle_restart)
     app.router.add_post("/test-key", handle_test_key)
     app.router.add_post("/test-comfyui", handle_test_comfyui)
+    app.router.add_post("/aigate/account", handle_aigate_account)
+    app.router.add_post("/aigate/create-options", handle_aigate_create_options)
+    app.router.add_post("/aigate/create-instance", handle_aigate_create_instance)
     app.router.add_post("/aigate/instances", handle_aigate_instances)
     app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
     app.router.add_post("/aigate/close-managed", handle_aigate_close_managed)
