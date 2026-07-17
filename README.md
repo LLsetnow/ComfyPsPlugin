@@ -64,12 +64,14 @@ cp bridge/config.example.json bridge/config.json
 ```json
 "aigateCreate": {
   "areaName": "你的云扉区域名称",
-  "imageId": 123456,
-  "imageType": "2"
+  "imageName": "comfyui-boogu-edit-int8-20260716",
+  "imageTypes": ["3", "2"],
+  "imageId": "",
+  "imageType": ""
 }
 ```
 
-其中 `areaName` 是云扉区域名称，`imageId` 必须是已预设的 ComfyUI 镜像的数值 ID，`imageType` 固定为字符串 `"2"`。不要把真实区域或镜像配置提交到仓库；`bridge/config.json` 已被忽略。
+其中 `areaName` 是云扉区域名称。默认不填写 `imageId` 时，桥会按 `imageTypes` 的顺序精确匹配 `imageName`：默认先查当前云扉账号的个人镜像（`"3"`），找不到再查同名社区镜像（`"2"`）；两者都不可用时会拒绝创建。若要固定使用某个镜像，请同时填写该镜像的数值 `imageId` 和对应的 `imageType`（个人为 `"3"`、社区为 `"2"`），它们会覆盖自动解析。不要把真实区域或镜像配置提交到仓库；`bridge/config.json` 已被忽略。
 
 在设置页填写云扉 Bearer Token 后刷新实例。只有成功刷新并确认云扉控制台没有任何实例时，才会显示「创建实例」卡片；已有任意实例（包括已停止实例）都会隐藏该卡片。连接器中的余额与 GPU 规格价格由云扉以“分”返回；面板会把它们显示为人民币元（例如 `205` 显示为 `¥ 2.05`、`199` 显示为 `¥ 1.99`）。bridge 响应仍保留原始数值，界面不会推断额外的计费周期。
 

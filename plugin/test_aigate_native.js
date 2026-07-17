@@ -95,6 +95,10 @@ test("settings include AIGate token and instance controls", function () {
   var html = fs.readFileSync("plugin/index.html", "utf8");
   assert.match(html, /data-value="aigate"/);
   assert.match(html, /id="settingAigateToken"/);
+  assert.match(
+    html,
+    /<a id="linkGetAigateToken" class="link-sm" href="https:\/\/waas\.aigate\.cc\/user\/setting" target="_blank">如何获取 Bearer Token<\/a>/
+  );
   assert.match(html, /id="btnRefreshAigateInstances"/);
   assert.match(html, /id="aigateInstanceList"/);
 });
@@ -104,14 +108,26 @@ test("README documents private AIGate create configuration and yuan UI values", 
 
   assert.match(readme, /aigateCreate/);
   assert.match(readme, /areaName/);
-  assert.match(readme, /数值.*imageId|imageId.*数值/);
-  assert.match(readme, /imageType.*["']2["']/);
+  assert.match(readme, /imageName/);
+  assert.match(readme, /imageTypes/);
+  assert.match(readme, /个人镜像/);
+  assert.match(readme, /社区镜像/);
+  assert.match(readme, /imageId.*imageType|imageType.*imageId/);
   assert.match(readme, /bridge\/config\.example\.json/);
   assert.match(readme, /成功刷新.*没有.*实例|没有.*实例.*成功刷新/);
   assert.match(readme, /停止.*隐藏|已有实例.*隐藏/);
   assert.match(readme, /余额.*分.*人民币元|余额.*分.*元/);
   assert.match(readme, /GPU.*价格.*分.*人民币元|GPU.*价格.*分.*元/);
   assert.match(readme, /bridge.*原始.*数值|原始.*数值.*bridge/);
+});
+
+test("AIGate example config defaults to personal then community image lookup", function () {
+  var config = JSON.parse(fs.readFileSync("bridge/config.example.json", "utf8"));
+
+  assert.equal(config.aigateCreate.imageName, "comfyui-boogu-edit-int8-20260716");
+  assert.deepEqual(config.aigateCreate.imageTypes, ["3", "2"]);
+  assert.equal(config.aigateCreate.imageId, "");
+  assert.equal(config.aigateCreate.imageType, "");
 });
 
 test("settings expose AIGate account and conditional-create anchors", function () {

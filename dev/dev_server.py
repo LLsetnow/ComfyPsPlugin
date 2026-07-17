@@ -664,6 +664,7 @@ async def handle_aigate_create_instance(request: web.Request) -> web.Response:
         "instanceName": "ComfyUI（开发模拟）",
         "operationStatus": "1",
         "hasComfyui": True,
+        "imageType": "3",
     }
     _mock_aigate_instances.append(instance)
     return web.json_response({"ok": True, "instance": dict(instance)})

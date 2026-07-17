@@ -8,11 +8,13 @@
   "promptNodeId": "",
   "promptField": "text",
   "workflowFile": "../workflows/inpaint_api.json",
-  "_aigateCreate_comment": "创建云扉 ComfyUI 实例时填写；imageId 为预设 ComfyUI 镜像 ID。",
+  "_aigateCreate_comment": "创建云扉 ComfyUI 实例时填写；未填 imageId 时按 imageTypes 顺序查找 imageName，默认个人镜像(3)优先、同名社区镜像(2)兜底。",
   "aigateCreate": {
     "areaName": "",
+    "imageName": "comfyui-boogu-edit-int8-20260716",
+    "imageTypes": ["3", "2"],
     "imageId": "",
-    "imageType": "2"
+    "imageType": ""
   },
   "port": 8765
 }
