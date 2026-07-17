@@ -30,7 +30,7 @@
 
 ### GPU 和价格
 
-创建卡显示云扉实时可用 SKU 的单选列表。每行从左到右展示：选中状态、SKU/GPU 名称、显存或规格信息、价格。价格在确认页再次展示，格式由 bridge 生成的 `priceLabel` 提供；前端不自行猜测云扉 `price` 字段的单位或换算规则。
+创建卡显示云扉实时可用 SKU 的单选列表。每行从左到右展示：选中状态、SKU/GPU 名称、显存或规格信息、云扉返回的原始价格。价格在确认页再次展示；云扉参考文档没有定义 `price` 或 `balance` 的单位和周期，因此 bridge 与前端不得增加货币符号、除数或“每小时”等推断性文案。
 
 价格无法读取时，该规格显示“价格暂不可用”，且“继续”不可用；用户可刷新 SKU。这样不会用过期或含义不明的价格开始计费。
 
@@ -63,7 +63,7 @@
 | 面板端点 | bridge 访问的云扉 API | 返回给面板的数据 |
 | --- | --- | --- |
 | `POST /aigate/account` | `POST /user/balance` | `{ ok, balance, updatedAt }` |
-| `POST /aigate/create-options` | `GET /instance/skuList` | 过滤后的可用 SKU、`priceLabel`、刷新时间 |
+| `POST /aigate/create-options` | `GET /instance/skuList` | 过滤后的可用 SKU、原始 `price`、刷新时间 |
 | `POST /aigate/create-instance` | `POST /instance/start` | 标准化的实例摘要和创建状态 |
 
 `/aigate/instances` 的结果必须保留足以区分创建中、运行中、已停止和已释放的状态，用于严格控制创建卡的显示。开发预览的 mock API 镜像上述端点和状态转移。
@@ -89,7 +89,7 @@
 - 余额、SKU 和实例列表独立刷新；余额刷新不重载实例，实例轮询不重复请求 SKU。
 - 初次进入云扉设置、点击刷新、创建提交后和创建中轮询都会刷新实例状态；创建中按既有 10 秒实例刷新节奏观察状态。
 - 创建请求进行中锁定“确认创建”按钮；网络或 API 失败后解除锁定并保留用户所选 SKU。
-- 价格显示以 bridge 当前返回的 `priceLabel` 为准；创建确认使用同一 SKU，但最终计费以云扉创建接口为准。
+- 余额和价格显示以 bridge 返回的原始字段为准；创建确认使用同一 SKU，但最终计费以云扉创建接口为准。
 - Token 不从 bridge 响应回传；任何异常、日志和测试 fixture 均不包含真实 Token。
 
 ## 测试与验收
