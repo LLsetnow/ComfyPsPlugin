@@ -580,6 +580,18 @@ _mock_aigate_instances = [
 ]
 
 
+def _mock_aigate_ids(values):
+    """规范化开发 mock 接收的实例 ID 列表。"""
+    if not isinstance(values, list):
+        return []
+    result = []
+    for value in values:
+        instance_id = str(value or "").strip()
+        if instance_id and instance_id not in result:
+            result.append(instance_id)
+    return result
+
+
 async def handle_aigate_instances(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -587,7 +599,11 @@ async def handle_aigate_instances(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
     if not (body.get("aigateToken") or "").strip():
         return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
-    return web.json_response({"ok": True, "instances": _mock_aigate_instances})
+    instances = []
+    for instance in _mock_aigate_instances:
+        if instance["operationStatus"] != "4":
+            instances.append(dict(instance))
+    return web.json_response({"ok": True, "instances": instances})
 
 
 async def handle_aigate_instance_action(request: web.Request) -> web.Response:
@@ -599,14 +615,43 @@ async def handle_aigate_instance_action(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
     instance_id = str(body.get("instanceId") or "")
     action = str(body.get("action") or "").lower()
-    if action not in ("open", "close"):
+    if action not in ("open", "close", "release"):
         return web.json_response({"ok": False, "message": "云扉实例操作无效"}, status=400)
     for instance in _mock_aigate_instances:
         if instance["instanceId"] == instance_id:
-            instance["operationStatus"] = "2" if action == "open" else "7"
+            if action == "open":
+                instance["operationStatus"] = "2"
+            elif action == "close":
+                instance["operationStatus"] = "7"
+            else:
+                instance["operationStatus"] = "4"
             dev_log("  [mock 云扉] 实例=" + instance_id + " action=" + action)
             return web.json_response({"ok": True, "instanceId": instance_id, "action": action})
     return web.json_response({"ok": False, "message": "未找到云扉实例"}, status=404)
+
+
+async def handle_aigate_close_managed(request: web.Request) -> web.Response:
+    """开发模式模拟正常退出时关闭受管实例的端点。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "message": "请求体不是 JSON"}, status=400)
+    if not (body.get("aigateToken") or "").strip():
+        return web.json_response({"ok": False, "message": "请输入云扉 Bearer Token"}, status=400)
+    requested = _mock_aigate_ids(body.get("managedInstanceIds"))
+    closed = []
+    failed = []
+    for instance_id in requested:
+        matched = False
+        for instance in _mock_aigate_instances:
+            if instance["instanceId"] == instance_id and instance["operationStatus"] != "4":
+                instance["operationStatus"] = "7"
+                closed.append(instance_id)
+                matched = True
+                break
+        if not matched:
+            failed.append(instance_id)
+    return web.json_response({"ok": True, "closed": closed, "failed": failed})
 
 
 async def handle_run(request: web.Request) -> web.Response:
@@ -716,6 +761,7 @@ def main():
     app.router.add_post("/test-comfyui", handle_test_comfyui)
     app.router.add_post("/aigate/instances", handle_aigate_instances)
     app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
+    app.router.add_post("/aigate/close-managed", handle_aigate_close_managed)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)

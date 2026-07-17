@@ -173,6 +173,70 @@ var SETTINGS_KEYS = {
   autoStartBridge: "comfyps.autoStartBridge",
 };
 
+// 插件受管云扉实例的本地生命周期；只保存 ID 和本机观察到的开始时间，绝不保存 Token。
+var AIGATE_LIFECYCLE_STORAGE_KEY = "comfyps.aigateInstanceLifecycle.v1";
+
+function loadAigateLifecycle() {
+  var raw = localStorage.getItem(AIGATE_LIFECYCLE_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    var parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveAigateLifecycle(records) {
+  localStorage.setItem(AIGATE_LIFECYCLE_STORAGE_KEY, JSON.stringify(records || {}));
+}
+
+function managedAigateInstanceIds() {
+  var records = loadAigateLifecycle();
+  var ids = [];
+  for (var instanceId in records) {
+    if (Object.prototype.hasOwnProperty.call(records, instanceId) && records[instanceId].managed) {
+      ids.push(instanceId);
+    }
+  }
+  return ids;
+}
+
+function reconcileAigateLifecycle(instances) {
+  var records = loadAigateLifecycle();
+  var changed = false;
+  for (var i = 0; i < (instances || []).length; i++) {
+    var instance = instances[i] || {};
+    var record = records[String(instance.instanceId || "")];
+    if (record && record.managed && record.pendingStart
+      && String(instance.operationStatus) === "2") {
+      record.pendingStart = false;
+      record.startedAt = Date.now();
+      changed = true;
+    }
+  }
+  if (changed) saveAigateLifecycle(records);
+  return records;
+}
+
+function formatAigateRuntime(instanceId, now) {
+  var record = loadAigateLifecycle()[String(instanceId || "")];
+  if (!record || !record.managed || !record.startedAt) return "开始时间未知";
+  var timestamp = typeof now === "number" ? now : Date.now();
+  var seconds = Math.max(0, Math.floor((timestamp - record.startedAt) / 1000));
+  var hours = Math.floor(seconds / 3600);
+  var minutes = Math.floor((seconds % 3600) / 60);
+  var remain = seconds % 60;
+  function pad(value) { return value < 10 ? "0" + value : String(value); }
+  return "运行 " + pad(hours) + ":" + pad(minutes) + ":" + pad(remain);
+}
+
+function removeAigateLifecycle(instanceId) {
+  var records = loadAigateLifecycle();
+  delete records[String(instanceId || "")];
+  saveAigateLifecycle(records);
+}
+
 // =========================================================================
 // 工作队列全局状态
 // =========================================================================
@@ -1089,6 +1153,7 @@ function navigateTo(page) {
   } else if (pageName === "settings") {
     renderSettings();
   }
+  _syncAigateLifecycleTimers();
 }
 
 // =========================================================================
@@ -3893,6 +3958,8 @@ function renderSettings() {
   _applyCachePathVisibility();
   _refreshCachePathDisplay();
   renderRhCredentials();
+  if (s.backend === "aigate" && s.aigateToken) refreshAigateInstances();
+  _syncAigateLifecycleTimers();
 }
 
 function _applyBackendVisibility() {
@@ -3906,11 +3973,48 @@ function _applyBackendVisibility() {
   if (rhSettings) rhSettings.style.display = isComfyui || isAigate ? "none" : "block";
   if (comfyuiSettings) comfyuiSettings.style.display = isComfyui ? "block" : "none";
   if (aigateSettings) aigateSettings.style.display = isAigate ? "block" : "none";
+  _syncAigateLifecycleTimers();
 }
 
 function _getAigateToken() {
   var input = $("settingAigateToken");
   return (input ? input.value : loadSettings().aigateToken).trim();
+}
+
+var _aigateInstances = [];
+var _aigateRefreshTimer = 0;
+var _aigateRuntimeTimer = 0;
+var _aigateRefreshInFlight = false;
+var _aigateLifecycleCloseRequested = false;
+
+function _clearAigateLifecycleTimers() {
+  if (_aigateRefreshTimer) {
+    clearInterval(_aigateRefreshTimer);
+    _aigateRefreshTimer = 0;
+  }
+  if (_aigateRuntimeTimer) {
+    clearInterval(_aigateRuntimeTimer);
+    _aigateRuntimeTimer = 0;
+  }
+}
+
+function _syncAigateLifecycleTimers() {
+  var shouldRun = _currentPage === "settings" && _segGet("segBackend") === "aigate"
+    && managedAigateInstanceIds().length > 0;
+  if (!shouldRun) {
+    _clearAigateLifecycleTimers();
+    return;
+  }
+  if (!_aigateRefreshTimer) {
+    _aigateRefreshTimer = setInterval(function () {
+      refreshAigateInstances();
+    }, 10000);
+  }
+  if (!_aigateRuntimeTimer) {
+    _aigateRuntimeTimer = setInterval(function () {
+      if (_aigateInstances.length) _renderAigateInstances(_aigateInstances);
+    }, 1000);
+  }
 }
 
 function _renderAigateInstances(instances) {
@@ -3924,55 +4028,91 @@ function _renderAigateInstances(instances) {
   for (var i = 0; i < instances.length; i++) {
     (function (instance) {
       var row = document.createElement("div");
-      row.className = "input-row";
-      row.style.marginBottom = "6px";
-      var label = document.createElement("div");
-      label.className = "setting-hint";
-      label.style.flex = "1";
-      var status = instance.operationStatus === "2" ? "运行中" : "状态 " + (instance.operationStatus || "未知");
-      label.textContent = (instance.instanceName || "未命名实例") + " · " + instance.instanceId + " · "
-        + status + (instance.hasComfyui ? " · 已发现 ComfyUI" : " · 未发现 ComfyUI");
-      row.appendChild(label);
-      var action = instance.operationStatus === "2" ? "close"
-        : (instance.operationStatus === "7" || instance.operationStatus === "22" ? "open" : "");
-      if (action) {
+      row.className = "aigate-instance-row";
+      var meta = document.createElement("div");
+      meta.className = "aigate-instance-meta";
+      var operationStatus = String(instance.operationStatus || "");
+      var status = operationStatus === "2" ? "运行中"
+        : (operationStatus === "7" || operationStatus === "22" ? "已停止"
+          : (operationStatus === "4" ? "已释放" : "状态 " + (operationStatus || "未知")));
+      var title = document.createElement("div");
+      title.className = "aigate-instance-title";
+      title.textContent = (instance.instanceName || "未命名实例") + " · " + status;
+      meta.appendChild(title);
+      var detail = document.createElement("div");
+      detail.className = "setting-hint";
+      detail.textContent = instance.instanceId + (instance.hasComfyui ? " · 已发现 ComfyUI" : " · 未发现 ComfyUI");
+      meta.appendChild(detail);
+      var runtime = document.createElement("div");
+      runtime.className = "aigate-runtime";
+      runtime.textContent = operationStatus === "2" ? formatAigateRuntime(instance.instanceId)
+        : (operationStatus === "7" || operationStatus === "22" ? "已停止"
+          : (operationStatus === "4" ? "已释放" : "状态变更中"));
+      meta.appendChild(runtime);
+      row.appendChild(meta);
+
+      var actions = document.createElement("div");
+      actions.className = "aigate-instance-actions";
+      function addAction(action, label, danger) {
         var button = document.createElement("button");
-        button.className = action === "close" ? "btn-sm btn-danger" : "btn-sm";
-        button.textContent = action === "close" ? "关闭" : "启动";
+        button.className = danger ? "btn-sm btn-danger" : "btn-sm";
+        button.textContent = label;
         button.addEventListener("click", function () {
           controlAigateInstance(instance.instanceId, action);
         });
-        row.appendChild(button);
+        actions.appendChild(button);
       }
+      if (operationStatus === "2") {
+        addAction("close", "关闭", false);
+        addAction("release", "释放", true);
+      } else if (operationStatus === "7" || operationStatus === "22") {
+        addAction("open", "启动", false);
+        addAction("release", "释放", true);
+      }
+      if (actions.childNodes.length) row.appendChild(actions);
       container.appendChild(row);
     })(instances[i]);
   }
 }
 
 async function refreshAigateInstances() {
+  if (_aigateRefreshInFlight) return;
   var token = _getAigateToken();
   var container = $("aigateInstanceList");
   if (!token) {
     if (container) container.textContent = "请输入云扉 Bearer Token";
     return;
   }
+  _aigateRefreshInFlight = true;
   var settings = loadSettings();
   try {
     var response = await fetchWithTimeout(
       settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/instances",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aigateToken: token }) },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aigateToken: token, managedInstanceIds: managedAigateInstanceIds() })
+      },
       15000
     );
+    if (!response.ok) throw new Error("桥服务返回 HTTP " + response.status);
     var data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.message || "读取云扉实例失败");
-    _renderAigateInstances(data.instances || []);
+    if (!data || !data.ok) throw new Error((data && data.message) || "读取云扉实例失败");
+    _aigateInstances = data.instances || [];
+    reconcileAigateLifecycle(_aigateInstances);
+    _renderAigateInstances(_aigateInstances);
+    _syncAigateLifecycleTimers();
   } catch (e) {
     if (container) container.textContent = "读取云扉实例失败：" + (e && e.message ? e.message : e);
+  } finally {
+    _aigateRefreshInFlight = false;
   }
 }
 
 async function controlAigateInstance(instanceId, action) {
   if (action === "close" && typeof confirm === "function" && !confirm("确定关闭此云扉实例吗？")) return;
+  if (action === "release" && typeof confirm === "function"
+    && !confirm("释放实例后将无法恢复，是否继续？")) return;
   var token = _getAigateToken();
   if (!token) { showToast("请输入云扉 Bearer Token"); return; }
   var settings = loadSettings();
@@ -3986,13 +4126,48 @@ async function controlAigateInstance(instanceId, action) {
       },
       15000
     );
+    if (!response.ok) throw new Error("桥服务返回 HTTP " + response.status);
     var data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.message || "云扉实例操作失败");
-    showToast(action === "close" ? "云扉实例正在关闭" : "云扉实例正在启动");
+    if (!data || !data.ok) throw new Error((data && data.message) || "云扉实例操作失败");
+    if (action === "open") {
+      var records = loadAigateLifecycle();
+      records[String(instanceId)] = { managed: true, pendingStart: true, startedAt: 0 };
+      saveAigateLifecycle(records);
+    } else if (action === "release") {
+      removeAigateLifecycle(instanceId);
+    }
+    showToast(action === "close" ? "云扉实例正在关闭"
+      : (action === "release" ? "云扉实例正在释放" : "云扉实例正在启动"));
     await refreshAigateInstances();
+    _syncAigateLifecycleTimers();
   } catch (e) {
     showToast("云扉实例操作失败：" + (e && e.message ? e.message : e));
   }
+}
+
+function requestAigateManagedClose() {
+  if (_aigateLifecycleCloseRequested) return;
+  var token = _getAigateToken();
+  var ids = managedAigateInstanceIds();
+  if (!token || !ids.length) return;
+  _aigateLifecycleCloseRequested = true;
+  var bridgeInput = $("settingBridgeUrl");
+  var bridgeUrl = bridgeInput ? bridgeInput.value : loadSettings().bridgeUrl;
+  var url = String(bridgeUrl || "").replace(/\/+$/, "") + "/aigate/close-managed";
+  var body = JSON.stringify({ aigateToken: token, managedInstanceIds: ids });
+  if (typeof navigator !== "undefined" && navigator.sendBeacon && typeof Blob === "function") {
+    var sent = navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+    if (sent) return;
+  }
+  fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body
+  }, 1500).catch(function () {});
+}
+
+function resetAigateManagedCloseForPanelShow() {
+  _aigateLifecycleCloseRequested = false;
 }
 
 function _applyGptImageAuthVisibility() {
@@ -4539,6 +4714,17 @@ function saveAllSettings() {
 (function init() {
   // 尽早捕获 UXP 控制台输出，确保初始化和后续运行日志都能显示。
   installLogCapture();
+
+  // UXP 正常隐藏面板和浏览器/Photoshop 正常卸载时，尽力关闭插件受管实例。
+  // 强制退出、崩溃或断电无法保证网络请求完成，桥的 shutdown hook 会再尝试一次。
+  document.addEventListener("uxpcommand", function (event) {
+    if (!event) return;
+    if (event.commandId === "uxpshowpanel") resetAigateManagedCloseForPanelShow();
+    if (event.commandId === "uxphidepanel") requestAigateManagedClose();
+  });
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("beforeunload", requestAigateManagedClose);
+  }
 
   // ---- 全局 Top Bar 导航 ----
   var topTabs = document.querySelectorAll(".topbar-tab");

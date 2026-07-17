@@ -106,12 +106,12 @@ async def list_instance_summaries(token, session, api_base=AIGATE_API_BASE):
 
 
 async def control_aigate_instance(token, instance_id, action, session, api_base=AIGATE_API_BASE):
-    """请求云扉启动或关闭指定实例，不回传云扉响应中的未知字段。"""
+    """请求云扉启动、关闭或释放指定实例，不回传未知响应字段。"""
     instance = str(instance_id or "").strip()
     operation = str(action or "").strip().lower()
     if not instance:
         raise AigateNativeError("AIGATE_INSTANCE_REQUIRED", "请选择云扉实例", 400)
-    if operation not in ("open", "close"):
+    if operation not in ("open", "close", "release"):
         raise AigateNativeError("AIGATE_ACTION_INVALID", "云扉实例操作无效", 400)
     await _aigate_json(
         session,
@@ -120,6 +120,27 @@ async def control_aigate_instance(token, instance_id, action, session, api_base=
         token,
     )
     return {"instanceId": instance, "action": operation}
+
+
+async def close_aigate_instances(token, instance_ids, session, api_base=AIGATE_API_BASE):
+    """并发关闭去重后的实例，汇总成功和失败 ID，不暴露远端错误细节。"""
+    ids = []
+    for instance_id in instance_ids or []:
+        value = str(instance_id or "").strip()
+        if value and value not in ids:
+            ids.append(value)
+    tasks = [
+        control_aigate_instance(token, instance_id, "close", session, api_base)
+        for instance_id in ids
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    summary = {"closed": [], "failed": []}
+    for instance_id, result in zip(ids, results):
+        if isinstance(result, Exception):
+            summary["failed"].append(instance_id)
+        else:
+            summary["closed"].append(instance_id)
+    return summary
 
 
 async def get_instance_detail(token, instance_id, session, api_base=AIGATE_API_BASE):

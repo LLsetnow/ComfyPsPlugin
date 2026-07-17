@@ -113,8 +113,22 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                 },
             })
 
+        async def control_instance(request):
+            instance_id = request.query.get("instanceId")
+            action = request.match_info["action"]
+            self.requests.append({
+                "kind": "instance-control",
+                "headers": dict(request.headers),
+                "instanceId": instance_id,
+                "action": action,
+            })
+            if instance_id == "two":
+                return web.json_response({"code": 1, "message": "not available"})
+            return web.json_response({"code": 0, "data": {"instanceId": instance_id}})
+
         app.router.add_post("/instance/page", list_instances)
         app.router.add_get("/instance/get", get_instance)
+        app.router.add_get("/instance/{action}", control_instance)
 
         async def upload_image(request):
             reader = await request.multipart()
@@ -230,6 +244,29 @@ class AigateNativeHttpTests(unittest.IsolatedAsyncioTestCase):
                 await list_running_instances("demo-token", short_session, self.api_base)
 
         self.assertEqual(raised.exception.code, "AIGATE_TIMEOUT")
+
+    async def test_releases_named_instance_with_bearer_token(self):
+        from bridge.aigate_native import control_aigate_instance
+
+        actual = await control_aigate_instance(
+            "demo-token", "released", "release", self.session, self.api_base
+        )
+
+        self.assertEqual(actual, {"instanceId": "released", "action": "release"})
+        request = [item for item in self.requests if item.get("kind") == "instance-control"][-1]
+        self.assertEqual(request["instanceId"], "released")
+        self.assertEqual(request["headers"]["Authorization"], "Bearer demo-token")
+
+    async def test_closes_managed_instances_without_stopping_after_one_failure(self):
+        from bridge.aigate_native import close_aigate_instances
+
+        actual = await close_aigate_instances(
+            "demo-token", ["one", "two", "one", ""], self.session, self.api_base
+        )
+
+        self.assertEqual(actual, {"closed": ["one"], "failed": ["two"]})
+        requests = [item for item in self.requests if item.get("kind") == "instance-control"]
+        self.assertEqual([item["instanceId"] for item in requests], ["one", "two"])
 
     async def test_runs_native_comfyui_without_authorization_header(self):
         from bridge.aigate_native import run_native_inpaint_on_instance

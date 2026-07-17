@@ -35,13 +35,13 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, FormData, web
 
 try:
     from aigate_native import (
-        AigateNativeError, control_aigate_instance, list_instance_summaries,
-        run_native_inpaint,
+        AigateNativeError, close_aigate_instances, control_aigate_instance,
+        list_instance_summaries, run_native_inpaint,
     )
 except ImportError:
     from bridge.aigate_native import (
-        AigateNativeError, control_aigate_instance, list_instance_summaries,
-        run_native_inpaint,
+        AigateNativeError, close_aigate_instances, control_aigate_instance,
+        list_instance_summaries, run_native_inpaint,
     )
 
 BRIDGE_DIR = Path(__file__).resolve().parent
@@ -87,6 +87,8 @@ _pending_gpt_image_cancellations: set[str] = set()
 # RunningHub 任务取消事件：task_id -> threading.Event
 _rh_cancel_events: dict[str, threading.Event] = {}
 _GPT_TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# 仅在桥进程内保存插件受管实例所需的 Token。进程退出即清空，绝不写入日志或磁盘。
+_aigate_managed_tokens: dict[str, str] = {}
 
 CODEX_IMAGE_TIMEOUT_SECONDS = 180
 CODEX_IMAGE_MAX_INPUT_BYTES = 45 * 1024 * 1024
@@ -1067,18 +1069,20 @@ async def handle_logs(request):
     }))
 
 
+async def restart_after_aigate_cleanup():
+    """等待重启响应送达后清理受管实例，再原地替换桥进程。"""
+    await asyncio.sleep(0.3)
+    try:
+        await cleanup_managed_aigate_instances(None)
+    except Exception:
+        bridge_log("# 云扉重启清理失败", "error")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 async def handle_restart(request):
-    """重启桥进程: 用 os.execv 原地替换当前进程。"""
-    resp = cors(web.json_response({"ok": True, "message": "bridge restarting"}))
-
-    def _restart():
-        import time as _time
-        _time.sleep(0.3)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    import threading
-    threading.Thread(target=_restart, daemon=True).start()
-    return resp
+    """重启桥进程前尽力关闭受管云扉实例。"""
+    asyncio.create_task(restart_after_aigate_cleanup())
+    return cors(web.json_response({"ok": True, "message": "bridge restarting"}))
 
 
 async def handle_test_key(request):
@@ -1182,6 +1186,7 @@ async def handle_aigate_instances(request):
         return cors(web.json_response(
             {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
             status=400))
+    _sync_aigate_managed_instances(token, body.get("managedInstanceIds"))
     try:
         async with ClientSession(timeout=ClientTimeout(total=15)) as session:
             instances = await list_instance_summaries(token, session)
@@ -1192,7 +1197,7 @@ async def handle_aigate_instances(request):
 
 
 async def handle_aigate_instance_action(request):
-    """启动或关闭设置页指定的云扉实例。"""
+    """启动、关闭或释放设置页指定的云扉实例。"""
     try:
         body = await request.json()
     except Exception:
@@ -1208,10 +1213,71 @@ async def handle_aigate_instance_action(request):
     try:
         async with ClientSession(timeout=ClientTimeout(total=15)) as session:
             result = await control_aigate_instance(token, instance_id, action, session)
+        if result["action"] == "open":
+            _sync_aigate_managed_instances(token, [result["instanceId"]])
+        elif result["action"] == "release":
+            _aigate_managed_tokens.pop(result["instanceId"], None)
         return cors(web.json_response({"ok": True, **result}))
     except AigateNativeError as e:
         return cors(web.json_response(
             {"ok": False, "error": e.code, "message": e.message}, status=e.status))
+
+
+def _managed_aigate_ids(values):
+    """规范化面板传来的受管实例 ID，拒绝非数组值。"""
+    if not isinstance(values, list):
+        return []
+    result = []
+    for value in values:
+        instance_id = str(value or "").strip()
+        if instance_id and instance_id not in result:
+            result.append(instance_id)
+    return result
+
+
+def _sync_aigate_managed_instances(token, instance_ids):
+    """把当前面板已知的受管实例与 Token 只登记在本进程内。"""
+    for instance_id in _managed_aigate_ids(instance_ids):
+        _aigate_managed_tokens[instance_id] = token
+
+
+async def handle_aigate_close_managed(request):
+    """正常关闭插件时尽力关闭该面板登记的云扉实例，不释放实例。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return cors(web.json_response(
+            {"ok": False, "error": "BAD_JSON", "message": "请求体不是 JSON"}, status=400))
+    token = (body.get("aigateToken") or "").strip()
+    if not token:
+        return cors(web.json_response(
+            {"ok": False, "error": "AIGATE_TOKEN_REQUIRED", "message": "请输入云扉 Bearer Token"},
+            status=400))
+    instance_ids = _managed_aigate_ids(body.get("managedInstanceIds"))
+    _sync_aigate_managed_instances(token, instance_ids)
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+            result = await close_aigate_instances(token, instance_ids, session)
+        return cors(web.json_response({"ok": True, **result}))
+    except AigateNativeError as e:
+        return cors(web.json_response(
+            {"ok": False, "error": e.code, "message": e.message}, status=e.status))
+
+
+async def cleanup_managed_aigate_instances(app):
+    """桥正常 shutdown 时按 Token 分组并发关闭所有内存登记的实例。"""
+    grouped = {}
+    for instance_id, token in list(_aigate_managed_tokens.items()):
+        grouped.setdefault(token, []).append(instance_id)
+    _aigate_managed_tokens.clear()
+    if not grouped:
+        return
+    async with ClientSession(timeout=ClientTimeout(total=15)) as session:
+        for token, instance_ids in grouped.items():
+            try:
+                await close_aigate_instances(token, instance_ids, session)
+            except Exception:
+                bridge_log("# 云扉退出清理失败", "error")
 
 
 def _check_account_single(api_key: str, site: str, status_url: str) -> dict:
@@ -1751,6 +1817,8 @@ def main():
     app.router.add_post("/test-comfyui", handle_test_comfyui)
     app.router.add_post("/aigate/instances", handle_aigate_instances)
     app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
+    app.router.add_post("/aigate/close-managed", handle_aigate_close_managed)
+    app.on_shutdown.append(cleanup_managed_aigate_instances)
     app.router.add_get("/codex/status", handle_codex_status)
     app.router.add_post("/codex/image", handle_codex_image)
     app.router.add_post("/gpt-image", handle_gpt_image)

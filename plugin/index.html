@@ -552,6 +552,23 @@
       word-break: break-all;
     }
     .input-row .setting-hint { flex: 1; margin-top: 0; }
+    .aigate-instance-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .aigate-instance-row:last-child { border-bottom: none; }
+    .aigate-instance-meta { flex: 1; min-width: 0; }
+    .aigate-instance-title {
+      color: var(--text);
+      font-size: 10.5px;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+    .aigate-runtime { margin-top: 3px; color: var(--accent); font-size: 10px; }
+    .aigate-instance-actions { display: flex; flex-shrink: 0; gap: 5px; }
 
     /* ---- Segmented control (two-state selector) ---- */
     .segmented {
