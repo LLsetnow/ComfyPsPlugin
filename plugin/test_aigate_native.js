@@ -210,10 +210,220 @@ test("a malformed AIGate list response never reveals create options", async func
   assert.match(container.textContent, /读取云扉实例失败/);
 });
 
+test("a pending AIGate options response cannot restore create after a list failure", async function () {
+  var context = loadAigateContext();
+  var container = { textContent: "" };
+  var renders = [];
+  var resolveOptions;
+  var optionsPromise = new Promise(function (resolve) { resolveOptions = resolve; });
+  var instanceReads = 0;
+  context._getAigateToken = function () { return "token"; };
+  context.$ = function () { return container; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context._renderAigateInstances = function (instances) { renders.push(instances); };
+  context._syncAigateLifecycleTimers = function () {};
+  context.refreshAigateAccount = function () {};
+  context.fetchWithTimeout = function (url) {
+    if (url.indexOf("/aigate/instances") !== -1) {
+      instanceReads += 1;
+      if (instanceReads === 1) {
+        return Promise.resolve({
+          ok: true,
+          json: function () { return Promise.resolve({ ok: true, instances: [] }); },
+        });
+      }
+      return Promise.resolve({ ok: false, status: 503 });
+    }
+    if (url.indexOf("/aigate/create-options") !== -1) return optionsPromise;
+    throw new Error("unexpected request " + url);
+  };
+
+  await context.refreshAigateInstances();
+  await context.refreshAigateInstances();
+  var rendersAfterFailure = renders.length;
+  resolveOptions({
+    ok: true,
+    json: function () {
+      return Promise.resolve({
+        ok: true,
+        options: [{ skuName: "4090", vmSize: "24", price: "199" }],
+      });
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(context._aigateInstancesConfirmed, false);
+  assert.equal(renders.length, rendersAfterFailure);
+  assert.match(container.textContent, /读取云扉实例失败/);
+});
+
+test("a newer confirmed empty AIGate list retries after a stale options request settles", async function () {
+  var context = loadAigateContext();
+  var container = { textContent: "" };
+  var resolveOldOptions;
+  var oldOptions = new Promise(function (resolve) { resolveOldOptions = resolve; });
+  var instanceReads = 0;
+  var optionReads = 0;
+  context._getAigateToken = function () { return "token"; };
+  context.$ = function () { return container; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context._renderAigateInstances = function () {};
+  context._syncAigateLifecycleTimers = function () {};
+  context.refreshAigateAccount = function () {};
+  context.fetchWithTimeout = function (url) {
+    if (url.indexOf("/aigate/instances") !== -1) {
+      instanceReads += 1;
+      if (instanceReads === 2) return Promise.resolve({ ok: false, status: 503 });
+      return Promise.resolve({
+        ok: true,
+        json: function () { return Promise.resolve({ ok: true, instances: [] }); },
+      });
+    }
+    if (url.indexOf("/aigate/create-options") !== -1) {
+      optionReads += 1;
+      if (optionReads === 1) return oldOptions;
+      return Promise.resolve({
+        ok: true,
+        json: function () {
+          return Promise.resolve({
+            ok: true,
+            options: [{ skuName: "5090", vmSize: "32", price: "299" }],
+          });
+        },
+      });
+    }
+    throw new Error("unexpected request " + url);
+  };
+
+  await context.refreshAigateInstances();
+  await context.refreshAigateInstances();
+  await context.refreshAigateInstances();
+  resolveOldOptions({
+    ok: true,
+    json: function () {
+      return Promise.resolve({
+        ok: true,
+        options: [{ skuName: "4090", vmSize: "24", price: "199" }],
+      });
+    },
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise(function (resolve) { setTimeout(resolve, 0); });
+
+  assert.equal(optionReads, 2);
+  assert.equal(context._aigateSkuOptions[0].skuName, "5090");
+});
+
+test("a list response for an old AIGate token cannot unlock creation for a new token", async function () {
+  var context = loadAigateContext();
+  var container = { textContent: "" };
+  var currentToken = "token-a";
+  var resolveList;
+  var listPromise = new Promise(function (resolve) { resolveList = resolve; });
+  var followUps = [];
+  context._getAigateToken = function () { return currentToken; };
+  context.$ = function () { return container; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () { return listPromise; };
+  context._renderAigateInstances = function () {
+    throw new Error("old-token list must not render");
+  };
+  context._syncAigateLifecycleTimers = function () {};
+  context.refreshAigateAccount = function () { followUps.push("account"); };
+  context.refreshAigateCreateOptions = function () { followUps.push("options"); };
+
+  var request = context.refreshAigateInstances();
+  currentToken = "token-b";
+  resolveList({
+    ok: true,
+    json: function () { return Promise.resolve({ ok: true, instances: [] }); },
+  });
+  await request;
+
+  assert.equal(context._aigateInstancesConfirmed, false);
+  assert.deepEqual(followUps, []);
+  assert.match(container.textContent, /凭证已变更/);
+});
+
+test("a failed AIGate create shows the bridge error message for retry", async function () {
+  var context = loadAigateContext();
+  var rendered = [];
+  context._aigateInstances = [];
+  context._aigateInstancesConfirmed = true;
+  context._aigateConfirmedToken = "token";
+  context._aigateSkuOptions = [{ skuName: "4090-24GB-DDR5", vmSize: "24", price: "199" }];
+  context._aigateSelectedSkuName = "4090-24GB-DDR5";
+  context._aigateCreateState = "confirm";
+  context._getAigateToken = function () { return "token"; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () {
+    return Promise.resolve({
+      ok: false,
+      status: 409,
+      json: function () {
+        return Promise.resolve({
+          ok: false,
+          error: "AIGATE_INSTANCE_EXISTS",
+          message: "云扉控制台已有实例，不能重复创建",
+        });
+      },
+    });
+  };
+  context._renderAigateInstances = function (instances) { rendered.push(instances); };
+
+  await context.submitAigateCreate();
+
+  assert.equal(context._aigateCreateState, "confirm");
+  assert.equal(context._aigateSelectedSkuName, "4090-24GB-DDR5");
+  assert.match(context._aigateCreateError, /已有实例，不能重复创建/);
+  assert.equal(rendered.length, 2);
+});
+
+test("a completed create for an old AIGate token cannot populate a newer token console", async function () {
+  var context = loadAigateContext();
+  var currentToken = "token-a";
+  var resolveCreate;
+  var createPromise = new Promise(function (resolve) { resolveCreate = resolve; });
+  context._aigateInstances = [];
+  context._aigateInstancesConfirmed = true;
+  context._aigateConfirmedToken = "token-a";
+  context._aigateSkuOptions = [{ skuName: "4090-24GB-DDR5", vmSize: "24", price: "199" }];
+  context._aigateSelectedSkuName = "4090-24GB-DDR5";
+  context._aigateCreateState = "confirm";
+  context._getAigateToken = function () { return currentToken; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.fetchWithTimeout = function () { return createPromise; };
+  context._renderAigateInstances = function () {};
+  context._syncAigateLifecycleTimers = function () {};
+
+  var request = context.submitAigateCreate();
+  currentToken = "token-b";
+  resolveCreate({
+    ok: true,
+    json: function () {
+      return Promise.resolve({
+        ok: true,
+        instance: { instanceId: "created-a", operationStatus: "1", hasComfyui: true },
+      });
+    },
+  });
+  await request;
+
+  assert.equal(context._aigateInstancesConfirmed, false);
+  assert.equal(JSON.stringify(context._aigateInstances), "[]");
+  assert.equal(context._aigateCreateState, "idle");
+});
+
 test("creating an AIGate instance adopts the response and starts managed lifecycle", async function () {
   var context = loadAigateContext();
   var rendered = [];
   context._aigateInstances = [];
+  context._aigateInstancesConfirmed = true;
+  context._aigateConfirmedToken = "token";
   context._aigateSkuOptions = [{ skuName: "4090-24GB-DDR5", vmSize: "24", price: "199" }];
   context._aigateSelectedSkuName = "4090-24GB-DDR5";
   context._aigateCreateState = "confirm";
