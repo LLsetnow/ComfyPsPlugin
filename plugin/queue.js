@@ -924,6 +924,11 @@ async function _placeImageBytesAsLayer(arrayBuffer, layerName, placement, reveal
       await batchPlay(commands, {});
       var placedResultLayer = app.activeDocument && app.activeDocument.activeLayers && app.activeDocument.activeLayers[0];
       var placedResultLayerId = placedResultLayer && placedResultLayer.id;
+      // 图像高清的放大结果可能比输入选区更大。placeEvent 默认按中心
+      // 对齐，若不修正会使结果向左上漂移；该路径明确以原选区左上角落点。
+      if (placement && placement.alignToTopLeft) {
+        await _alignPlacedLayerToPosition(placedResultLayer, placement.left, placement.top);
+      }
       if (revealSelection) {
         // GPT Image and RunningHub inpaint may return a different resolution,
         // so scale the result to its intended Photoshop canvas before applying
@@ -1053,4 +1058,3 @@ async function _applyOutputMaskToLayer(resultLayerId, maskToken, offsetX, offset
     _options: noDialog,
   }], {});
 }
-

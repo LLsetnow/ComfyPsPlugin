@@ -396,6 +396,17 @@ function _parseSelectionBounds(result) {
   return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
 }
 
+// 与 _parseSelectionBounds 不同，这个辅助函数把“没有选区”视为正常结果。
+// 图像高清允许直接处理完整活动图层，因此调用方需要能无异常地区分两种情况。
+function _selectionBoundsOrNull(result) {
+  var selection = result && (result.selection || result);
+  if (!selection || selection.top === undefined || selection.left === undefined ||
+      selection.right === undefined || selection.bottom === undefined) {
+    return null;
+  }
+  return _parseSelectionBounds(result);
+}
+
 // Photoshop 的选区边界可能带有小数像素，且极少数情况下会延伸到画布外。
 // 上传裁切图时必须把图层和蒙版裁到同一个整数矩形，否则返图缩放后会出现
 // 一像素偏移或蒙版尺寸不一致。向外取整可以保证整个选区都被保留。
@@ -458,6 +469,31 @@ async function _readSelectionBounds() {
     {}
   );
   return _parseSelectionBounds(result && result[0]);
+}
+
+// 部分 Photoshop 版本会在没有选区的 get 请求上直接抛错，另一些版本会
+// 返回没有边界字段的 descriptor。两种都应当走“完整图层”分支。
+async function _readSelectionBoundsIfAny() {
+  try {
+    var doc = app.activeDocument;
+    if (doc && doc.selection && doc.selection.bounds) {
+      return _selectionBoundsOrNull(doc.selection.bounds);
+    }
+    var result = await batchPlay(
+      [{
+        _obj: "get",
+        _target: [
+          { _property: "selection" },
+          { _ref: "document", _enum: "ordinal", _value: "targetEnum" },
+        ],
+        _options: { dialogOptions: "dontDisplay" },
+      }],
+      {}
+    );
+    return _selectionBoundsOrNull(result && result[0]);
+  } catch (_) {
+    return null;
+  }
 }
 
 function _activeLayerId() {
@@ -588,7 +624,7 @@ function _padGrayToRect(data, comps, srcW, srcH, offLeft, offTop, bounds, fillVa
 async function _exportActiveLayerSelectionViaImaging(bounds) {
   var docId = _activeDocId();
   var layerId = Number(_activeLayerId());
-  if (!bounds) bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
+  bounds = _normalizeSelectionCropBounds(bounds || await _readSelectionBounds());
   var rgba = null;
   // imaging 读取需要 modal 作用域，但 executeAsModal 本身不切换/复制文档，因此不会闪切。
   await executeAsModal(async function () {
@@ -657,10 +693,10 @@ async function _exportSelectionMaskViaImaging(forGptImage, keepSelectionSnapshot
   return maskB64;
 }
 
-async function exportActiveLayerSelectionPNG() {
+async function exportActiveLayerSelectionPNG(bounds) {
   if (_imagingCropSupported()) {
     try {
-      return await _exportActiveLayerSelectionViaImaging();
+      return await _exportActiveLayerSelectionViaImaging(bounds);
     } catch (e) {
       addLogEntry("warn", "imaging 图层导出失败，回退复制文档(会闪切): " +
         (e && e.message ? e.message : e), "插件");
@@ -668,17 +704,17 @@ async function exportActiveLayerSelectionPNG() {
   } else {
     addLogEntry("warn", "当前宿主无 imaging.getPixels/getSelection，使用复制文档导出(会闪切)", "插件");
   }
-  return await _exportActiveLayerSelectionViaDuplicate();
+  return await _exportActiveLayerSelectionViaDuplicate(bounds);
 }
 
-async function _exportActiveLayerSelectionViaDuplicate() {
+async function _exportActiveLayerSelectionViaDuplicate(bounds) {
   var folder = await localFileSystem.getDataFolder();
   var file = await folder.createFile("comfyps_gpt_edit_input.png", { overwrite: true });
   var token = await localFileSystem.createSessionToken(file);
   var layerId = _activeLayerId();
   var records = getDocumentLayerRecords();
   var visibility = _snapshotLayerVisibility(records);
-  var bounds;
+  var cropBounds = bounds;
   var duplicated = false;
   var duplicateDoc = null;
   var noDialog = { dialogOptions: "dontDisplay" };
@@ -686,12 +722,12 @@ async function _exportActiveLayerSelectionViaDuplicate() {
   await executeAsModal(
     async function () {
       try {
-        bounds = _normalizeSelectionCropBounds(await _readSelectionBounds());
+        cropBounds = _normalizeSelectionCropBounds(cropBounds || await _readSelectionBounds());
         _isolateLayer(records, layerId);
         if (typeof app.activeDocument.duplicate === "function") {
           duplicateDoc = await app.activeDocument.duplicate("ComfyPS GPT Image Input");
           duplicated = true;
-          await duplicateDoc.crop(bounds);
+          await duplicateDoc.crop(cropBounds);
           await batchPlay([_pngSaveDescriptor(token)], {});
         } else {
           await batchPlay([{
@@ -702,7 +738,7 @@ async function _exportActiveLayerSelectionViaDuplicate() {
           }], {});
           duplicated = true;
           await batchPlay([
-            _cropDescriptor(bounds, noDialog),
+            _cropDescriptor(cropBounds, noDialog),
             _pngSaveDescriptor(token),
           ], {});
         }
@@ -728,7 +764,7 @@ async function _exportActiveLayerSelectionViaDuplicate() {
 
   var buf = await file.read({ format: formats.binary });
   if (!buf || buf.byteLength === 0) throw new Error("导出当前图层选区失败");
-  return { image: bytesToBase64(buf), bounds: bounds };
+  return { image: bytesToBase64(buf), bounds: cropBounds };
 }
 
 // =========================================================================
@@ -900,4 +936,3 @@ async function _exportSelectionMaskViaDuplicate(forGptImage, keepSelectionSnapsh
   }
   return mask;
 }
-

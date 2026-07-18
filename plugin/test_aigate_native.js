@@ -100,6 +100,46 @@ test("image enhance selects each workflow variant", function () {
   assert.equal(context.getImageEnhanceScale("8.1"), 2);
 });
 
+test("image enhance crops the active layer only when a selection exists", async function () {
+  var context = loadAigateContext();
+  var selectionBounds = { left: 12, top: 24, right: 212, bottom: 124, width: 200, height: 100 };
+
+  context._readSelectionBoundsIfAny = async function () { return selectionBounds; };
+  context.exportActiveLayerSelectionPNG = async function (bounds) {
+    assert.equal(bounds, selectionBounds);
+    return { image: "cropped-layer", bounds: bounds };
+  };
+  context.exportActiveLayerPNG = async function () {
+    throw new Error("should not export the full layer while a selection exists");
+  };
+
+  var cropped = await context.exportImageEnhanceInput();
+  assert.equal(cropped.image, "cropped-layer");
+  assert.equal(cropped.placement.left, 12);
+  assert.equal(cropped.placement.top, 24);
+  assert.equal(cropped.placement.width, 200);
+  assert.equal(cropped.placement.height, 100);
+  assert.equal(cropped.placement.alignToTopLeft, true);
+
+  context._readSelectionBoundsIfAny = async function () { return null; };
+  context.exportActiveLayerPNG = async function () { return "full-active-layer"; };
+  var full = await context.exportImageEnhanceInput();
+  assert.equal(full.image, "full-active-layer");
+  assert.equal(full.placement, null);
+});
+
+test("selection probe treats an absent selection as a normal result", function () {
+  var context = loadAigateContext();
+  assert.equal(context._selectionBoundsOrNull({ selection: {} }), null);
+  var bounds = context._selectionBoundsOrNull({
+    selection: {
+      left: { _value: 1 }, top: { _value: 2 }, right: { _value: 11 }, bottom: { _value: 22 }
+    }
+  });
+  assert.equal(bounds.width, 10);
+  assert.equal(bounds.height, 20);
+});
+
 test("AIGate enables declared native workflows", function () {
   var context = loadAigateContext();
   assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("inpaint"), "aigate"), true);
