@@ -50,6 +50,21 @@ git rebase origin/main
 - **使用 merge commit，禁止 squash merge**
 - 提交 PR/MR 前先 `git rebase origin/main`，确认无冲突后再 push 和提交
 
+### PR 提交后同步 Photoshop 预览
+
+每次推送分支并创建 PR 后，都要同步 Photoshop 安装目录所链接的**主工作目录**，以便立即在 PS 中验收本次改动。
+
+1. 先解析实际链接目标，不能假定当前 worktree 就是 PS 正在使用的目录：
+
+   ```bash
+   readlink "$HOME/Library/Application Support/Adobe/UXP/Plugins/External/com.llsetnow.comfyps_1.0.0/main.js"
+   ```
+
+2. 检查该工作目录的 `git status`。保留已有未提交改动；绝不为同步而 `reset --hard`、覆盖文件或强制切换。若改动与待预览分支重叠，先停止并请用户处理冲突。
+3. PR 尚未合并时，在该主工作目录切到一个本地 `preview/<topic>` 分支（指向已推送的 PR 提交），让符号链接直接读取该版本；不要把 PR 改动直接提交到 `main`。
+4. PR 合并后，切回 `main` 并执行 `git fetch origin && git pull --ff-only`，让 PS 链接的主工作目录回到最新正式版本。
+5. 无需 `cp` 插件文件；符号链接会立即指向当前工作目录的 `plugin/`。Photoshop 已开启时，需重新加载面板或重启 PS 才会读取新文件。
+
 ### Why No Squash Merge
 
 Squash merge 会破坏分支与 main 的共享历史，导致 git 无法正确追踪哪些文件是你改的、哪些来自 main，造成：
