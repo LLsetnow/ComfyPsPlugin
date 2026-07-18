@@ -88,6 +88,7 @@ class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
             dev_server.handle_aigate_account,
             dev_server.handle_aigate_create_options,
             dev_server.handle_aigate_create_instance,
+            dev_server.handle_aigate_lifecycle,
         ]
         for handler in handlers:
             response = await handler(JsonRequest({}))
@@ -102,6 +103,7 @@ class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
             dev_server.handle_aigate_account,
             dev_server.handle_aigate_create_options,
             dev_server.handle_aigate_create_instance,
+            dev_server.handle_aigate_lifecycle,
         ]
         for handler in handlers:
             response = await handler(JsonRequest([]))
@@ -116,6 +118,7 @@ class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
             dev_server.handle_aigate_account,
             dev_server.handle_aigate_create_options,
             dev_server.handle_aigate_create_instance,
+            dev_server.handle_aigate_lifecycle,
         ]
         for handler in handlers:
             response = await handler(BadJsonRequest())
@@ -124,6 +127,16 @@ class AigateDevMockTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["ok"], False)
             self.assertEqual(data["error"], "BAD_JSON")
             self.assertEqual(data["message"], "请求体不是 JSON")
+
+    async def test_lifecycle_policy_sync_is_a_noop_for_preview_instances(self):
+        response = await dev_server.handle_aigate_lifecycle(JsonRequest({
+            "aigateToken": "demo-token",
+            "managedInstanceIds": ["mock-instance"],
+            "autoCloseOnExit": False,
+        }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {"ok": True})
 
     async def test_releasing_instance_allows_another_instance_to_be_created(self):
         dev_server.reset_mock_aigate_instances([{

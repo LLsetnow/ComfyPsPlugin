@@ -35,10 +35,15 @@ async function checkBridgeHealth() {
 }
 
 // 每次面板加载时都请求启动脚本安全替换旧桥。
-function forceBridgeStartOnPanelLoad() {
+async function forceBridgeStartOnPanelLoad() {
   if (_bridgePanelLoadStartTried || _launchingBridge || _restarting) return;
   _bridgePanelLoadStartTried = true;
   addLogEntry("info", "面板加载，正在替换本地桥…", "插件");
+  // 兼容已有桥进程：在启动脚本终止它之前，先移除“自动关闭”已关闭的实例登记。
+  // 新版桥也会按此策略登记，避免桥重启绕过设置页开关。
+  if (loadSettings().aigateAutoCloseOnExit === false) {
+    await syncAigateManagedClosePolicy(false);
+  }
   startBridgeViaShell();
 }
 
@@ -91,7 +96,11 @@ async function restartBridge() {
   setStatus("正在重启本地桥…");
 
   try {
-    var resp = await fetchWithTimeout(bridgeUrl.replace(/\/+$/, "") + "/restart", { method: "POST" }, 5000);
+    var resp = await fetchWithTimeout(bridgeUrl.replace(/\/+$/, "") + "/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoCloseOnExit: settings.aigateAutoCloseOnExit !== false })
+    }, 5000);
     if (resp.ok) {
       setStatus("桥重启指令已发送, 等待恢复…");
     }

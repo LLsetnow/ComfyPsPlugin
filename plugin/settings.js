@@ -536,7 +536,11 @@ async function submitAigateCreate() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aigateToken: token, skuName: selectedSku.skuName })
+        body: JSON.stringify({
+          aigateToken: token,
+          skuName: selectedSku.skuName,
+          autoCloseOnExit: settings.aigateAutoCloseOnExit !== false
+        })
       },
       15000
     );
@@ -627,7 +631,11 @@ async function refreshAigateInstances() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aigateToken: token, managedInstanceIds: managedAigateInstanceIds() })
+        body: JSON.stringify({
+          aigateToken: token,
+          managedInstanceIds: managedAigateInstanceIds(),
+          autoCloseOnExit: settings.aigateAutoCloseOnExit !== false
+        })
       },
       15000
     );
@@ -725,6 +733,29 @@ function requestAigateManagedClose() {
     headers: { "Content-Type": "application/json" },
     body: body
   }, 1500).catch(function () {});
+}
+
+// 桥仅在用户明确开启自动关闭时，才保留重启/退出清理所需的实例 Token。
+// 保存开关后立即同步，避免下一次面板加载替换旧桥时绕过该偏好设置。
+function syncAigateManagedClosePolicy(autoCloseOnExit) {
+  var token = _getAigateToken();
+  var ids = managedAigateInstanceIds();
+  if (!token || !ids.length) return Promise.resolve(false);
+  var settings = loadSettings();
+  var url = settings.bridgeUrl.replace(/\/+$/, "") + "/aigate/lifecycle";
+  return fetchWithTimeout(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      aigateToken: token,
+      managedInstanceIds: ids,
+      autoCloseOnExit: autoCloseOnExit !== false
+    })
+  }, 1500).then(function (response) {
+    return !!(response && response.ok);
+  }).catch(function () {
+    return false;
+  });
 }
 
 function resetAigateManagedCloseForPanelShow() {
@@ -1244,7 +1275,9 @@ function saveAllSettings() {
   var bridgeUrl = ($("settingBridgeUrl") ? $("settingBridgeUrl").value : "").trim();
   var comfyuiUrl = ($("settingComfyuiUrl") ? $("settingComfyuiUrl").value : "").trim();
   var aigateToken = _getAigateToken();
-  var savedAigateToken = loadSettings().aigateToken;
+  var savedSettings = loadSettings();
+  var savedAigateToken = savedSettings.aigateToken;
+  var savedAigateAutoCloseOnExit = savedSettings.aigateAutoCloseOnExit;
   var gptImageApiKey = ($("settingGptImageApiKey") ? $("settingGptImageApiKey").value : "").trim();
   var gptImageLocalValidation = !!($("settingGptImageLocalValidation") && $("settingGptImageLocalValidation").checked);
   var rhLocalDebug = !!($("settingRhLocalDebug") && $("settingRhLocalDebug").checked);
@@ -1272,6 +1305,9 @@ function saveAllSettings() {
   saveSetting("rhLocalDebug", rhLocalDebug ? "true" : "false");
   saveSetting("theme", theme);
   saveSetting("cacheMode", cacheMode);
+  if (savedAigateAutoCloseOnExit !== aigateAutoCloseOnExit) {
+    syncAigateManagedClosePolicy(aigateAutoCloseOnExit);
+  }
   updateAigateAutoCloseStatus(aigateAutoCloseOnExit);
   renderWorkflowDescription(findWorkflow(_selectedWorkflowId));
 }

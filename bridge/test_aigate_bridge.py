@@ -444,11 +444,13 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/aigate/account", routes)
         self.assertIn("/aigate/create-options", routes)
         self.assertIn("/aigate/create-instance", routes)
+        self.assertIn("/aigate/lifecycle", routes)
         self.assertEqual(routes["/aigate/account"], bridge.handle_aigate_account)
         self.assertEqual(
             routes["/aigate/create-options"],
             bridge.handle_aigate_create_options,
         )
+        self.assertEqual(routes["/aigate/lifecycle"], bridge.handle_aigate_lifecycle)
         self.assertEqual(
             routes["/aigate/create-instance"],
             bridge.handle_aigate_create_instance,
@@ -504,6 +506,19 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bridge._aigate_managed_tokens["i-1"], "demo-token")
         self.assertNotIn("demo-token", response.body.decode("utf-8"))
 
+    async def test_disabled_auto_close_unregisters_managed_instances(self):
+        bridge._aigate_managed_tokens = {"i-1": "demo-token"}
+
+        response = await bridge.handle_aigate_lifecycle(JsonRequest({
+            "aigateToken": "demo-token",
+            "managedInstanceIds": ["i-1"],
+            "autoCloseOnExit": False,
+        }))
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.body.decode("utf-8")), {"ok": True})
+        self.assertNotIn("i-1", bridge._aigate_managed_tokens)
+
     async def test_releasing_instance_unregisters_managed_token(self):
         bridge._aigate_managed_tokens = {"i-1": "demo-token"}
         with patch.object(
@@ -548,6 +563,17 @@ class AigateBridgeEndpointTests(unittest.IsolatedAsyncioTestCase):
             await bridge.restart_after_aigate_cleanup()
 
         cleanup.assert_awaited_once_with(None)
+        execv.assert_called_once_with(bridge.sys.executable, [bridge.sys.executable] + bridge.sys.argv)
+
+    async def test_restart_preserves_instances_when_auto_close_is_disabled(self):
+        with patch.object(
+            bridge, "cleanup_managed_aigate_instances", new=AsyncMock()
+        ) as cleanup, patch.object(
+            bridge.asyncio, "sleep", new=AsyncMock()
+        ), patch.object(bridge.os, "execv") as execv:
+            await bridge.restart_after_aigate_cleanup(False)
+
+        cleanup.assert_not_awaited()
         execv.assert_called_once_with(bridge.sys.executable, [bridge.sys.executable] + bridge.sys.argv)
 
     async def test_forwards_aigate_inpaint_runtime_overrides(self):
