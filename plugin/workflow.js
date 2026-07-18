@@ -481,54 +481,211 @@ async function exportImageEnhanceInput() {
   return { image: await exportActiveLayerPNG(), placement: null };
 }
 
+var _queueDispatchTimer = 0;
+
+function makeWorkflowQueueTaskId(wf) {
+  if (wf && wf.gptImage) return makeGptTaskId();
+  return "rh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+}
+
+function getWorkflowQueueDocName() {
+  try {
+    return app.activeDocument ? (app.activeDocument.name || "untitled") : "untitled";
+  } catch (_) {
+    return "untitled";
+  }
+}
+
+function createWorkflowQueueItem(wf, runSlot, taskId, psDocName, status) {
+  return {
+    id: taskId,
+    wfName: wf.name,
+    wfId: wf.id,
+    layerName: "",
+    status: status || "running",
+    createdAt: Date.now(),
+    durationMs: null,
+    taskCostType: "",
+    taskCost: "",
+    runState: null,
+    runSlot: runSlot,
+    resultFile: null,
+    maskFile: null,
+    hasMask: false,
+    revealSelection: false,
+    selectionSnapshotChannel: "",
+    placement: null,
+    thumbUrl: "",
+    savedOk: false,
+    percent: 0,
+    progressMsg: status === "queued" ? "等待前序任务完成…" : "正在提交任务…",
+    psDocName: psDocName || "untitled"
+  };
+}
+
+function addWorkflowQueueItem(item) {
+  _sessionTasks.unshift(item);
+  if (!_queueViewDocName) _queueViewDocName = item.psDocName;
+  if (item.psDocName === _queueViewDocName) {
+    _workQueue.unshift(item);
+    sortWorkQueue(item.id);
+  }
+  renderWorkQueue();
+}
+
+function getOldestQueuedWorkflow() {
+  var candidate = null;
+  for (var i = 0; i < _sessionTasks.length; i++) {
+    var task = _sessionTasks[i];
+    if (!task || task.status !== "queued" || !task._queuedRunRequest || task._queueDispatching) continue;
+    if (!candidate || task.createdAt < candidate.createdAt) candidate = task;
+  }
+  return candidate;
+}
+
+function hasQueuedWorkflowAhead(wf, settings) {
+  var slot = getRunSlot(wf, settings);
+  for (var i = 0; i < _sessionTasks.length; i++) {
+    var task = _sessionTasks[i];
+    var request = task && task._queuedRunRequest;
+    var queuedWf = request && findWorkflow(request.wfId);
+    if (!queuedWf || getRunSlot(queuedWf, request.settings) !== slot) continue;
+    // 能并行的 RunningHub 凭据保持原有能力；串行凭据只等待同一个 Key。
+    if (slot === "runningHub") {
+      if (supportsRunningHubParallel(settings)) continue;
+      if (request.settings.apiKey !== settings.apiKey) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function dispatchNextQueuedWorkflow() {
+  _queueDispatchTimer = 0;
+  var task = getOldestQueuedWorkflow();
+  if (!task) return;
+  var request = task._queuedRunRequest;
+  var wf = request && findWorkflow(request.wfId);
+  if (!wf || !canStartWorkflow(wf, request.settings)) return;
+  task._queueDispatching = true;
+  try {
+    var started = onRunClick(task);
+    if (started && typeof started.catch === "function") {
+      started.catch(function () {});
+    }
+  } catch (_) {
+    task._queueDispatching = false;
+  }
+}
+
+function scheduleQueuedWorkflow() {
+  if (_queueDispatchTimer) return;
+  if (!getOldestQueuedWorkflow()) return;
+  _queueDispatchTimer = setTimeout(dispatchNextQueuedWorkflow, 0);
+}
+
+function enqueueWorkflowRun(wf, settings, inputs, prompt, gptMode, runSlot) {
+  var task = createWorkflowQueueItem(
+    wf, runSlot, makeWorkflowQueueTaskId(wf), getWorkflowQueueDocName(), "queued"
+  );
+  // 排队仅在当前面板会话内有效；保存用户点击当刻的输入和凭据，避免
+  // 后续切换工作流或修改设置后，等待任务被静默替换为另一份请求。
+  task._queuedRunRequest = {
+    wfId: wf.id,
+    settings: settings,
+    inputs: inputs,
+    prompt: prompt,
+    gptMode: gptMode
+  };
+  addWorkflowQueueItem(task);
+  setStatus("任务已加入等待队列 ✓", "ok");
+  refreshRunButton();
+  scheduleQueuedWorkflow();
+  return task;
+}
+
+function failQueuedWorkflow(task, message) {
+  if (!task) return;
+  task.status = "failed";
+  task.progressMsg = message || "等待任务无法启动";
+  task._queuedRunRequest = null;
+  task._queueDispatching = false;
+  renderWorkQueue();
+  setStatus("排队任务失败: " + task.progressMsg, "err");
+  scheduleQueuedWorkflow();
+}
+
 // =========================================================================
 // 运行
 // =========================================================================
-async function onRunClick() {
+async function onRunClick(queuedTask) {
   var btn = $("runBtn");
-  if (!btn) return;
-  var settings = loadSettings();
-  var wf = findWorkflow(_selectedWorkflowId);
+  if (!btn && !queuedTask) return;
+  var queuedRequest = queuedTask && queuedTask._queuedRunRequest;
+  if (queuedTask) queuedTask._queueDispatching = false;
+  var settings = queuedRequest ? queuedRequest.settings : loadSettings();
+  var wf = queuedRequest ? findWorkflow(queuedRequest.wfId) : findWorkflow(_selectedWorkflowId);
   if (!wf) {
-    setStatus("请先选择一个工作流", "err");
+    if (queuedTask) failQueuedWorkflow(queuedTask, "找不到原工作流");
+    else setStatus("请先选择一个工作流", "err");
     return;
   }
   if (!isWorkflowAvailableForBackend(wf, settings.backend)) {
-    setStatus("该工作流暂未支持云扉原生后端", "err");
+    if (queuedTask) failQueuedWorkflow(queuedTask, "该工作流暂未支持当前后端");
+    else setStatus("该工作流暂未支持云扉原生后端", "err");
     return;
   }
   if (settings.backend === "aigate" && !_getAigateToken()) {
-    setStatus("请先在设置中填写云扉 Bearer Token", "err");
+    if (queuedTask) failQueuedWorkflow(queuedTask, "云扉 Bearer Token 已不可用");
+    else setStatus("请先在设置中填写云扉 Bearer Token", "err");
     return;
   }
   if (!app.activeDocument) {
-    setStatus("没有打开的文档", "err");
+    if (queuedTask) failQueuedWorkflow(queuedTask, "所属 Photoshop 文档已关闭");
+    else setStatus("没有打开的文档", "err");
     return;
   }
   var isRhLocalMaskDebug = !wf.gptImage && settings.backend === "runninghub"
     && settings.rhLocalDebug && wf.needsMask;
   if (!wf.gptImage && settings.backend === "runninghub" && !isRhLocalMaskDebug) {
     if (!settings.rhCredential) {
-      setStatus("请先在设置中添加并选择 RunningHub 凭据", "err");
+      if (queuedTask) failQueuedWorkflow(queuedTask, "RunningHub 凭据已不可用");
+      else setStatus("请先在设置中添加并选择 RunningHub 凭据", "err");
       return;
     }
     if (settings.rhCredential.status !== "ready") {
-      setStatus("当前 RunningHub 凭据尚未通过检测，请在设置中重新检测", "err");
+      if (queuedTask) failQueuedWorkflow(queuedTask, "RunningHub 凭据未通过检测");
+      else setStatus("当前 RunningHub 凭据尚未通过检测，请在设置中重新检测", "err");
       return;
     }
   }
+  if (queuedTask && queuedTask.psDocName !== getWorkflowQueueDocName()) {
+    failQueuedWorkflow(queuedTask, "请切回原文档“" + queuedTask.psDocName + "”后重新提交");
+    return;
+  }
+  var runSlot = getRunSlot(wf, settings);
+  var inputs = queuedRequest ? queuedRequest.inputs : getWorkflowInputs();
+  var prompt = queuedRequest ? queuedRequest.prompt : (inputs.wfPrompt || "");
+  var gptMode = queuedRequest ? queuedRequest.gptMode : (wf.gptImage ? (inputs.gptImageMode || "generate") : "");
   var localValidationRequested = !!(wf.gptImage && settings.gptImageLocalValidation);
   var localValidationCanStart = localValidationRequested && !_activeRuns.gptImage && !_activeRuns.other;
-  if (!localValidationCanStart && !canStartWorkflow(wf, settings)) {
+  var waitForEarlierTask = !queuedTask && !localValidationRequested && hasQueuedWorkflowAhead(wf, settings);
+  if (!localValidationCanStart && (waitForEarlierTask || !canStartWorkflow(wf, settings))) {
+    if (!queuedTask && !localValidationRequested) {
+      enqueueWorkflowRun(wf, settings, inputs, prompt, gptMode, runSlot);
+      return;
+    }
+    if (queuedTask) {
+      queuedTask.status = "queued";
+      queuedTask.progressMsg = "等待前序任务完成…";
+      scheduleQueuedWorkflow();
+      return;
+    }
     setStatus(wf.gptImage ? "GPT Image 正在生成中" : "已有 RunningHub 工作流正在运行", "err");
     refreshRunButton();
     return;
   }
 
-  var runSlot = getRunSlot(wf, settings);
-  var inputs = getWorkflowInputs();
-  var prompt = inputs.wfPrompt || "";
-  var gptMode = wf.gptImage ? (inputs.gptImageMode || "generate") : "";
   if (localValidationRequested && gptMode !== "edit") {
     setStatus("本地验证模式仅支持“图像编辑”", "err");
     return;
@@ -541,7 +698,7 @@ async function onRunClick() {
     rhCredentialId: settings.rhCredentialId || "",
     rhCredentialKey: settings.apiKey || "",
     cancelRequested: false,
-    taskId: wf.gptImage ? makeGptTaskId() : "",
+    taskId: "",
     bridgeRequestStarted: false,
     localValidation: localValidationRequested,
     localValidationInfo: "",
@@ -550,6 +707,9 @@ async function onRunClick() {
   if (wf.gptImage && !runState.localValidation && typeof AbortController !== "undefined") {
     try { runState.abortController = new AbortController(); } catch (_) {}
   }
+  var qTaskId = runState.localValidation ? ""
+    : (queuedTask ? queuedTask.id : makeWorkflowQueueTaskId(wf));
+  runState.taskId = qTaskId;
   registerActiveRun(runSlot, runState, settings);
   refreshRunButton();
 
@@ -564,38 +724,13 @@ async function onRunClick() {
 
   // 立即入队（非本地验证模式）
   var queueItem = null;
-  var qTaskId = "";
-  var psDocName = "untitled";
+  var psDocName = queuedTask ? queuedTask.psDocName : getWorkflowQueueDocName();
   if (!runState.localValidation) {
-    qTaskId = wf.gptImage
-      ? runState.taskId
-      : ("rh_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6));
-    if (!wf.gptImage) runState.taskId = qTaskId;
-    try { psDocName = app.activeDocument ? (app.activeDocument.name || "untitled") : "untitled"; } catch (_) {}
-    queueItem = {
-      id: qTaskId,
-      wfName: wf.name,
-      wfId: wf.id,
-      layerName: "",
-      status: "running",
-      createdAt: Date.now(),
-      durationMs: null,
-      taskCostType: "",
-      taskCost: "",
-      runState: runState,
-      runSlot: runSlot,
-      resultFile: null,
-      maskFile: null,
-      hasMask: false,
-      revealSelection: false,
-      selectionSnapshotChannel: "",
-      placement: null,
-      thumbUrl: "",
-      savedOk: false,
-      percent: 0,
-      progressMsg: "正在提交任务…",
-      psDocName: psDocName || "untitled"
-    };
+    queueItem = queuedTask || createWorkflowQueueItem(wf, runSlot, qTaskId, psDocName, "running");
+    queueItem.status = "running";
+    queueItem.progressMsg = "正在提交任务…";
+    queueItem.runState = runState;
+    queueItem._queuedRunRequest = null;
     // 进度回调：更新队列项数据，并刷新进度条显示
     (function (item) {
       runState.onProgress = function (pct, msg) {
@@ -608,14 +743,8 @@ async function onRunClick() {
         renderQueueProgress();
       };
     })(queueItem);
-    // 任务进入会话主表(跨文档)；仅当队列页正展示同一文档时才并入可见视图。
-    _sessionTasks.unshift(queueItem);
-    if (!_queueViewDocName) _queueViewDocName = queueItem.psDocName;
-    if (queueItem.psDocName === _queueViewDocName) {
-      _workQueue.unshift(queueItem);
-      sortWorkQueue(queueItem.id);
-    }
-    renderWorkQueue();
+    if (!queuedTask) addWorkflowQueueItem(queueItem);
+    else renderWorkQueue();
   }
 
   try {
@@ -801,5 +930,6 @@ async function onRunClick() {
     unregisterActiveRun(runSlot, runState);
     if (queueItem && queueItem.runState) queueItem.runState = null;
     refreshRunButton();
+    scheduleQueuedWorkflow();
   }
 }

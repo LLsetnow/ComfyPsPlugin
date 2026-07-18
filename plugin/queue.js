@@ -408,6 +408,20 @@ function findQueueTaskIndex(taskId) {
     ? _selectedQueueIdx : -1;
 }
 
+function getQueuedTaskPosition(task) {
+  if (!task || task.status !== "queued") return 0;
+  var position = 1;
+  for (var i = 0; i < _sessionTasks.length; i++) {
+    var other = _sessionTasks[i];
+    if (!other || other.id === task.id || other.status !== "queued") continue;
+    if (other.createdAt < task.createdAt ||
+      (other.createdAt === task.createdAt && String(other.id) < String(task.id))) {
+      position++;
+    }
+  }
+  return position;
+}
+
 function createQueueCardAction(label, className, disabled, onClick) {
   var button = document.createElement("button");
   button.type = "button";
@@ -429,8 +443,8 @@ function appendQueueCardActions(card, task) {
     actions.appendChild(createQueueCardAction("导入", "", !task.resultFile, function (button) {
       onQueueImportClick(task.id, button);
     }));
-  } else {
-    actions.appendChild(createQueueCardAction("停止", "btn-danger", task.status !== "running", function () {
+  } else if (task.status === "running") {
+    actions.appendChild(createQueueCardAction("停止", "btn-danger", false, function () {
       onQueueStopClick(task.id);
     }));
   }
@@ -549,6 +563,11 @@ function renderWorkQueue() {
         sp.className = "spinner";
         spinnerWrap.appendChild(sp);
         card.appendChild(spinnerWrap);
+      } else if (task.status === "queued") {
+        var queuedThumb = document.createElement("div");
+        queuedThumb.className = "queue-thumb-running queue-thumb-queued";
+        queuedThumb.textContent = "…";
+        card.appendChild(queuedThumb);
       } else {
         var img = document.createElement("img");
         img.className = "queue-thumb";
@@ -613,6 +632,10 @@ function renderWorkQueue() {
         cardProgress.appendChild(cardProgressFill);
         cardBody.appendChild(badge);
         cardBody.appendChild(cardProgress);
+      } else if (task.status === "queued") {
+        badge.className += " queued";
+        badge.textContent = "等待中 · 第 " + getQueuedTaskPosition(task) + " 位";
+        cardBody.appendChild(badge);
       } else if (task.status === "failed") {
         badge.className += " failed";
         badge.textContent = "失败";
@@ -778,6 +801,7 @@ async function onQueueDeleteClick(taskId) {
     rebuildWorkQueueView();
     renderWorkQueue();
   }
+  if (typeof scheduleQueuedWorkflow === "function") scheduleQueuedWorkflow();
 }
 
 // =========================================================================

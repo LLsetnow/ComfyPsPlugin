@@ -83,6 +83,14 @@ test("queue card actions target their own task instead of the selected task", fu
       thumbUrl: "memory://running",
       percent: 50,
       createdAt: 2
+    },
+    {
+      id: "queued-task",
+      wfName: "图像高清",
+      status: "queued",
+      thumbUrl: "",
+      savedOk: false,
+      createdAt: 3
     }
   ];
   context._selectedQueueIdx = 1;
@@ -92,11 +100,14 @@ test("queue card actions target their own task instead of the selected task", fu
   var cards = context.elements.workQueueCards.children;
   var completedActions = queueCardActions(cards[0]);
   var runningActions = queueCardActions(cards[1]);
+  var queuedActions = queueCardActions(cards[2]);
   assert.deepEqual(completedActions.map(function (button) { return button.textContent; }), ["导入", "删除"]);
   assert.deepEqual(runningActions.map(function (button) { return button.textContent; }), ["停止", "删除"]);
+  assert.deepEqual(queuedActions.map(function (button) { return button.textContent; }), ["删除"]);
   assert.equal(completedActions[0].disabled, false);
   assert.equal(runningActions[0].disabled, false);
   assert.equal(runningActions[1].disabled, true);
+  assert.equal(queuedActions[0].disabled, false);
 
   completedActions[0].listeners.click({
     stopPropagation: function () { didStopPropagation = true; }
