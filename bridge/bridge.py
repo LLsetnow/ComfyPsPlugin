@@ -162,19 +162,25 @@ async def handle_logs(request):
     }))
 
 
-async def restart_after_aigate_cleanup():
-    """等待重启响应送达后清理受管实例，再原地替换桥进程。"""
+async def restart_after_aigate_cleanup(auto_close_on_exit=True):
+    """等待重启响应送达后，按自动关闭策略清理受管实例并替换桥进程。"""
     await asyncio.sleep(0.3)
-    try:
-        await cleanup_managed_aigate_instances(None)
-    except Exception:
-        bridge_log("# 云扉重启清理失败", "error")
+    if auto_close_on_exit:
+        try:
+            await cleanup_managed_aigate_instances(None)
+        except Exception:
+            bridge_log("# 云扉重启清理失败", "error")
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 async def handle_restart(request):
-    """重启桥进程前尽力关闭受管云扉实例。"""
-    asyncio.create_task(restart_after_aigate_cleanup())
+    """按面板保存的自动关闭偏好重启桥进程。"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    auto_close_on_exit = body.get("autoCloseOnExit") is not False
+    asyncio.create_task(restart_after_aigate_cleanup(auto_close_on_exit))
     return cors(web.json_response({"ok": True, "message": "bridge restarting"}))
 
 
@@ -390,7 +396,11 @@ async def handle_aigate_create_instance(request):
                 result = await create_aigate_instance(
                     token, sku_name, create_config, session
                 )
-            _sync_aigate_managed_instances(token, [result["instanceId"]])
+            _sync_aigate_managed_instances(
+                token,
+                [result["instanceId"]],
+                body.get("autoCloseOnExit") is not False,
+            )
         return cors(web.json_response({"ok": True, "instance": result}))
     except AigateNativeError as error:
         return cors(web.json_response(
@@ -404,7 +414,11 @@ async def handle_aigate_instances(request):
     body, token, error_response = await read_aigate_request(request)
     if error_response:
         return error_response
-    _sync_aigate_managed_instances(token, body.get("managedInstanceIds"))
+    _sync_aigate_managed_instances(
+        token,
+        body.get("managedInstanceIds"),
+        body.get("autoCloseOnExit") is not False,
+    )
     try:
         async with ClientSession(timeout=ClientTimeout(total=15)) as session:
             instances = await list_instance_summaries(token, session)
@@ -446,10 +460,26 @@ def _managed_aigate_ids(values):
     return result
 
 
-def _sync_aigate_managed_instances(token, instance_ids):
-    """把当前面板已知的受管实例与 Token 只登记在本进程内。"""
+def _sync_aigate_managed_instances(token, instance_ids, auto_close_on_exit=True):
+    """按面板自动关闭偏好登记或注销当前受管实例。"""
     for instance_id in _managed_aigate_ids(instance_ids):
-        _aigate_managed_tokens[instance_id] = token
+        if auto_close_on_exit:
+            _aigate_managed_tokens[instance_id] = token
+        else:
+            _aigate_managed_tokens.pop(instance_id, None)
+
+
+async def handle_aigate_lifecycle(request):
+    """同步面板的自动关闭偏好，不查询或控制任何云扉实例。"""
+    body, token, error_response = await read_aigate_request(request)
+    if error_response:
+        return error_response
+    _sync_aigate_managed_instances(
+        token,
+        body.get("managedInstanceIds"),
+        body.get("autoCloseOnExit") is not False,
+    )
+    return cors(web.json_response({"ok": True}))
 
 
 async def handle_aigate_close_managed(request):
@@ -730,6 +760,7 @@ def main():
     app.router.add_post("/aigate/create-options", handle_aigate_create_options)
     app.router.add_post("/aigate/create-instance", handle_aigate_create_instance)
     app.router.add_post("/aigate/instances", handle_aigate_instances)
+    app.router.add_post("/aigate/lifecycle", handle_aigate_lifecycle)
     app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
     app.router.add_post("/aigate/close-managed", handle_aigate_close_managed)
     app.on_shutdown.append(cleanup_managed_aigate_instances)

@@ -684,6 +684,14 @@ async def handle_aigate_instances(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "instances": instances})
 
 
+async def handle_aigate_lifecycle(request: web.Request) -> web.Response:
+    """开发模式接受自动关闭策略同步，不改变模拟实例状态。"""
+    body, token, error_response = await read_mock_aigate_request(request)
+    if error_response:
+        return error_response
+    return web.json_response({"ok": True})
+
+
 async def handle_aigate_instance_action(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -841,6 +849,7 @@ def main():
     app.router.add_post("/aigate/create-options", handle_aigate_create_options)
     app.router.add_post("/aigate/create-instance", handle_aigate_create_instance)
     app.router.add_post("/aigate/instances", handle_aigate_instances)
+    app.router.add_post("/aigate/lifecycle", handle_aigate_lifecycle)
     app.router.add_post("/aigate/instance-action", handle_aigate_instance_action)
     app.router.add_post("/aigate/close-managed", handle_aigate_close_managed)
     app.router.add_get("/codex/status", handle_codex_status)
