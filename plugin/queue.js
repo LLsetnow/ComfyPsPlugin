@@ -312,19 +312,9 @@ function sortWorkQueue(selectedTaskId) {
 }
 
 function updateQueueControls() {
-  var importBtn = $("queueImportBtn");
-  var stopBtn = $("queueStopBtn");
-  var deleteBtn = $("queueDeleteBtn");
   var section = $("workQueueSection");
   var emptyState = $("queueEmptyState");
-  var hasSelection = (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length);
-  var selectedTask = hasSelection ? _workQueue[_selectedQueueIdx] : null;
-  var isCompleted = selectedTask && selectedTask.status === "completed";
-  var isRunning = selectedTask && selectedTask.status === "running";
 
-  if (importBtn) importBtn.disabled = !(isCompleted && selectedTask.resultFile);
-  if (stopBtn) stopBtn.disabled = !isRunning;
-  if (deleteBtn) deleteBtn.disabled = !(hasSelection && !isRunning);
   if (section) section.style.display = _workQueue.length > 0 ? "block" : "none";
   if (emptyState) emptyState.style.display = _workQueue.length > 0 ? "none" : "block";
   renderQueueProgress();
@@ -380,6 +370,50 @@ function formatQueueTaskCost(task) {
   var value = String(task.taskCost).replace(/^\s+|\s+$/g, "");
   if (!value) return "";
   return task.taskCostType === "coins" ? "消耗 " + value + " RH币" : "消耗 ¥" + value;
+}
+
+function findQueueTaskIndex(taskId) {
+  if (taskId) {
+    for (var i = 0; i < _workQueue.length; i++) {
+      if (_workQueue[i] && _workQueue[i].id === taskId) return i;
+    }
+    return -1;
+  }
+  return (_selectedQueueIdx >= 0 && _selectedQueueIdx < _workQueue.length)
+    ? _selectedQueueIdx : -1;
+}
+
+function createQueueCardAction(label, className, disabled, onClick) {
+  var button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn-sm" + (className ? " " + className : "");
+  button.textContent = label;
+  button.disabled = !!disabled;
+  button.addEventListener("click", function (ev) {
+    if (ev && ev.stopPropagation) ev.stopPropagation();
+    if (!button.disabled) onClick(button);
+  });
+  return button;
+}
+
+function appendQueueCardActions(card, task) {
+  var actions = document.createElement("div");
+  actions.className = "queue-card-actions";
+
+  if (task.status === "completed") {
+    actions.appendChild(createQueueCardAction("导入", "", !task.resultFile, function (button) {
+      onQueueImportClick(task.id, button);
+    }));
+  } else {
+    actions.appendChild(createQueueCardAction("停止", "btn-danger", task.status !== "running", function () {
+      onQueueStopClick(task.id);
+    }));
+  }
+
+  actions.appendChild(createQueueCardAction("删除", "btn-danger", task.status === "running", function () {
+    onQueueDeleteClick(task.id);
+  }));
+  card.appendChild(actions);
 }
 
 function seedDevWorkQueue() {
@@ -572,6 +606,7 @@ function renderWorkQueue() {
         cardBody.appendChild(badge);
       }
       card.appendChild(cardBody);
+      appendQueueCardActions(card, task);
 
       card.addEventListener("click", function () {
         selectWorkQueueTask(idx);
@@ -582,9 +617,10 @@ function renderWorkQueue() {
   updateQueueControls();
 }
 
-async function onQueueImportClick() {
-  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
-  var task = _workQueue[_selectedQueueIdx];
+async function onQueueImportClick(taskId, importBtn) {
+  var taskIndex = findQueueTaskIndex(taskId);
+  if (taskIndex < 0) return;
+  var task = _workQueue[taskIndex];
   if (task.status !== "completed") return;
   if (!task.resultFile) {
     setStatus("该任务结果文件未保存，无法导入", "err");
@@ -594,7 +630,6 @@ async function onQueueImportClick() {
     setStatus("请先打开一个 Photoshop 文档再导入", "err");
     return;
   }
-  var importBtn = $("queueImportBtn");
   if (importBtn) { importBtn.disabled = true; importBtn.textContent = "导入中…"; }
   try {
     var resultBytes = await task.resultFile.read({ format: formats.binary });
@@ -648,9 +683,10 @@ function onQueuePreviewClose() {
   for (var i = 0; i < selects.length; i++) selects[i].style.visibility = "";
 }
 
-function onQueueStopClick() {
-  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
-  var task = _workQueue[_selectedQueueIdx];
+function onQueueStopClick(taskId) {
+  var taskIndex = findQueueTaskIndex(taskId);
+  if (taskIndex < 0) return;
+  var task = _workQueue[taskIndex];
   if (!task || task.status !== "running" || !task.runState) return;
   var rs = task.runState;
   rs.cancelRequested = true;
@@ -671,9 +707,10 @@ function onQueueStopClick() {
   renderWorkQueue();
 }
 
-function onQueueDeleteClick() {
-  if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
-  var task = _workQueue[_selectedQueueIdx];
+function onQueueDeleteClick(taskId) {
+  var taskIndex = findQueueTaskIndex(taskId);
+  if (taskIndex < 0) return;
+  var task = _workQueue[taskIndex];
   if (!task || task.status === "running") return;
   // 已保存结果的任务(含历史)删除时一并清掉磁盘目录，避免下次扫描又出现。
   var hasDisk = !!(task.resultFile || task.fromHistory);
@@ -694,11 +731,13 @@ function onQueueDeleteClick() {
     deleteTaskFolderFromDisk(task.psDocName || _queueViewDocName, task.id);
   }
 
-  _workQueue.splice(_selectedQueueIdx, 1);
+  _workQueue.splice(taskIndex, 1);
   if (_workQueue.length === 0) {
     _selectedQueueIdx = -1;
-  } else {
-    _selectedQueueIdx = Math.min(_selectedQueueIdx, _workQueue.length - 1);
+  } else if (_selectedQueueIdx === taskIndex) {
+    _selectedQueueIdx = Math.min(taskIndex, _workQueue.length - 1);
+  } else if (_selectedQueueIdx > taskIndex) {
+    _selectedQueueIdx--;
   }
   renderWorkQueue();
 }
@@ -1053,4 +1092,3 @@ async function _applyOutputMaskToLayer(resultLayerId, maskToken, offsetX, offset
     _options: noDialog,
   }], {});
 }
-

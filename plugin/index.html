@@ -50,7 +50,7 @@
     </div>
 
     <!-- ================================================================= -->
-    <!-- 任务队列页：进度、停止、预览、导入、删除                             -->
+    <!-- 任务队列页：进度、预览与卡片内操作                                     -->
     <!-- ================================================================= -->
     <div id="pageQueue" class="page">
       <div class="page-heading">任务队列</div>
@@ -61,11 +61,6 @@
       <div id="queueEmptyState" class="queue-empty">还没有运行中的任务或历史结果</div>
       <div id="workQueueSection">
         <div class="queue-section-title">运行记录</div>
-        <div class="queue-actions">
-          <button id="queueImportBtn" class="btn-sm" disabled>导入</button>
-          <button id="queueStopBtn" class="btn-sm btn-danger" disabled>停止</button>
-          <button id="queueDeleteBtn" class="btn-sm btn-danger" disabled>删除</button>
-        </div>
         <div id="workQueueCards" class="queue-cards-row"></div>
         <div id="queueProgressBar" style="display:none;margin-bottom:6px;">
           <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;">

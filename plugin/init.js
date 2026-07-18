@@ -29,12 +29,6 @@
   if (runBtn) runBtn.addEventListener("click", onRunClick);
 
   // ---- 工作队列按钮 ----
-  var queueImportBtn = $("queueImportBtn");
-  if (queueImportBtn) queueImportBtn.addEventListener("click", onQueueImportClick);
-  var queueStopBtn = $("queueStopBtn");
-  if (queueStopBtn) queueStopBtn.addEventListener("click", onQueueStopClick);
-  var queueDeleteBtn = $("queueDeleteBtn");
-  if (queueDeleteBtn) queueDeleteBtn.addEventListener("click", onQueueDeleteClick);
   var queueRefreshBtn = $("queueRefreshBtn");
   if (queueRefreshBtn) queueRefreshBtn.addEventListener("click", function () {
     loadQueueHistoryForActiveDoc();
