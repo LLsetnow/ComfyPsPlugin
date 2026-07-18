@@ -35,10 +35,15 @@ async function checkBridgeHealth() {
 }
 
 // 每次面板加载时都请求启动脚本安全替换旧桥。
-function forceBridgeStartOnPanelLoad() {
+async function forceBridgeStartOnPanelLoad() {
   if (_bridgePanelLoadStartTried || _launchingBridge || _restarting) return;
   _bridgePanelLoadStartTried = true;
   addLogEntry("info", "面板加载，正在替换本地桥…", "插件");
+  // 兼容已有桥进程：在启动脚本终止它之前，先移除“自动关闭”已关闭的实例登记。
+  // 新版桥也会按此策略登记，避免桥重启绕过设置页开关。
+  if (loadSettings().aigateAutoCloseOnExit === false) {
+    await syncAigateManagedClosePolicy(false);
+  }
   startBridgeViaShell();
 }
 
@@ -91,7 +96,11 @@ async function restartBridge() {
   setStatus("正在重启本地桥…");
 
   try {
-    var resp = await fetchWithTimeout(bridgeUrl.replace(/\/+$/, "") + "/restart", { method: "POST" }, 5000);
+    var resp = await fetchWithTimeout(bridgeUrl.replace(/\/+$/, "") + "/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ autoCloseOnExit: settings.aigateAutoCloseOnExit !== false })
+    }, 5000);
     if (resp.ok) {
       setStatus("桥重启指令已发送, 等待恢复…");
     }
@@ -448,6 +457,30 @@ function getWorkflowInputs() {
   return values;
 }
 
+// 图像高清以活动图层为输入；有选区时仅上传选区外接矩形，并在回贴时
+// 保留其原始文档坐标。没有选区是合法情况，直接上传完整活动图层。
+async function exportImageEnhanceInput() {
+  var selectionBounds = await _readSelectionBoundsIfAny();
+  if (selectionBounds) {
+    var cropped = await exportActiveLayerSelectionPNG(selectionBounds);
+    return {
+      image: cropped.image,
+      placement: {
+        left: cropped.bounds.left,
+        top: cropped.bounds.top,
+        right: cropped.bounds.right,
+        bottom: cropped.bounds.bottom,
+        width: cropped.bounds.width,
+        height: cropped.bounds.height,
+        // 放大工作流可能返回更大的图；始终以原选区左上角为锚点，
+        // 避免按中心贴回时向左上偏移。
+        alignToTopLeft: true,
+      },
+    };
+  }
+  return { image: await exportActiveLayerPNG(), placement: null };
+}
+
 // =========================================================================
 // 运行
 // =========================================================================
@@ -655,7 +688,11 @@ async function onRunClick() {
     } else {
       var imageB64;
       var maskB64 = "";
-      if (wf.needsMask && !settings.rhLocalDebug) {
+      if (wf.id === "image-enhance") {
+        var imageEnhanceInput = await exportImageEnhanceInput();
+        imageB64 = imageEnhanceInput.image;
+        placement = imageEnhanceInput.placement;
+      } else if (wf.needsMask && !settings.rhLocalDebug) {
         // 局部编辑只上传活动图层的选区外接矩形。蒙版使用同一矩形裁切，
         // 返图通过 placement 回贴到原文档坐标，避免上传整张画布。
         var runningHubInput = await exportActiveLayerSelectionPNG();

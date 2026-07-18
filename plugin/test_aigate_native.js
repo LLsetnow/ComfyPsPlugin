@@ -100,6 +100,46 @@ test("image enhance selects each workflow variant", function () {
   assert.equal(context.getImageEnhanceScale("8.1"), 2);
 });
 
+test("image enhance crops the active layer only when a selection exists", async function () {
+  var context = loadAigateContext();
+  var selectionBounds = { left: 12, top: 24, right: 212, bottom: 124, width: 200, height: 100 };
+
+  context._readSelectionBoundsIfAny = async function () { return selectionBounds; };
+  context.exportActiveLayerSelectionPNG = async function (bounds) {
+    assert.equal(bounds, selectionBounds);
+    return { image: "cropped-layer", bounds: bounds };
+  };
+  context.exportActiveLayerPNG = async function () {
+    throw new Error("should not export the full layer while a selection exists");
+  };
+
+  var cropped = await context.exportImageEnhanceInput();
+  assert.equal(cropped.image, "cropped-layer");
+  assert.equal(cropped.placement.left, 12);
+  assert.equal(cropped.placement.top, 24);
+  assert.equal(cropped.placement.width, 200);
+  assert.equal(cropped.placement.height, 100);
+  assert.equal(cropped.placement.alignToTopLeft, true);
+
+  context._readSelectionBoundsIfAny = async function () { return null; };
+  context.exportActiveLayerPNG = async function () { return "full-active-layer"; };
+  var full = await context.exportImageEnhanceInput();
+  assert.equal(full.image, "full-active-layer");
+  assert.equal(full.placement, null);
+});
+
+test("selection probe treats an absent selection as a normal result", function () {
+  var context = loadAigateContext();
+  assert.equal(context._selectionBoundsOrNull({ selection: {} }), null);
+  var bounds = context._selectionBoundsOrNull({
+    selection: {
+      left: { _value: 1 }, top: { _value: 2 }, right: { _value: 11 }, bottom: { _value: 22 }
+    }
+  });
+  assert.equal(bounds.width, 10);
+  assert.equal(bounds.height, 20);
+});
+
 test("AIGate enables declared native workflows", function () {
   var context = loadAigateContext();
   assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("inpaint"), "aigate"), true);
@@ -683,6 +723,40 @@ test("AIGate close request honors the persisted auto-close setting", function ()
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "http://127.0.0.1:8765/aigate/close-managed");
   assert.match(calls[0].options.body, /"managedInstanceIds":\["i-1"\]/);
+});
+
+test("AIGate lifecycle policy unregisters instances when auto-close is disabled", async function () {
+  var context = loadAigateContext();
+  var calls = [];
+  context._getAigateToken = function () { return "token"; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.saveAigateLifecycle({ "i-1": { managed: true, pendingStart: false, startedAt: 1 } });
+  context.fetchWithTimeout = function (url, options) {
+    calls.push({ url: url, options: options });
+    return Promise.resolve({ ok: true });
+  };
+
+  var result = await context.syncAigateManagedClosePolicy(false);
+  assert.equal(result, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://bridge/aigate/lifecycle");
+  assert.match(calls[0].options.body, /"autoCloseOnExit":false/);
+  assert.match(calls[0].options.body, /"managedInstanceIds":\["i-1"\]/);
+});
+
+test("panel reload syncs a disabled auto-close policy before replacing the bridge", async function () {
+  var context = loadAigateContext();
+  var calls = [];
+  context.loadSettings = function () { return { aigateAutoCloseOnExit: false }; };
+  context.addLogEntry = function () {};
+  context.syncAigateManagedClosePolicy = function (enabled) {
+    calls.push("sync:" + enabled);
+    return Promise.resolve();
+  };
+  context.startBridgeViaShell = function () { calls.push("start"); };
+
+  await context.forceBridgeStartOnPanelLoad();
+  assert.deepEqual(calls, ["sync:false", "start"]);
 });
 
 test("resets the AIGate close guard when a UXP panel is shown again", function () {
