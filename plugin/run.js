@@ -67,8 +67,9 @@ function refreshRunButton() {
 
   var slot = getRunSlot(workflow, loadSettings());
   var hasActiveRun = activeRunCount(slot) > 0;
-  var canStart = canStartWorkflow(workflow, loadSettings());
-  runBtn.disabled = !canStart;
+  // 运行锁占用时，新的任务会进入会话队列等待，而不是禁用提交入口。
+  // 实际能否立刻执行仍由 onRunClick / canStartWorkflow 决定。
+  runBtn.disabled = false;
   if (label) {
     label.hidden = false;
     label.textContent = "生成";

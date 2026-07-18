@@ -140,6 +140,30 @@ test("selection probe treats an absent selection as a normal result", function (
   assert.equal(bounds.height, 20);
 });
 
+test("serial queue dispatches the oldest waiting task when its slot is free", function () {
+  var context = loadAigateContext();
+  var started = [];
+  context._sessionTasks = [
+    {
+      id: "newer", status: "queued", createdAt: 20,
+      _queuedRunRequest: { wfId: "inpaint", settings: {} }
+    },
+    {
+      id: "older", status: "queued", createdAt: 10,
+      _queuedRunRequest: { wfId: "inpaint", settings: {} }
+    }
+  ];
+  context.canStartWorkflow = function () { return true; };
+  context.onRunClick = function (task) { started.push(task.id); };
+
+  assert.equal(context.hasQueuedWorkflowAhead(context.findWorkflow("inpaint"), { backend: "aigate" }), true);
+  context.dispatchNextQueuedWorkflow();
+
+  assert.deepEqual(started, ["older"]);
+  assert.equal(context._sessionTasks[1]._queueDispatching, true);
+  assert.equal(context._sessionTasks[0]._queueDispatching, undefined);
+});
+
 test("AIGate enables declared native workflows", function () {
   var context = loadAigateContext();
   assert.equal(context.isWorkflowAvailableForBackend(context.findWorkflow("inpaint"), "aigate"), true);
