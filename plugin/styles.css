@@ -867,7 +867,7 @@ input[type="range"]::-webkit-slider-thumb {
 .queue-card {
   display: flex;
   align-items: stretch;
-  gap: 30px;
+  gap: 10px;
   width: 100%;
   min-height: 88px;
   padding: 10px;
@@ -948,13 +948,19 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 3px;
   transition: width 0.3s;
 }
-.queue-actions {
+.queue-card-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 10px;
+  flex: 0 0 48px;
+  align-self: center;
+  flex-direction: column;
+  gap: 6px;
 }
-.queue-actions button { flex: 1; }
+.queue-card-actions .btn-sm {
+  width: 48px;
+  min-height: 28px;
+  padding: 4px 3px;
+  font-size: 10px;
+}
 .btn-danger { color: var(--danger, #e05); border-color: var(--danger, #e05); }
 .btn-danger:not(:disabled):hover { background: var(--danger, #e05); color: #fff; }
 
@@ -964,9 +970,11 @@ input[type="range"]::-webkit-slider-thumb {
   .topbar-tab-label-wide { display: none; }
   .topbar-tab-label-narrow { display: inline; }
   .topbar-utility { flex-basis: 30px; width: 30px; }
-  .queue-card { gap: 24px; padding: 9px; }
+  .queue-card { gap: 8px; padding: 9px; }
   .queue-thumb,
   .queue-thumb-running { flex-basis: 64px; width: 64px; height: 64px; }
+  .queue-card-actions { flex-basis: 44px; }
+  .queue-card-actions .btn-sm { width: 44px; font-size: 9.5px; }
   .queue-card-label { font-size: 11px; }
   .queue-card-meta { font-size: 9px; }
   .queue-card-status-badge { font-size: 9.5px; }
