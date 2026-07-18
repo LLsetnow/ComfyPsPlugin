@@ -173,6 +173,9 @@ async function _historyItemFromFolder(taskFolder, psDocName) {
     try { meta = JSON.parse(await metaFile.read({ format: _utf8Format() })) || {}; }
     catch (_) { meta = {}; }
   }
+  // 删除时先写入墓碑标记。若 UXP 未能立即删除非空目录，后续扫描也不能让
+  // 已删除任务重新出现在队列中。
+  if (meta.deleted === true) return null;
   return {
     id: meta.id || taskFolder.name,
     wfName: meta.wfName || "历史任务",
@@ -208,11 +211,33 @@ async function deleteTaskFolderFromDisk(psDocName, taskId) {
   try {
     var base = await _getCacheBaseFolder();
     var docFolder = await _findChildFolder(base, _sanitizeDocName(psDocName));
-    if (!docFolder) return;
+    if (!docFolder) return true;
     var tf = await _findChildFolder(docFolder, taskId);
     if (tf && typeof tf.delete === "function") await tf.delete();
+    return true;
   } catch (e) {
     console.warn("ComfyPS: 删除历史任务目录失败", e);
+    return false;
+  }
+}
+
+// 先在任务目录写入删除墓碑，再尝试删除整个目录。这样即使宿主在短时间内
+// 仍持有文件句柄或不允许删除非空目录，扫描历史时也会稳定地跳过该任务。
+async function markTaskFolderDeletedOnDisk(psDocName, taskId) {
+  try {
+    var folder = await _getOrCreateCacheFolder(psDocName, taskId);
+    var metaFile = await folder.createEntry("meta.json", {
+      type: require("uxp").storage.types.file, overwrite: true
+    });
+    await metaFile.write(JSON.stringify({
+      id: taskId,
+      deleted: true,
+      deletedAt: Date.now()
+    }), { format: _utf8Format() });
+    return true;
+  } catch (e) {
+    console.warn("ComfyPS: 写入已删除任务标记失败", e);
+    return false;
   }
 }
 
@@ -671,7 +696,7 @@ function onQueueStopClick() {
   renderWorkQueue();
 }
 
-function onQueueDeleteClick() {
+async function onQueueDeleteClick() {
   if (_selectedQueueIdx < 0 || _selectedQueueIdx >= _workQueue.length) return;
   var task = _workQueue[_selectedQueueIdx];
   if (!task || task.status === "running") return;
@@ -683,6 +708,18 @@ function onQueueDeleteClick() {
   }
   if (task.thumbUrl) { try { URL.revokeObjectURL(task.thumbUrl); } catch (_) {} }
 
+  var taskDocName = task.psDocName || _queueViewDocName;
+  if (hasDisk) {
+    // 必须等待墓碑/目录删除落盘，再更新视图；否则切换页面时历史扫描可能
+    // 先读到旧 result.png，导致任务“复活”。
+    var markedDeleted = await markTaskFolderDeletedOnDisk(taskDocName, task.id);
+    var folderDeleted = await deleteTaskFolderFromDisk(taskDocName, task.id);
+    if (!markedDeleted && !folderDeleted) {
+      setStatus("无法保存删除状态，请检查缓存目录权限后重试", "err");
+      return;
+    }
+  }
+
   // 从会话主表与历史缓存中移除
   for (var s = _sessionTasks.length - 1; s >= 0; s--) {
     if (_sessionTasks[s] && _sessionTasks[s].id === task.id) _sessionTasks.splice(s, 1);
@@ -690,17 +727,13 @@ function onQueueDeleteClick() {
   for (var h = _historyQueue.length - 1; h >= 0; h--) {
     if (_historyQueue[h] && _historyQueue[h].id === task.id) _historyQueue.splice(h, 1);
   }
-  if (hasDisk) {
-    deleteTaskFolderFromDisk(task.psDocName || _queueViewDocName, task.id);
-  }
 
-  _workQueue.splice(_selectedQueueIdx, 1);
-  if (_workQueue.length === 0) {
-    _selectedQueueIdx = -1;
-  } else {
-    _selectedQueueIdx = Math.min(_selectedQueueIdx, _workQueue.length - 1);
+  // 删除期间用户可能已触发重新扫描；从两份源数据重建，而不是按旧下标 splice，
+  // 避免误删其他卡片或把刚扫到的历史任务保留在视图里。
+  if (_queueViewDocName === taskDocName) {
+    rebuildWorkQueueView();
+    renderWorkQueue();
   }
-  renderWorkQueue();
 }
 
 // =========================================================================
@@ -1053,4 +1086,3 @@ async function _applyOutputMaskToLayer(resultLayerId, maskToken, offsetX, offset
     _options: noDialog,
   }], {});
 }
-

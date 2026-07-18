@@ -685,6 +685,40 @@ test("AIGate close request honors the persisted auto-close setting", function ()
   assert.match(calls[0].options.body, /"managedInstanceIds":\["i-1"\]/);
 });
 
+test("AIGate lifecycle policy unregisters instances when auto-close is disabled", async function () {
+  var context = loadAigateContext();
+  var calls = [];
+  context._getAigateToken = function () { return "token"; };
+  context.loadSettings = function () { return { bridgeUrl: "http://bridge" }; };
+  context.saveAigateLifecycle({ "i-1": { managed: true, pendingStart: false, startedAt: 1 } });
+  context.fetchWithTimeout = function (url, options) {
+    calls.push({ url: url, options: options });
+    return Promise.resolve({ ok: true });
+  };
+
+  var result = await context.syncAigateManagedClosePolicy(false);
+  assert.equal(result, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://bridge/aigate/lifecycle");
+  assert.match(calls[0].options.body, /"autoCloseOnExit":false/);
+  assert.match(calls[0].options.body, /"managedInstanceIds":\["i-1"\]/);
+});
+
+test("panel reload syncs a disabled auto-close policy before replacing the bridge", async function () {
+  var context = loadAigateContext();
+  var calls = [];
+  context.loadSettings = function () { return { aigateAutoCloseOnExit: false }; };
+  context.addLogEntry = function () {};
+  context.syncAigateManagedClosePolicy = function (enabled) {
+    calls.push("sync:" + enabled);
+    return Promise.resolve();
+  };
+  context.startBridgeViaShell = function () { calls.push("start"); };
+
+  await context.forceBridgeStartOnPanelLoad();
+  assert.deepEqual(calls, ["sync:false", "start"]);
+});
+
 test("resets the AIGate close guard when a UXP panel is shown again", function () {
   var context = loadAigateContext();
   context._aigateLifecycleCloseRequested = true;
